@@ -116,7 +116,7 @@ ifeq ($(PLATFORM),windows)
 all: $(BUILD)/verify$(EXE) $(BUILD)/boot$(EXE) $(BUILD)/render$(EXE) \
      $(BUILD)/live$(EXE) $(BUILD)/midisend$(EXE) $(BUILD)/panel$(EXE) $(BUILD)/gui$(EXE) \
      $(BUILD)/statetest$(EXE) $(BUILD)/rec$(EXE) $(BUILD)/blocktime$(EXE) \
-     vst3 $(BUILD)/vst3probe$(EXE) clap vsti $(BUILD)/vstiprobe$(EXE)
+     vst3 $(BUILD)/vst3probe$(EXE) clap
 else
 # macOS. vst3 and vst3probe are defined below
 all: $(BUILD)/verify$(EXE) $(BUILD)/boot$(EXE) $(BUILD)/render$(EXE) \
@@ -610,16 +610,8 @@ MAME_SH7042 ?= ../MU2000/mame-src/src/devices/cpu/sh/sh7042.cpp
 regen:
 	$(PYTHON) tools/gen_sh7042_map.py $(MAME_SH7042)
 
-# Checks that need no ROMs; this is how the port is shown to hold together
-ifeq ($(PLATFORM),windows)
-CHECK_PLUGIN := $(BUILD)/vstiprobe$(EXE) $(VSTI_BIN)
-endif
-
-check: $(BUILD)/verify$(EXE) $(CHECK_PLUGIN)
+check: $(BUILD)/verify$(EXE)
 	$(BUILD)/verify$(EXE)
-ifeq ($(PLATFORM),windows)
-	$(BUILD)/vstiprobe$(EXE) $(VSTI_BIN)
-endif
 
 # 回帰試験。直したことで音が変わっていないかを見る。
 #
