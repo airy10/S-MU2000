@@ -145,6 +145,16 @@ make clap           build/S-MU2000.clap ができる
 make install-clap   CLAP の置き場へ複製する
 ```
 
+Windows では VST 2.4 instrument DLL も作れる。中身と画面は VST3・CLAP と共通で、
+廃止された SDK は使わず、必要なバイナリ ABI だけを `src/vsti/vst2_abi.h` に定義した。
+MIDI / SysEx は MIDI IN A に入る。詳しくは [doc/vsti.md](doc/vsti.md)。
+
+```
+make vsti           build/S-MU2000.dll を作る
+make vsti-probe     DLL の読込み・MIDI・状態・画面をホスト無しで確かめる
+make install-vsti   VSTI_INSTALL（既定は Program Files/VstPlugins）へ複製する
+```
+
 `live` は音声デバイスが要求した分だけ音源を進める。自分で時計を持たないので、
 外部と同期させてもずれない（MAME が破綻したのはここ）。CPU 使用率はおよそ 38%。
 
