@@ -147,8 +147,7 @@ make install-clap   CLAP の置き場へ複製する
 
 Windows では VST 2.4 instrument DLL も作れる。中身と画面は VST3・CLAP と共通で、
 廃止された SDK は使わず、必要なバイナリ ABI だけを `src/vsti/vst2_abi.h` に定義した。
-MIDI / SysEx は MIDI IN A に入る。これは任意の追加物で、通常の `make` では作らない。
-詳しくは [doc/vsti.md](doc/vsti.md)。
+MIDI / SysEx は MIDI IN A に入る。詳しくは [doc/vsti.md](doc/vsti.md)。
 
 ```
 make vsti           build/S-MU2000.dll を作る
