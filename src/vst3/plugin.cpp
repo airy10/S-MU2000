@@ -31,6 +31,7 @@
 #include "pluginterfaces/vst/ivstevents.h"
 #include "pluginterfaces/vst/ivstmidicontrollers.h"
 #include "pluginterfaces/vst/ivstparameterchanges.h"
+#include "pluginterfaces/vst/ivstunits.h"
 
 #include <algorithm>
 #include <chrono>
@@ -112,15 +113,33 @@ constexpr int32 kMidiParams = kChannels * kCtrlCount;
 constexpr ParamID kGainId   = 4096;
 constexpr ParamID kStatusId = 4097;
 
-// MIDI IN B（パート 17-32）のぶん。A の 0-2095 と Output / Status の番号は
-// 保存した曲が覚えているので動かさず、B は離れた 8192 番から並べる
-constexpr int32   kPorts      = 2;
-constexpr ParamID kPortBBase  = 8192;
+// MIDI IN B-D（パート 17-64）のぶん。A の 0-2095 と Output / Status の番号は
+// **保存した曲が覚えているので動かさない**。B 以降は離れた所から 8192 刻みで並べる。
+// C・D は実機では USB だけの口
+constexpr int32   kPorts      = mu2000::MIDI_PORTS;
+constexpr ParamID kPortBase[4] = { 0, 8192, 16384, 24576 };
 constexpr int32   kParamCount = kPorts * kMidiParams + 2;
 
 ParamID param_of(int32 port, int32 ch, int32 ctrl)
 {
-	return ParamID((port ? kPortBBase : 0) + ch * kCtrlCount + ctrl);
+	return ParamID(kPortBase[port & 3] + ch * kCtrlCount + ctrl);
+}
+
+// ---- ユニットとプログラム一覧（IUnitInfo）
+//
+// Cubase は MIDI のプログラムチェンジを IMidiMapping では流さない。
+// 「MIDI チャンネル → ユニット」を getUnitByBus で引き、そのユニットに属していて
+// kIsProgramChange の印が付いたパラメータへ、プログラム一覧の番号として渡してくる。
+// 印もユニットも無いと黙って捨てる。REAPER などは IMidiMapping の 130 番で流すので、
+// そちらはそのまま残す。
+//
+// ユニットは根（0）の下に、口 × チャンネルの 64 個（1-64）。一覧は 128 音の 1 つを共有する
+constexpr ProgramListID kProgramList = 1;
+constexpr int32 kPrograms = 128;
+
+UnitID unit_of(int32 port, int32 ch)
+{
+	return UnitID(1 + (port & 3) * kChannels + ch);
 }
 
 // パラメータ番号を、口・チャンネル・番号と m_value の位置に戻す。
@@ -128,15 +147,15 @@ ParamID param_of(int32 port, int32 ch, int32 ctrl)
 bool midi_param(ParamID id, int32 &port, int32 &ch, int32 &ctrl, int32 &slot)
 {
 	int32 x = 0;
-	if (id < ParamID(kMidiParams)) {
-		port = 0;
-		x = int32(id);
-	} else if (id >= kPortBBase && id < kPortBBase + ParamID(kMidiParams)) {
-		port = 1;
-		x = int32(id - kPortBBase);
-	} else {
+	port = -1;
+	for (int32 p = 0; p < kPorts; p++)
+		if (id >= kPortBase[p] && id < kPortBase[p] + ParamID(kMidiParams)) {
+			port = p;
+			x = int32(id - kPortBase[p]);
+			break;
+		}
+	if (port < 0)
 		return false;
-	}
 	ch   = x / kCtrlCount;
 	ctrl = x % kCtrlCount;
 	slot = port * kMidiParams + x;
@@ -175,7 +194,7 @@ void set_str(String128 dst, const char *ascii)
 // ---- 本体
 
 class mu_plugin : public IComponent, public IAudioProcessor,
-                  public IEditController, public IMidiMapping
+                  public IEditController, public IMidiMapping, public IUnitInfo
 {
 public:
 	mu_plugin()
@@ -213,6 +232,9 @@ public:
 		}
 		if (FUnknownPrivate::iidEqual(_iid, IMidiMapping::iid)) {
 			addRef(); *obj = static_cast<IMidiMapping *>(this); return kResultOk;
+		}
+		if (FUnknownPrivate::iidEqual(_iid, IUnitInfo::iid)) {
+			addRef(); *obj = static_cast<IUnitInfo *>(this); return kResultOk;
 		}
 		*obj = nullptr;
 		return kNoInterface;
@@ -282,8 +304,11 @@ public:
 			bus.mediaType    = kEvent;
 			bus.direction    = kInput;
 			bus.channelCount = 16;
-			// 実機の MIDI IN A / B。B はパート 17-32 に届く
-			set_str(bus.name, index == 0 ? "MIDI In A (Part 1-16)" : "MIDI In B (Part 17-32)");
+			// 実機の MIDI IN A-D。B はパート 17-32、C は 33-48、D は 49-64 に届く。
+			// C・D は実機では USB だけの口
+			static const char *NAMES[4] = { "MIDI In A (Part 1-16)", "MIDI In B (Part 17-32)",
+			                                "MIDI In C (Part 33-48)", "MIDI In D (Part 49-64)" };
+			set_str(bus.name, NAMES[index]);
 			bus.busType = index == 0 ? kMain : kAux;
 			bus.flags   = BusInfo::kDefaultActive;
 			return kResultOk;
@@ -300,7 +325,11 @@ public:
 	tresult PLUGIN_API setActive(TBool state) override
 	{
 		if (state) {
-			m_engine.start();
+			// **ここで起動を待ちきる。**setActive は本スレッドで呼ばれ、時間がかかって
+			// よいところなので、ここで待たないとホストは起動中の機械へ MIDI を流し始める。
+			// 流された分は溜めてあとでまとめて出すので、曲の頭が崩れる（issue #19）
+			if (!m_engine.wait_ready(30000))
+				m_engine.log_line("起動が終わらないまま演奏に入る");
 		} else {
 			m_hush.store(true);
 			m_engine.set_processing(false);
@@ -356,8 +385,7 @@ public:
 			return kResultOk;
 
 		// 起動が終わっていないと戻せない。終わるまで待つ
-		for (int i = 0; i < 300 && m_engine.state() == smu2000::vst3::status::loading; i++)
-			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		m_engine.wait_ready(3000);
 		m_engine.load_state(blob.data(), blob.size());
 
 		// 版 3 から: 差していた SmartMedia のファイル（UTF-8）。無くなっていたら差さない
@@ -463,8 +491,8 @@ public:
 	{
 		if (index < 0 || index >= kParamCount)
 			return kInvalidArgument;
-		// 並びは A の 2096 本、Output、Status、B の 2096 本。
-		// 前からあるものの位置を変えないよう、B は後ろに足した
+		// 並びは A の 2096 本、Output、Status、B・C・D の 2096 本ずつ。
+		// 前からあるものの位置を変えないよう、B 以降は後ろに足した
 		if (index == kMidiParams || index == kMidiParams + 1) {
 			std::memset(&info, 0, sizeof(info));
 			if (index == kMidiParams) {
@@ -483,12 +511,14 @@ public:
 			}
 			return kResultOk;
 		}
-		const int32 port = index < kMidiParams ? 0 : 1;
-		const int32 x = port ? index - kMidiParams - 2 : index;
+		const int32 after = index - kMidiParams - 2;      // Output / Status の後ろ
+		const int32 port = index < kMidiParams ? 0 : 1 + after / kMidiParams;
+		const int32 x = port ? after % kMidiParams : index;
 		const int32 ch = x / kCtrlCount, ctrl = x % kCtrlCount;
 
-		// B の口は頭に "B " を付ける（A は前からの名前のまま）
-		const char *pre = port ? "B " : "";
+		// B 以降は頭に口の字を付ける（A は前からの名前のまま）
+		static const char *PRE[4] = { "", "B ", "C ", "D " };
+		const char *pre = PRE[port & 3];
 		char name[64];
 		if (ctrl < 128)      std::snprintf(name, sizeof(name), "%sCh%d CC%d", pre, ch + 1, ctrl);
 		else if (ctrl == 128) std::snprintf(name, sizeof(name), "%sCh%d Aftertouch", pre, ch + 1);
@@ -504,6 +534,11 @@ public:
 		info.unitId = 0;   // kRootUnitId
 		// 4192 本もあるので、一覧に並べさせない
 		info.flags = ParameterInfo::kCanAutomate | ParameterInfo::kIsHidden;
+		// プログラムチェンジはそのチャンネルのユニットに属させ、印を付ける（Cubase 向け。上の unit_of）
+		if (ctrl == 130) {
+			info.unitId = unit_of(port, ch);
+			info.flags |= ParameterInfo::kIsProgramChange | ParameterInfo::kIsList;
+		}
 		return kResultOk;
 	}
 
@@ -621,6 +656,80 @@ public:
 		return kResultTrue;
 	}
 
+	// ---- IUnitInfo（Cubase のプログラムチェンジ。上の unit_of）
+
+	int32 PLUGIN_API getUnitCount() override { return 1 + kPorts * kChannels; }
+
+	tresult PLUGIN_API getUnitInfo(int32 unitIndex, UnitInfo &info) override
+	{
+		if (unitIndex < 0 || unitIndex >= getUnitCount())
+			return kInvalidArgument;
+		std::memset(&info, 0, sizeof(info));
+		if (unitIndex == 0) {
+			info.id = kRootUnitId;
+			info.parentUnitId = kNoParentUnitId;
+			set_str(info.name, "Root");
+			info.programListId = kNoProgramListId;
+			return kResultOk;
+		}
+		const int32 port = (unitIndex - 1) / kChannels, ch = (unitIndex - 1) % kChannels;
+		char name[32];
+		std::snprintf(name, sizeof(name), "%c Ch%d", char('A' + port), ch + 1);
+		info.id = unit_of(port, ch);
+		info.parentUnitId = kRootUnitId;
+		set_str(info.name, name);
+		info.programListId = kProgramList;
+		return kResultOk;
+	}
+
+	int32 PLUGIN_API getProgramListCount() override { return 1; }
+
+	tresult PLUGIN_API getProgramListInfo(int32 listIndex, ProgramListInfo &info) override
+	{
+		if (listIndex != 0)
+			return kInvalidArgument;
+		std::memset(&info, 0, sizeof(info));
+		info.id = kProgramList;
+		set_str(info.name, "Program");
+		info.programCount = kPrograms;
+		return kResultOk;
+	}
+
+	tresult PLUGIN_API getProgramName(ProgramListID listId, int32 programIndex, String128 name) override
+	{
+		if (listId != kProgramList || programIndex < 0 || programIndex >= kPrograms)
+			return kInvalidArgument;
+		char buf[16];
+		std::snprintf(buf, sizeof(buf), "%03d", programIndex + 1);
+		set_str(name, buf);
+		return kResultOk;
+	}
+
+	tresult PLUGIN_API getProgramInfo(ProgramListID, int32, Steinberg::Vst::CString, String128) override
+	{ return kNotImplemented; }
+
+	tresult PLUGIN_API hasProgramPitchNames(ProgramListID, int32) override { return kResultFalse; }
+
+	tresult PLUGIN_API getProgramPitchName(ProgramListID, int32, int16, String128) override
+	{ return kNotImplemented; }
+
+	UnitID PLUGIN_API getSelectedUnit() override { return kRootUnitId; }
+
+	tresult PLUGIN_API selectUnit(UnitID) override { return kResultOk; }
+
+	tresult PLUGIN_API getUnitByBus(MediaType type, BusDirection dir, int32 busIndex,
+	                                int32 channel, UnitID &unitId) override
+	{
+		if (type != kEvent || dir != kInput || busIndex < 0 || busIndex >= kPorts ||
+		    channel < 0 || channel >= kChannels)
+			return kResultFalse;
+		unitId = unit_of(busIndex, channel);
+		return kResultTrue;
+	}
+
+	tresult PLUGIN_API setUnitProgramData(int32, int32, IBStream *) override
+	{ return kNotImplemented; }
+
 private:
 	// process の中で時刻順に並べ直すための入れ物。
 	// 短いものは中に持ち、システムエクスクルーシブはホストの領域を指す
@@ -652,7 +761,7 @@ private:
 	float                 m_gain_now = 1.0f;
 	std::atomic<bool>     m_hush{false};
 	// 音を出したチャンネル（口ごとに 16 ビット）。止めるときに流す先を絞る
-	std::atomic<uint16>   m_sounded[2] = {};
+	std::atomic<uint16>   m_sounded[kPorts] = {};
 	// 間に合っているかの記録。音声スレッドだけが触る
 	uint64                m_busy_ticks = 0, m_produced = 0, m_worst_ticks = 0, m_late = 0;
 	int64                 m_qpc_freq = 1;
@@ -676,12 +785,17 @@ tresult PLUGIN_API mu_plugin::process(ProcessData &data)
 
 	const uint64 t0 = perf_ticks();
 
-	// ホストが止めたときは、鳴らしたチャンネルだけを黙らせる。全 32 チャンネルへ流すと
-	// 192 バイト＝61ms ぶんの直列になり、次に再生した最初の音がそのぶん遅れる（issue #15）
+	// ホストが止めたときは、鳴らしたチャンネルだけを黙らせる。全チャンネルへ流すと
+	// 1 口につき 192 バイト＝61ms ぶんの直列になり、次に再生した最初の音がそのぶん遅れる（issue #15）
 	if (m_hush.exchange(false)) {
-		const uint16 a = m_sounded[0].exchange(0), b = m_sounded[1].exchange(0);
-		if (a || b)
-			m_engine.all_notes_off(a, b);
+		uint16 mask[kPorts];
+		bool any = false;
+		for (int32 p = 0; p < kPorts; p++) {
+			mask[p] = m_sounded[p].exchange(0);
+			any = any || mask[p];
+		}
+		if (any)
+			m_engine.all_notes_off(mask, kPorts);
 	}
 
 	// ---- まず、この区間に来た MIDI を全部集める
@@ -742,7 +856,7 @@ tresult PLUGIN_API mu_plugin::process(ProcessData &data)
 			if (events->getEvent(i, e) != kResultOk)
 				continue;
 			const int32 off = e.sampleOffset;
-			const int32 port = e.busIndex == 1 ? 1 : 0;
+			const int32 port = (e.busIndex >= 0 && e.busIndex < kPorts) ? e.busIndex : 0;
 			switch (e.type) {
 			case Event::kNoteOnEvent: {
 				const int v = std::clamp(int(std::lround(e.noteOn.velocity * 127.0)), 1, 127);
