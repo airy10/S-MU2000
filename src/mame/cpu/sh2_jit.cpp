@@ -1573,13 +1573,11 @@ sh2_device::jit::code_t sh2_device::jit::compile(sh2_device &cpu, u32 pc)
 				a.str_w_big(W16, X20, R(n));
 				return pure;
 			case 14:                                                                 // EXTS.B
-				a.ldrb(W16, X20, R(m));
-				a.sxtb(W16, W16);
-				a.str_w_big(W16, X20, R(n));
-				return pure;
+				a.ldrsb_x(W16, X20, R(m));   // sign-extends through bit 63;
+				a.str_w_big(W16, X20, R(n)); // only the low 32 bits are stored,
+				return pure;                 // and every state read is a W form
 			case 15:                                                                 // EXTS.W
-				a.ldrh(W16, X20, R(m));
-				a.sxth(W16, W16);
+				a.ldrsh(W16, X20, R(m));
 				a.str_w_big(W16, X20, R(n));
 				return pure;
 			}

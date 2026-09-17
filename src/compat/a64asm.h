@@ -332,6 +332,13 @@ struct emitter {
 	void ldrb(u32 rt, u32 rn, u32 off = 0)  { emit(0x39400000u | off << 10 | rn << 5 | rt); }
 	void ldrh(u32 rt, u32 rn, u32 off = 0)  { emit(0x79400000u | off / 2 << 10 | rn << 5 | rt); }
 	void ldrsh(u32 rt, u32 rn, u32 off = 0) { emit(0x79C00000u | off / 2 << 10 | rn << 5 | rt); }   // signed halfword
+	// 64-bit sign-extending loads: one instruction where ldrb/ldrh plus sxtb/
+	// sxth/sxtw64 take two. The MEG JIT's m1/t loads and the SH2 EXTS use these.
+	// Only bit 23 differs from the W forms below (0x390/0x79C): it selects the
+	// 64-bit destination. Verified against clang's assembler, and the selftest
+	// executes both below.
+	void ldrsb_x(u32 rt, u32 rn, u32 off = 0) { emit(0x39800000u | off << 10 | rn << 5 | rt); }     // Xt = sext(byte)
+	void ldrsh_x(u32 rt, u32 rn, u32 off = 0) { emit(0x79800000u | off / 2 << 10 | rn << 5 | rt); } // Xt = sext(halfword)
 	void ldr_w(u32 rt, u32 rn, u32 off = 0) { emit(0xB9400000u | off / 4 << 10 | rn << 5 | rt); }
 	void ldrsw(u32 rt, u32 rn, u32 off = 0) { emit(0xB9800000u | off / 4 << 10 | rn << 5 | rt); }   // Xt = sext32(word)
 	void ldr_x(u32 rt, u32 rn, u32 off = 0) { emit(0xF9400000u | off / 8 << 10 | rn << 5 | rt); }

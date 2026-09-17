@@ -1768,14 +1768,11 @@ bool swp30_device::meg_jit::build(code &cd, meg_state &ms, const meg_state::op *
 	const auto ldh   = [&](u32 rt, u32 base, s32 d) { if (d >= 0 && d <= 8190)  a.ldrh(rt, base, d);  else { a.add_off(T, base, d); a.ldrh(rt, T, 0); } };
 	const auto ldh_s = [&](u32 rt, u32 base, s32 d) {
 		if (d >= 0 && d <= 8190)
-			a.ldrsh(rt, base, d);
+			a.ldrsh_x(rt, base, d);
 		else {
 			a.add_off(T, base, d);
-			a.ldrsh(rt, T, 0);
+			a.ldrsh_x(rt, T, 0);
 		}
-		// LDRSH Wt sign-extends to 32 bits; the MEG ALU consumes a signed
-		// 64-bit m1 value, so extend the result through the top half of Xt.
-		a.sxtw64(rt, rt);
 	};
 	const auto sth   = [&](u32 rt, u32 base, s32 d) { if (d >= 0 && d <= 8190)  a.strh(rt, base, d);  else { a.add_off(T, base, d); a.strh(rt, T, 0); } };
 	const auto ldw   = [&](u32 rt, u32 base, s32 d) { if (d >= 0 && d <= 16380) a.ldr_w(rt, base, d); else { a.add_off(T, base, d); a.ldr_w(rt, T, 0); } };
@@ -1792,12 +1789,11 @@ bool swp30_device::meg_jit::build(code &cd, meg_state &ms, const meg_state::op *
 	const auto cdh_s = [&](u32 rt, s32 d) {
 		const s32 r = d - o_cbias;
 		if (r >= 0 && r <= 8190)
-			a.ldrsh(rt, CB, r);
+			a.ldrsh_x(rt, CB, r);
 		else {
 			a.add_off(T, MS, d);
-			a.ldrsh(rt, T, 0);
+			a.ldrsh_x(rt, T, 0);
 		}
-		a.sxtw64(rt, rt);
 	};
 	const auto csth   = [&](u32 rt, s32 d) { const s32 r = d - o_cbias; if (r >= 0 && r <= 8190)  a.strh(rt, CB, r);  else { a.add_off(T, MS, d); a.strh(rt, T, 0); } };
 

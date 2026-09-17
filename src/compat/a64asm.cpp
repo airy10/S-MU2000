@@ -871,6 +871,28 @@ u64 a64::selftest()
 		const s64 want = s64(s16(0xabcd)) + s64(0x12345678);
 		CHECK32S(u32(want), scratch);
 	}
+	{
+		u8 scratch[16] = {};
+		scratch[0] = 0xcd; scratch[1] = 0xab;                       // 0xabcd as s16
+		scratch[2] = 0x7f;                                          // +127 as s8
+		scratch[3] = 0x80;                                          // -128 as s8
+		emitter a;                       // the X forms sign-extend to 64 in one
+		a.ldrsh_x(X1, X0, 0);
+		a.ldrsb_x(X2, X0, 3);
+		a.ldrsb_x(X3, X0, 2);
+		a.add_x(X1, X1, X2);
+		a.add_x(X0, X1, X3);
+		a.ret();
+		const u64 want = u64(s64(s16(0xabcd)) + s64(s8(0x80)) + s64(0x7f));
+		const u64 got = run64(a, scratch);
+		if (got != want) {
+			std::fprintf(stderr, "LDRSH_X (%zu insns):", a.code.size());
+			for (u32 w_ : a.code) std::fprintf(stderr, " %08x", w_);
+			std::fprintf(stderr, " | got %016llx want %016llx\n",
+			             (unsigned long long)got, (unsigned long long)want);
+			bad++;
+		}
+	}
 
 	// ---- immediate forms that need X16, and scaled register offsets ----------
 	{
