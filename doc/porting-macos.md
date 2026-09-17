@@ -298,7 +298,9 @@ re-tries them:
   refusal is back in place.
 * **Hoisting the SH2 address bounds into `x23–x28` measured flat.**
   Four instructions saved per memory op against a six-`mov` prologue on every
-  block — the prologue eats the saving on blocks with few memory ops.
+  block — the prologue eats the saving on blocks with few memory ops. A retry
+  with four registers (RAM side only, smaller prologue) measured flat too:
+  the bounds fit in one `movz` each, so only two are saved per op.
 
 One thing the porting turned up was fixed right after the merge:
 `swp30_jit.cpp`'s x86-64 LFO helper call hardcoded the Windows convention
