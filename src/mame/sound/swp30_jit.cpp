@@ -1753,6 +1753,11 @@ bool swp30_device::meg_jit::build(code &cd, meg_state &ms, const meg_state::op *
 	// so P_MIN (-0x4000000000, two instructions) stays materialized.
 	const u8 MS = X19, SWP = X20, P = X21, SC = X22, RAM = X23, SEED = X24, CB = X25;
 	const u8 KLO = X26, KMN = X27, PMX = X28;
+	// LMUL/LADD hold the rand() coefficients. They live in caller-saved x9/x10,
+	// which is allowed because nothing before them in our own frame needs those
+	// registers -- but the one BLR in the program (the LFO helper fallback)
+	// may clobber them, so that path reloads them after the call.
+	const u8 LMUL = X9, LADD = X10;
 	const u8 A = HA, C = HC, D = HD, E = HE, T = X6;
 
 	// [base + disp] with disp known at build time. Each size reaches further
@@ -1816,6 +1821,8 @@ bool swp30_device::meg_jit::build(code &cd, meg_state &ms, const meg_state::op *
 	a.mov_imm64(KMN, u64(s64(-0x800000)));
 	a.sub_imm64(KLO, KMN, 1);            // -0x800001, one past the low limit
 	a.mov_imm64(PMX, 0x3fffffffff);
+	a.mov_imm32(LMUL, 1664525);
+	a.mov_imm32(LADD, 1013904223);
 	if (branchy)
 		stw(WZR, SWP, o_skip);
 
@@ -1838,13 +1845,12 @@ bool swp30_device::meg_jit::build(code &cd, meg_state &ms, const meg_state::op *
 		a.lsl_imm(A, A, 8);
 		a.sar_imm(A, A, 8);
 	};
-	// one step of swp30_device::rand. Output A; the state lives in SEED
+	// one step of swp30_device::rand. Output A; the state lives in SEED,
+	// the coefficients in LMUL/LADD
 	const auto rnd = [&]() {
 		a.mov_reg(A, SEED);
-		a.mov_imm32(T, 1664525);
-		a.mul(A, A, T);
-		a.mov_imm32(D, 1013904223);
-		a.add_reg(A, A, D);
+		a.mul(A, A, LMUL);
+		a.add_reg(A, A, LADD);
 		a.mov_reg(SEED, A);
 		a.ror_imm(A, A, 16);
 	};
@@ -2158,6 +2164,8 @@ bool swp30_device::meg_jit::build(code &cd, meg_state &ms, const meg_state::op *
 					a.mov_imm32(X1, o.lfo);
 					a.mov_imm64(X17, u64(uintptr_t(&meg_jit::call_lfo)));
 					a.blr(X17);
+					a.mov_imm32(LMUL, 1664525);          // the call may clobber them
+					a.mov_imm32(LADD, 1013904223);
 					a.mov_reg(A, W0);                        // the result comes back in w0
 				}
 				break;

@@ -42,7 +42,9 @@ enum : u8 {
 // 64-bit register numbers share the encoding; the instruction class selects
 // the width. X17 is the intra-procedure-call scratch (see mov_imm64_x17).
 enum : u8 { X0 = 0, X1 = 1, X2 = 2, X3 = 3, X4 = 4, X5 = 5, X6 = 6, X7 = 7, X8 = 8, X9 = 9,
+             X10 = 10, X11 = 11, X12 = 12, X13 = 13, X14 = 14, X15 = 15,
              X16 = 16, X17 = 17, X19 = 19, X20 = 20, X21 = 21, X22 = 22, X23 = 23, X24 = 24, X25 = 25, X26 = 26, X27 = 27, X28 = 28, X29 = 29, X30 = 30, X31 = 31 };
+// X18 is the platform register, reserved by the ABI -- never emit it.
 
 // Condition codes for B.cond / CSET, plus the aliases CMP/HS and CMP/LO use.
 enum : u8 { EQ, NE, CS, HS = CS, CC, LO = CC, MI, PL, VS, VC, HI, LS, GE, LT, GT, LE, AL };

@@ -327,6 +327,9 @@ from `enter` through chained blocks; helpers observe memory, so it is flushed
 before every call and reloaded after calls that can change it (slow memory
 paths can abort the timeslice, the interpreter anything). Bit-exact including
 `SMU2000_SH2_JIT=1` fallback mode; CPU 1120 → ~1050 ns (~−6%) on dense/256.
+The MEG `rand()` coefficients now live in caller-saved `x9`/`x10` the same way
+(five instructions per dither instead of nine), reloaded after the single BLR
+in the program; MEG 644 → ~633 ns.
 
 Reverted, recorded with the different implementation that could change each
 verdict — do not retry as-is:
