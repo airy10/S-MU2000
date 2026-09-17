@@ -22,6 +22,9 @@
 #include <memory>
 #include <string>
 #include <vector>
+#ifdef __APPLE__
+#include <pthread/qos.h>
+#endif
 
 namespace {
 
@@ -54,6 +57,14 @@ int main(int argc, char **argv)
 	const int repeats = argc > 5 ? std::max(1, std::atoi(argv[5])) : 5;
 	const int copies = argc > 6 ? std::max(1, std::atoi(argv[6])) : 1;
 	const u32 RATE = 44100;
+
+#ifdef __APPLE__
+	// Ask for the performance cores. The scheduler is free to put a default-
+	// QoS benchmark on the efficiency cores and migrate it; real-time audio
+	// threads run elevated, so this matches production rather than flattering
+	// the numbers. Threads spawned later (the slave) inherit it.
+	pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+#endif
 
 	std::vector<smf::event> events;
 	std::string err;
