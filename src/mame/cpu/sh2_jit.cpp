@@ -1137,6 +1137,25 @@ sh2_device::jit::code_t sh2_device::jit::compile(sh2_device &cpu, u32 pc)
 
 	std::vector<size_t> to_finish, to_ret;
 
+	// at + 2 of the instruction being emitted, for the slow-path checks below.
+	// Set once per loop turn; the lambdas run synchronously inside the turn.
+	u32 cur_pc_next = 0;
+	// A helper call happened while emitting this turn. Recorded as a flag and
+	// emitted after the turn's pc store below: patch positions must be recorded
+	// after store_pc_at's insertions, never during native().
+	bool need_slow_check = false;
+	// After a helper call: a peripheral may have raised the irq flag or moved
+	// the pc (exception), so take the finish path on either. Fast inline
+	// ROM/RAM traffic runs no C++ and can change neither, hence needs nothing.
+	const auto slow_checks = [&]() {
+		a.ldr_w_big(W16, X19, C_test);
+		to_finish.push_back(a.cbnz_w(W16));
+		a.ldr_w_big(W16, X20, S_pc);
+		a.mov_imm32(W17, cur_pc_next);
+		a.cmp_reg(W16, W17);
+		to_finish.push_back(a.b_cond(NE));
+	};
+
 	// Helper calls: Apple C ABI, arguments in x0-x2
 	const auto call = [&](void *fn) {
 		a.mov_imm64_x17(u64(uintptr_t(fn)));
@@ -1209,6 +1228,7 @@ sh2_device::jit::code_t sh2_device::jit::compile(sh2_device &cpu, u32 pc)
 		call(sz == 1 ? reinterpret_cast<void *>(&sh2_device::jit_rb) :
 		     sz == 2 ? reinterpret_cast<void *>(&sh2_device::jit_rw) : reinterpret_cast<void *>(&sh2_device::jit_rl));
 		reload_ic();
+		need_slow_check = true;
 		for (size_t p : to_done) a.patch(p);
 	};
 	// Write. Address in w1, value in w2
@@ -1233,6 +1253,7 @@ sh2_device::jit::code_t sh2_device::jit::compile(sh2_device &cpu, u32 pc)
 		call(sz == 1 ? reinterpret_cast<void *>(&sh2_device::jit_wb) :
 		     sz == 2 ? reinterpret_cast<void *>(&sh2_device::jit_ww) : reinterpret_cast<void *>(&sh2_device::jit_wl));
 		reload_ic();
+		need_slow_check = true;
 		a.patch(done);
 	};
 	const auto sext8 = [](u32 v) { return u32(s32(s8(v))); };
@@ -1723,6 +1744,8 @@ sh2_device::jit::code_t sh2_device::jit::compile(sh2_device &cpu, u32 pc)
 		const u32 at = pc + 2 * u32(i);
 		const u16 op = cpu.m_decrypted_program->read_word(at);
 		const kind k = classify(op);
+		cur_pc_next = at + 2;
+		need_slow_check = false;
 
 		if (trace) {
 			if (pc_stale) {
@@ -1773,6 +1796,7 @@ sh2_device::jit::code_t sh2_device::jit::compile(sh2_device &cpu, u32 pc)
 		flush_ic();
 		call(reinterpret_cast<void *>(&sh2_device::jit_exec));
 		reload_ic();
+		need_slow_check = true;
 		r = k == kind::delayed ? delayed : k == kind::ends ? ends : memop;
 			pc_stale = false;
 		} else if (!slot && lazy_pc && !trace) {
@@ -1791,15 +1815,11 @@ sh2_device::jit::code_t sh2_device::jit::compile(sh2_device &cpu, u32 pc)
 		if (slot || r == ends || (r != delayed && (i + 1 >= MAX_INSNS || at + 4 >= ROM_END)))
 			break;
 
-		// 3. 4. 途中の確かめ。周辺に触りうる命令は、割り込みの印か思わぬ pc の変化があれば終わりの処理へ
-		if (r == memop) {
-			a.ldr_w_big(W16, X19, C_test);
-			to_finish.push_back(a.cbnz_w(W16));
-			a.ldr_w_big(W16, X20, S_pc);
-			a.mov_imm32(W17, at + 2);
-			a.cmp_reg(W16, W17);
-			to_finish.push_back(a.b_cond(NE));
-		}
+		// 3. 4. 途中の確かめ。helper を呼んだときだけ、その直後の番地で確かめる
+		// (slow_checks)。呼ばない番地 (pure と fast memory) では C++ が走らず、
+		// 印も pc も変わりようがない
+		if (need_slow_check)
+			slow_checks();
 		a.subs_imm(IC, IC, 1);
 		if (pc_stale)
 			stale_rets.emplace_back(a.b_cond(LE), stale_pc);   // write the pc, then exit

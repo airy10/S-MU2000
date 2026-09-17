@@ -330,6 +330,13 @@ paths can abort the timeslice, the interpreter anything). Bit-exact including
 The MEG `rand()` coefficients now live in caller-saved `x9`/`x10` the same way
 (five instructions per dither instead of nine), reloaded after the single BLR
 in the program; MEG 644 → ~633 ns.
+The mid-block irq/pc checks moved to after helper calls only: fast inline
+ROM/RAM traffic runs no C++ and can change neither flag nor pc (checked
+against every `m_test_irq` writer), so per-memory-op checks became per-slow-
+path checks. Same exits, ~7 fewer instructions per fast memop; CPU ~1050 →
+~1030 ns. First version recorded patch positions during emission and went
+nondeterministic (a later `store_pc_at` insertion shifted them); the checks
+are now emitted after the turn's pc store via a flag.
 
 Reverted, recorded with the different implementation that could change each
 verdict — do not retry as-is:
