@@ -1036,16 +1036,19 @@ bool sh2_device::jit::init(sh2_device &cpu)
 		return false;
 
 	emitter a;
-	// enter: preserve x19-x22 (the block registers plus x29/x30 need saving:
-	// helper calls inside a block go through BLR, which overwrites x30 with
-	// their return address, so the exit RET needs x30 restored from the stack).
+	// enter: preserve x19-x22 (the block registers) and x26 (the icount, kept
+	// in a register across chained blocks). x30 needs saving too: helper calls
+	// inside a block go through BLR, which overwrites x30 with their return
+	// address, so the exit RET needs x30 restored from the stack. x29 is never
+	// touched and needs no slot.
 	a.stp_x(X19, X20, X31, -16, true);
 	a.stp_x(X21, X22, X31, -16, true);
-	a.stp_x(X29, X30, X31, -16, true);
+	a.stp_x(X26, X30, X31, -16, true);
 	a.mov_x(X19, X0);
 	a.mov_x(X20, X1);
 	a.mov_x(X21, X2);
 	a.mov_x(X22, X3);
+	a.ldr_w_big(W26, X20, S(&st->icount));
 	a.mov_imm64(X17, u64(uintptr_t(&entry)));
 	a.ldr_x(X16, X17, 0);
 	a.br(X16);
@@ -1080,7 +1083,10 @@ bool sh2_device::jit::init(sh2_device &cpu)
 	a.br(X16);
 	for (size_t p : to_exit)
 		a.patch_to(p, a.code.size());
-	a.ldp_x(X29, X30, X31, 16, true);
+	// The C++ side reads the icount from memory after enter returns, while
+	// blocks chained through next_block carry it in the register
+	a.str_w_big(W26, X20, S(&st->icount));
+	a.ldp_x(X26, X30, X31, 16, true);
 	a.ldp_x(X21, X22, X31, 16, true);
 	a.ldp_x(X19, X20, X31, 16, true);
 	a.ret();
@@ -1094,8 +1100,9 @@ bool sh2_device::jit::init(sh2_device &cpu)
 
 // Compile one block. The skeleton follows the x86-64 version (see the comment at
 // the top of this file and jit_run); only the emitted instructions differ.
-// Inside a block x19 = cpu, x20 = state, x21 = ROM, x22 = RAM (set by enter);
-// x0-x17 are scratch between helper calls and the helper call arguments.
+// Inside a block x19 = cpu, x20 = state, x21 = ROM, x22 = RAM (set by enter),
+// w26 = icount (loaded by enter, stored on the way out); x0-x17 are scratch
+// between helper calls and the helper call arguments.
 sh2_device::jit::code_t sh2_device::jit::compile(sh2_device &cpu, u32 pc)
 {
 	using namespace a64;
@@ -1137,7 +1144,13 @@ sh2_device::jit::code_t sh2_device::jit::compile(sh2_device &cpu, u32 pc)
 	};
 	// Register roles by internal convention: w0 = loaded value / ALU result (also
 	// the helper return value), w1 = address, w2 = value to store, w3 = scratch
-	// for the T bit, w16/w17 = spare
+	// for the T bit, w16/w17 = spare. w26 is the icount, live across the whole
+	// block; helpers observe memory, so it is flushed before every call and
+	// reloaded after calls that can change it (slow memory paths can abort the
+	// timeslice, the interpreter anything).
+	const u8 IC = X26;
+	const auto flush_ic = [&]() { a.str_w_big(IC, X20, S_icount); };
+	const auto reload_ic = [&]() { a.ldr_w_big(IC, X20, S_icount); };
 	const auto sr_and = [&](u32 mask) {           // sr &= mask (from a register: the mask is arbitrary)
 		a.ldr_w_big(W16, X20, S_sr);
 		a.mov_imm32(W17, mask);
@@ -1161,9 +1174,7 @@ sh2_device::jit::code_t sh2_device::jit::compile(sh2_device &cpu, u32 pc)
 		mergeT(W17);
 	};
 	const auto dec_icount = [&](u32 k) {
-		a.ldr_w_big(W16, X20, S_icount);
-		a.sub_imm(W16, W16, k);
-		a.str_w_big(W16, X20, S_icount);
+		a.sub_imm(IC, IC, k);
 	};
 	// Read. Address in w1, value into w0 (sz bytes in big-endian order, no sign
 	// extension). ROM and work RAM are read inline, anything else goes through
@@ -1193,9 +1204,11 @@ sh2_device::jit::code_t sh2_device::jit::compile(sh2_device &cpu, u32 pc)
 		else { a.ldr_w_x(W0, X22, W17, false); a.rev32(W0, W0); }
 		to_done.push_back(a.b());
 		for (size_t p : to_slow) a.patch(p);
+		flush_ic();
 		a.mov_x(X0, X19);                                  // cpu (address already in w1)
 		call(sz == 1 ? reinterpret_cast<void *>(&sh2_device::jit_rb) :
 		     sz == 2 ? reinterpret_cast<void *>(&sh2_device::jit_rw) : reinterpret_cast<void *>(&sh2_device::jit_rl));
+		reload_ic();
 		for (size_t p : to_done) a.patch(p);
 	};
 	// Write. Address in w1, value in w2
@@ -1215,9 +1228,11 @@ sh2_device::jit::code_t sh2_device::jit::compile(sh2_device &cpu, u32 pc)
 		else { a.rev32(W3, W2); a.str_w_x(W3, X22, W17, false); }
 		const size_t done = a.b();
 		for (size_t p : to_slow) a.patch(p);
+		flush_ic();
 		a.mov_x(X0, X19);                                  // cpu (address in w1, value in w2)
 		call(sz == 1 ? reinterpret_cast<void *>(&sh2_device::jit_wb) :
 		     sz == 2 ? reinterpret_cast<void *>(&sh2_device::jit_ww) : reinterpret_cast<void *>(&sh2_device::jit_wl));
+		reload_ic();
 		a.patch(done);
 	};
 	const auto sext8 = [](u32 v) { return u32(s32(s8(v))); };
@@ -1715,10 +1730,12 @@ sh2_device::jit::code_t sh2_device::jit::compile(sh2_device &cpu, u32 pc)
 				a.str_w_big(W16, X20, S_pc);
 				pc_stale = false;
 			}
-			a.mov_x(X0, X19);
-			a.mov_imm32(W1, at);
-			call(reinterpret_cast<void *>(&sh2_device::jit_trace));
-		}
+		a.mov_x(X0, X19);
+		a.mov_imm32(W1, at);
+		flush_ic();
+		call(reinterpret_cast<void *>(&sh2_device::jit_trace));
+		reload_ic();
+	}
 
 		// 1. pc を進める
 		if (slot) {
@@ -1751,10 +1768,12 @@ sh2_device::jit::code_t sh2_device::jit::compile(sh2_device &cpu, u32 pc)
 				a.mov_imm32(W16, at + 2);
 				a.str_w_big(W16, X20, S_pc);
 			}
-			a.mov_x(X0, X19);
-			a.movz(W1, op, 0);
-			call(reinterpret_cast<void *>(&sh2_device::jit_exec));
-			r = k == kind::delayed ? delayed : k == kind::ends ? ends : memop;
+		a.mov_x(X0, X19);
+		a.movz(W1, op, 0);
+		flush_ic();
+		call(reinterpret_cast<void *>(&sh2_device::jit_exec));
+		reload_ic();
+		r = k == kind::delayed ? delayed : k == kind::ends ? ends : memop;
 			pc_stale = false;
 		} else if (!slot && lazy_pc && !trace) {
 			if (r == pure) {
@@ -1781,9 +1800,7 @@ sh2_device::jit::code_t sh2_device::jit::compile(sh2_device &cpu, u32 pc)
 			a.cmp_reg(W16, W17);
 			to_finish.push_back(a.b_cond(NE));
 		}
-		a.ldr_w_big(W16, X20, S_icount);
-		a.subs_imm(W16, W16, 1);
-		a.str_w_big(W16, X20, S_icount);
+		a.subs_imm(IC, IC, 1);
 		if (pc_stale)
 			stale_rets.emplace_back(a.b_cond(LE), stale_pc);   // write the pc, then exit
 		else
@@ -1809,15 +1826,22 @@ sh2_device::jit::code_t sh2_device::jit::compile(sh2_device &cpu, u32 pc)
 	const size_t no_irq1 = a.cbz_w(W16);
 	a.ldr_w_big(W16, X20, S_delay);
 	const size_t no_irq2 = a.cbnz_w(W16);
+	flush_ic();
 	a.mov_x(X0, X19);
 	call(reinterpret_cast<void *>(&sh2_device::jit_irq));
+	reload_ic();
 	a.patch(no_irq1);
 	a.patch(no_irq2);
 	dec_icount(1);
 
+	// next_block reads the icount from memory, so store it before leaving.
+	// All exits go through here: to_ret lands on the store, and the stale-pc
+	// tails jump to it after writing the pc
+	const size_t store_ic = a.code.size();
+	a.str_w_big(IC, X20, S_icount);
 	const size_t ret = a.code.size();
 	for (size_t p : to_ret)
-		a.patch_to(p, ret);
+		a.patch_to(p, store_ic);
 	a.mov_imm64_x17(u64(uintptr_t(next_block)));
 	a.br_x17();
 
@@ -1827,7 +1851,7 @@ sh2_device::jit::code_t sh2_device::jit::compile(sh2_device &cpu, u32 pc)
 		a.mov_imm32(W16, v);
 		a.str_w_big(W16, X20, S_pc);
 		const size_t j = a.b();
-		a.patch_to(j, ret);
+		a.patch_to(j, store_ic);
 	}
 
 	if (used + a.code.size() * 4 > BUF_SIZE) {
