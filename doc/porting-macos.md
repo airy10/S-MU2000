@@ -318,6 +318,36 @@ goes through the helper: the code before the fix dies with an access violation
 chord and lofi, and the same build with the two pushes removed does not — so
 the test does see a clobbered `SEED`/`K_MAX`.
 
+## arm64 JIT, round two: block-persistent SH2 state (`opt/arm64-2`)
+
+With x86-64 parity reached, what is left is arm64-only, as long as the x86-64
+path is untouched: keep guest state in registers across a block instead of
+round-tripping it through memory. The SH2 backend holds the icount in `w26`
+from `enter` through chained blocks; helpers observe memory, so it is flushed
+before every call and reloaded after calls that can change it (slow memory
+paths can abort the timeslice, the interpreter anything). Bit-exact including
+`SMU2000_SH2_JIT=1` fallback mode; CPU 1120 → ~1050 ns (~−6%) on dense/256.
+
+Reverted, recorded with the different implementation that could change each
+verdict — do not retry as-is:
+
+* **SR in `w27: neutral.** Seven A/B runs dead even (~1051 vs ~1056). The M1
+  hides L1-resident round trips, so removing them buys nothing measurable.
+  A retry should not cache SR either — it should skip materializing the T bit
+  when the next op consumes the flags directly (fuse compare/branch instead
+  of going through SR).
+* **Bake, second try (`smull64`, no widening tax): still a wash.** Master
+  −2.7%, slave +1.5% on dense; effects confirmed the loss. The baked multiply
+  now ties the general sequence at best and dense-master has few skippable
+  ops. A retry should count skippable ops at build time and only build the
+  spec version past a threshold — a conditional spec, not a better multiply.
+
+Measuring notes, learned the hard way: a concurrent compilation inflated one
+run to 692 ns at 11% width while the untouched slave moved with it — always
+check the slave, and re-measure on a quiet machine. The run-to-run band is
+1–2% plus code-layout jitter between builds, so sub-2% deltas need repeated
+runs in both directions.
+
 ## The core needed one change
 
 `timer_alloc` in `src/compat/mamecompat.h` called `machine().make_timer(...)`
