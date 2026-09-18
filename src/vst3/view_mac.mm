@@ -16,6 +16,7 @@
 #import <Cocoa/Cocoa.h>
 
 #include "ui/fx_editor.h"
+#include "ui/keymap.h"
 #include "ui/master_editor.h"
 #include "ui/menu.h"
 #include "ui/overview.h"
@@ -41,35 +42,23 @@ namespace {
 
 // plug_key_of()'s counterpart for this platform. A character where the key has
 // one, which is what the GUI front end maps too, so the same physical key is
-// the same panel button in both programs.
-int plug_key_of_char(int c)
+// the same panel button in both programs. The panel letters share their
+// meaning with the GUI front end through ui/keymap.h; only the function keys
+// (private-use characters) are listed here.
+plug_key plug_key_of_char(int c)
 {
+	// The same keys gui.exe uses, as their private-use characters
+	// (NSF3FunctionKey / NSF2FunctionKey / NSF4FunctionKey)
 	switch (c) {
-	case 'a': return PLUG_KEY_PLAY;
-	case 'e': return PLUG_KEY_EDIT;
-	case 'u': return PLUG_KEY_UTIL;
-	case 'f': return PLUG_KEY_EFFECT;
-	case 's': return PLUG_KEY_MUTE_SOLO;
-	case ']': return PLUG_KEY_PART_PLUS;
-	case '[': return PLUG_KEY_PART_MINUS;
-	case '=': case '+': return PLUG_KEY_VALUE_PLUS;
-	case '-': return PLUG_KEY_VALUE_MINUS;
-	case '\r': return PLUG_KEY_ENTER;
-	case 0x7f: case 0x08: return PLUG_KEY_EXIT;
-	case '.': return PLUG_KEY_SELECT_RIGHT;
-	case ',': return PLUG_KEY_SELECT_LEFT;
-	case 'q': return PLUG_KEY_SEQ;
-	case 'z': return PLUG_KEY_AUDITION;
-	case 'x': return PLUG_KEY_SELECT;
-	case 'm': return PLUG_KEY_SAMPLING_MODE;
-	// The same two keys gui.exe uses, as their private-use characters
-	// (NSF3FunctionKey / NSF2FunctionKey)
 	case 0xf706: return PLUG_KEY_LIST;
 	case 0xf705: return PLUG_KEY_EDITOR;
-	case 0xf707: return PLUG_KEY_ENGINE;   // NSF4FunctionKey
+	case 0xf707: return PLUG_KEY_ENGINE;
 	default: break;
 	}
-	return PLUG_KEY_NONE;
+	mu2000::button b = mu2000::button::count;
+	if (!ui::button_for_char(c, b))
+		return PLUG_KEY_NONE;
+	return plug_key_of_button(int(b));
 }
 
 } // namespace
@@ -78,10 +67,11 @@ int plug_key_of_char(int c)
 
 // The panel's view is declared at global scope on purpose: clang accepts an
 // Objective-C class declared inside a namespace, but its ivars stop resolving
-// there, and every method of this one touches them. The two names the methods
-// need are pulled in by hand, since unqualified lookup from here cannot see
-// into the namespaces above
+// there, and every method of this one touches them. The name the methods need
+// is pulled in by hand, since unqualified lookup from here cannot see into
+// the namespaces above
 using smu2000::vst3::plug_view;
+using smu2000::vst3::plug_key;
 using smu2000::vst3::plug_key_of_char;
 using smu2000::vst3::PLUG_KEY_NONE;
 
@@ -104,7 +94,7 @@ namespace smu2000 { namespace vst3 { class mac_window; } }
 - (instancetype)initWithOwner:(plug_view *)owner width:(int)w height:(int)h;
 - (void)tick:(NSTimer *)timer;
 - (void)ensureTimer;
-- (int)plugKeyForEvent:(NSEvent *)event;
+- (plug_key)plugKeyForEvent:(NSEvent *)event;
 @end
 
 @implementation SMUPlugView
@@ -316,7 +306,10 @@ namespace smu2000 { namespace vst3 { class mac_window; } }
 
 // ---- keys
 
-- (int)plugKeyForEvent:(NSEvent *)event
+// A plug_key for the key, or PLUG_KEY_NONE. The panel letters share their
+// meaning with the GUI front end (ui/keymap.h); F3/F2/F4 open the PC
+// windows / toggle the native engine, the way gui.exe does
+- (plug_key)plugKeyForEvent:(NSEvent *)event
 {
 	NSString *chars = [[event charactersIgnoringModifiers] lowercaseString];
 	if ([chars length] < 1)
@@ -333,7 +326,7 @@ namespace smu2000 { namespace vst3 { class mac_window; } }
 	// Buttons latch while held, so autorepeat would read as a stream of presses
 	if ([event isARepeat])
 		return;
-	const int k = [self plugKeyForEvent:event];
+	const plug_key k = [self plugKeyForEvent:event];
 	if (k != PLUG_KEY_NONE)
 		_owner->key(k, true);
 }
@@ -342,7 +335,7 @@ namespace smu2000 { namespace vst3 { class mac_window; } }
 {
 	if (!_owner)
 		return;
-	const int k = [self plugKeyForEvent:event];
+	const plug_key k = [self plugKeyForEvent:event];
 	if (k != PLUG_KEY_NONE)
 		_owner->key(k, false);
 }

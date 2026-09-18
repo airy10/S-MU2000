@@ -40,6 +40,7 @@
 #include "ui/master_editor.h"
 #include "ui/menu.h"
 #include "ui/menu_win.h"
+#include "ui/keymap.h"
 #include "ui/settings.h"
 #include "ui/part_shapes.h"
 #include "ui/toolbar.h"
@@ -587,33 +588,13 @@ void ensure_backing(HDC dc, int w, int h)
 }
 
 // キーボードからも押せるように。並びは MAME の mu2000 と同じ
+// The table itself is shared (ui/keymap.h); only VK codes become characters here
 mu2000::button key_to_button(WPARAM vk, bool &ok)
 {
-	ok = true;
-	switch (vk) {
-	case 'A': return mu2000::button::play;
-	case 'E': return mu2000::button::edit;
-	case 'U': return mu2000::button::util;
-	case 'F': return mu2000::button::effect;
-	case 'S': return mu2000::button::mute_solo;
-	case VK_OEM_6: return mu2000::button::part_plus;     // ]
-	case VK_OEM_4: return mu2000::button::part_minus;    // [
-	case VK_OEM_PLUS:  return mu2000::button::value_plus;
-	case VK_OEM_MINUS: return mu2000::button::value_minus;
-	case VK_BACK:   return mu2000::button::exit;
-	case VK_RETURN: return mu2000::button::enter;
-	case VK_OEM_PERIOD: return mu2000::button::select_right;
-	case VK_OEM_COMMA:  return mu2000::button::select_left;
-	case 'Q': return mu2000::button::seq;
-	case 'Z': return mu2000::button::audition;
-	case 'X': return mu2000::button::select;
-	case 'M': return mu2000::button::sampling_mode;
-	default: break;
-	}
-	ok = false;
-	return mu2000::button::count;
+	mu2000::button b = mu2000::button::count;
+	ok = ui::button_for_char(ui::key_char_of_vk(int(vk)), b);
+	return b;
 }
-
 void open_window(HWND hwnd, ui::pc_window &w)
 {
 	std::string err;
