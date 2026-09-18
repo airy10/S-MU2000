@@ -437,12 +437,11 @@ int main(int argc, char **argv)
 	// なるが、それだと音源の山で 25 秒に 1 回ほど枯渇する。30ms なら 0 回。
 	// これ以上詰めたければ音源をもっと速くするしかない
 	int  latency_ms = 20;   // 溜める目標。実測の最悪 9.2ms + 余裕
-	bool exclusive = false;
+	ui::output_options out_opts;
 	const char *dump_dev = nullptr;   // デバイスへ渡したものをそのまま書き出す
-	const char *audio_dev = nullptr;  // 音声の出口の名前（一部でよい）
 	bool raw = false;                 // エンジンの信号処理を飛ばす
 	double seconds = 0.0;   // 0 なら Ctrl+C まで
-	bool nomidi = false, use_waveout = false, single = false, factory = false;
+	bool nomidi = false, use_waveout = false, single = false;
 	ui::engine_options eng_opts;
 	const char *wav = nullptr;
 	std::string dir;
@@ -461,15 +460,14 @@ int main(int argc, char **argv)
 		else if (!std::strcmp(argv[i], "--frames") && i + 1 < argc) frames = std::atoi(argv[++i]);
 		else if (!std::strcmp(argv[i], "--buffers") && i + 1 < argc) buffers = std::atoi(argv[++i]);
 		else if (!std::strcmp(argv[i], "--latency") && i + 1 < argc) latency_ms = std::atoi(argv[++i]);
-		else if (!std::strcmp(argv[i], "--exclusive")) exclusive = true;
+		else if (ui::consume_output_option(argv, argc, i, out_opts)) {}
+		else if (!std::strcmp(argv[i], "--nomidi")) nomidi = true;
 		else if (!std::strcmp(argv[i], "--dump-dev") && i + 1 < argc) dump_dev = argv[++i];
-		else if (!std::strcmp(argv[i], "--audio") && i + 1 < argc) audio_dev = argv[++i];
 		else if (!std::strcmp(argv[i], "--raw")) raw = true;
 		else if (!std::strcmp(argv[i], "--seconds") && i + 1 < argc) seconds = std::atof(argv[++i]);
 		else if (!std::strcmp(argv[i], "--wav") && i + 1 < argc) wav = argv[++i];
 		else if (!std::strcmp(argv[i], "--waveout")) use_waveout = true;
 		else if (!std::strcmp(argv[i], "--nomidi")) nomidi = true;
-		else if (!std::strcmp(argv[i], "--factory")) factory = true;
 		else if (ui::consume_engine_option(argv[i], eng_opts)) {}
 		else if (!std::strcmp(argv[i], "--single"))
 			single = true;
@@ -500,7 +498,7 @@ int main(int argc, char **argv)
 
 	mu.set_threaded(!single);
 	ui::apply_engine_options(mu, eng_opts);
-	if (factory)
+	if (out_opts.factory)
 		std::printf("工場出荷状態で起動する（覚えていた設定は終わるときに上書きされる）\n");
 	else if (smu2000::nvram::load(mu))
 		std::printf("設定: %s\n", smu2000::nvram::path(mu).c_str());
@@ -553,8 +551,8 @@ int main(int argc, char **argv)
 	SetConsoleCtrlHandler(on_console_ctrl, TRUE);
 
 	rc = use_waveout ? run_waveout(gen, seconds, frames, buffers)
-	                 : run_wasapi(gen, seconds, latency_ms, exclusive, dump_dev,
-	                              audio_dev, raw);
+	                 : run_wasapi(gen, seconds, latency_ms, out_opts.exclusive, dump_dev,
+	                              out_opts.audio_dev, raw);
 	produced = gen.produced;
 	busy_sec = double(gen.busy_ticks) / gen.freq.QuadPart;
 #else
@@ -567,7 +565,7 @@ int main(int argc, char **argv)
 	if (raw)
 		std::fprintf(stderr, "注意: --raw は Windows 専用。macOS では意味がない\n");
 	rc = run_coreaudio(mu, seconds, latency_ms, wav ? &rec : nullptr, produced, busy_sec,
-	                   exclusive, dump_dev, audio_dev);
+	                   out_opts.exclusive, dump_dev, out_opts.audio_dev);
 #endif
 
 	if (wav && !rec.empty())
