@@ -47,6 +47,29 @@ inline void apply_engine_options(mu2000 &mu, const engine_options &o)
 		mu.set_native_fx(o.native_fx);
 }
 
+// Startup flags shared by the two graphical front ends (gui, gui_mac).
+// live/render have no windows, so these stay out of engine_options.
+struct window_options {
+	bool open_editor = false;
+	bool open_list = false;
+	bool open_fx = false;
+	bool open_shapes = false;
+	bool open_master = false;
+	bool lcd_only = false;   // the LCD on its own
+};
+
+// Takes a single argv entry. True when it was a shared window flag.
+inline bool consume_window_option(const char *arg, window_options &o)
+{
+	if (!std::strcmp(arg, "--editor")) { o.open_editor = true; return true; }
+	if (!std::strcmp(arg, "--list-window")) { o.open_list = true; return true; }
+	if (!std::strcmp(arg, "--fx-window")) { o.open_fx = true; return true; }
+	if (!std::strcmp(arg, "--shapes-window")) { o.open_shapes = true; return true; }
+	if (!std::strcmp(arg, "--master-window")) { o.open_master = true; return true; }
+	if (!std::strcmp(arg, "--lcd")) { o.lcd_only = true; return true; }
+	return false;
+}
+
 } // namespace ui
 
 #endif // S_MU2000_UI_OPTIONS_H
