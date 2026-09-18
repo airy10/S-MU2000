@@ -41,6 +41,7 @@
 #include "ui/menu.h"
 #include "ui/menu_win.h"
 #include "ui/keymap.h"
+#include "ui/keymap_win.h"
 #include "ui/options.h"
 #include "ui/settings.h"
 #include "ui/part_shapes.h"
@@ -273,6 +274,7 @@ menu_state menu_snapshot()
 	s.fold34 = g_win.play_file.fold_extra_ports();
 	s.ready = g_win.eng && g_win.eng->state.load() == 1;
 	s.native_fx = g_win.eng && g_win.eng->native_fx.load();
+	s.native_engine = g_win.eng && g_win.eng->native_engine.load();
 	return s;
 }
 
@@ -1102,6 +1104,8 @@ int main(int argc, char **argv)
 	}
 
 	static engine eng(br, midi_ports[0]);
+	if (std::getenv("SMU2000_VOICECACHE"))
+		eng_opts.voicecache = 1;
 	ui::apply_engine_options(eng.mu, eng_opts);
 	eng.native_fx.store(eng_opts.native_fx);
 	for (int p = 1; p < mu2000::MIDI_PORTS; p++)
@@ -1261,7 +1265,7 @@ int main(int argc, char **argv)
 		if (eng_opts.native_engine) {
 			eng.mu.set_native_engine(eng_opts.native_engine);
 			eng.native_engine.store(eng_opts.native_engine);
-			if (std::getenv("SMU2000_VOICECACHE"))
+			if (eng_opts.voicecache)
 				smu2000::voicecache::load(eng.mu, smu2000::voicecache::key(eng.mu));
 		}
 		eng.state.store(1);

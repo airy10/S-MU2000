@@ -15,6 +15,7 @@
 #include "ui/fx_editor.h"
 #include "ui/master_editor.h"
 #include "ui/keymap.h"
+#include "ui/keymap_win.h"
 #include "ui/menu.h"
 #include "ui/menu_win.h"
 #include "ui/part_shapes.h"

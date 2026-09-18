@@ -2,8 +2,8 @@
 //
 // The shared keyboard map: physical key to panel button.
 //
-// Callers hand over a lowercase character and get the panel button for it.
-// Windows translates its virtual-key codes to characters first (letters
+// Callers hand over a lowercase character code and get the panel button for
+// it. Windows translates its virtual-key codes to characters first (letters
 // arrive uppercase, punctuation arrives as OEM codes); macOS hands over the
 // character with Shift already stripped, so both '=' and '+' are listed.
 // Only the character domain is shared here: which keycode means which
@@ -20,10 +20,15 @@
 
 namespace ui {
 
-// The one table that decides (matches gui.cpp). Returns false for anything
-// that is not a panel key, leaving out untouched.
-inline bool button_for_char(char c, mu2000::button &out)
+// The one table that decides (matches gui.cpp). Takes the key code as an int
+// and ignores anything outside ASCII: narrowing a 16-bit unichar to char
+// first would let accented characters alias panel keys (U+0161 shares its
+// low byte with 'a' = PLAY). Returns false for anything that is not a panel
+// key, leaving out untouched.
+inline bool button_for_char(int c, mu2000::button &out)
 {
+	if (c < 0 || c > 0x7f)
+		return false;
 	switch (c) {
 	case 'a': out = mu2000::button::play;         return true;
 	case 'e': out = mu2000::button::edit;         return true;

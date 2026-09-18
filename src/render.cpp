@@ -198,9 +198,6 @@ int main(int argc, char **argv)
 	// たくさんの音が重なる。render は既定でサンプル単位に散らすため、
 	// その並びでしか出ない不具合が再現できない
 	int midi_block = 0;
-	// 写し取りをファイルに残す・読む（voicecache.h）。経路の印が付いているので
-	// 別の曲の写しが混ざっても安全。--no-voicecache で切る
-	bool voicecache = false;
 	for (int i = 4; i < argc; i++) {
 		if (!std::strcmp(argv[i], "--trace-swp") && i + 1 < argc)
 			swptrace = argv[++i];
@@ -242,10 +239,6 @@ int main(int argc, char **argv)
 			native_off = std::atof(argv[++i]);
 		else if (!std::strcmp(argv[i], "--midi-block") && i + 1 < argc)
 			midi_block = std::atoi(argv[++i]);
-		else if (!std::strcmp(argv[i], "--voicecache"))
-			voicecache = true;
-		else if (!std::strcmp(argv[i], "--no-voicecache"))
-			voicecache = false;
 		else if (!std::strcmp(argv[i], "--bootcache"))
 			use_bootcache = true;
 		else if (!std::strcmp(argv[i], "--state-at") && i + 2 < argc) {
@@ -503,7 +496,7 @@ int main(int argc, char **argv)
 		if (eng_opts.native_engine && i == boot_samples) {
 			mu.set_native_engine(eng_opts.native_engine);
 			// 前に写し取ったものがあれば読む（1 音目から native で鳴らせる）
-			if (voicecache &&
+			if (eng_opts.voicecache &&
 			    smu2000::voicecache::load(mu, smu2000::voicecache::key(mu)))
 				std::printf("写し取り: %d 音色を前の写しから\n", int(mu.native_cal_count()));
 		}
@@ -635,7 +628,7 @@ int main(int argc, char **argv)
 	}
 
 	write_wav(wav, pcm, rate);
-	if (eng_opts.native_engine && voicecache)
+	if (eng_opts.native_engine && eng_opts.voicecache)
 		smu2000::voicecache::save(mu, smu2000::voicecache::key(mu));
 	if (eng_opts.native_engine) {
 		std::printf("native の口: 演奏中に firmware を回したのは %.1f%%\n",
