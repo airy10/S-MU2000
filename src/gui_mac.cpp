@@ -862,9 +862,7 @@ int main(int argc, char **argv)
 	int moutb_dev = -2;
 	int moutmu_dev = -2;               // the machine's own MIDI OUT
 	int latency = 30;
-	bool exclusive = false;
-	const char *audio_dev = nullptr;   // part of a device name; null = the remembered one
-	bool factory = false;
+	ui::output_options out_opts;
 	int win_w = 1400, win_h = 360;
 	bool size_given = false;
 	bool grid = false;
@@ -919,9 +917,7 @@ int main(int argc, char **argv)
 			nomidi = true;
 		}
 		else if (!std::strcmp(argv[i], "--latency") && i + 1 < argc) latency = std::atoi(argv[++i]);
-		else if (!std::strcmp(argv[i], "--exclusive")) exclusive = true;
-		else if (!std::strcmp(argv[i], "--audio") && i + 1 < argc) audio_dev = argv[++i];
-		else if (!std::strcmp(argv[i], "--factory")) factory = true;
+		else if (ui::consume_output_option(argv, argc, i, out_opts)) {}
 		else if (ui::consume_window_option(argv[i], win_opts)) {}
 		else if (!std::strcmp(argv[i], "--shot") && i + 1 < argc) shot_path = argv[++i];
 		else if (!std::strcmp(argv[i], "--boot")) boot_for_shot = true;
@@ -1062,8 +1058,8 @@ int main(int argc, char **argv)
 
 	// Only the window uses the remembered settings: --shot has to give the same
 	// picture every time
-	eng.use_nvram = !factory;
-	if (factory)
+	eng.use_nvram = !out_opts.factory;
+	if (out_opts.factory)
 		std::printf("工場出荷状態で起動する（覚えていた設定は終わるときに上書きされる）\n");
 
 	// **USB by default**, the way the machine is set up when it is connected to a
@@ -1093,7 +1089,7 @@ int main(int argc, char **argv)
 			std::printf("音の出口: アナログ（直流を切る）\n");
 		gui.set_fold34(want.fold34);
 		// --audio wins; otherwise the port that was opened last time
-		gui.audio_name = audio_dev ? std::string(audio_dev) : want.audio;
+		gui.audio_name = out_opts.audio_dev ? std::string(out_opts.audio_dev) : want.audio;
 		// A/D INPUT is remembered by name too. It is opened in the boot thread,
 		// once the machine is up
 		gui.ain_name = want.audio_in;
@@ -1159,7 +1155,7 @@ int main(int argc, char **argv)
 		eng.publish();
 
 		std::string err;
-		if (!out.start(latency, [](s16 *o, u32 n) { eng.fill(o, n); }, err, exclusive,
+		if (!out.start(latency, [](s16 *o, u32 n) { eng.fill(o, n); }, err, out_opts.exclusive,
 		               gui.audio_name)) {
 			std::fprintf(stderr, "音声: %s\n", err.c_str());
 			eng.message = "音声デバイスを開けない";
@@ -1187,7 +1183,7 @@ int main(int argc, char **argv)
 				            dev < 0 ? "デバイスが見つからない" : aerr.c_str());
 		}
 		// Hog mode is a request, not a guarantee: something else may hold it
-		if (exclusive)
+		if (out_opts.exclusive)
 			std::printf("独り占め: %s\n", out.exclusive() ? "取れた" : "取れなかった");
 		gui.save_settings();
 		// With --play, start streaming as soon as it begins to sound

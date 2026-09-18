@@ -981,9 +981,7 @@ int main(int argc, char **argv)
 	int mout_dev = -2;
 	int moutmu_dev = -2;               // MIDI OUT（本体）
 	int latency = 20;        // 溜める目標
-	bool exclusive = false;
-	const char *audio_dev = nullptr;
-	bool factory = false;
+	ui::output_options out_opts;
 	ui::window_options win_opts;
 	int win_w = 1000, win_h = 400;   // パネルの論理寸法（1000 × 400）と同じ比
 	bool size_given = false;
@@ -1029,9 +1027,7 @@ int main(int argc, char **argv)
 			g_win.keep_settings = true;
 		}
 		else if (!std::strcmp(argv[i], "--latency") && i + 1 < argc) latency = std::atoi(argv[++i]);
-		else if (!std::strcmp(argv[i], "--exclusive")) exclusive = true;
-		else if (!std::strcmp(argv[i], "--audio") && i + 1 < argc) audio_dev = argv[++i];
-		else if (!std::strcmp(argv[i], "--factory")) factory = true;
+		else if (ui::consume_output_option(argv, argc, i, out_opts)) {}
 		else if (ui::consume_window_option(argv[i], win_opts)) {}
 		else if (ui::consume_engine_option(argv[i], eng_opts)) {}
 		else if (!std::strcmp(argv[i], "--usb")) usb_host = true;
@@ -1209,8 +1205,8 @@ int main(int argc, char **argv)
 		g_win.panel.set_top_inset(ui::toolbar::HEIGHT);
 	}
 	// 窓を出すときだけ、覚えている設定で起動する（--shot は毎回同じ絵にしたい）
-	eng.use_nvram = !factory;
-	if (factory)
+	eng.use_nvram = !out_opts.factory;
+	if (out_opts.factory)
 		std::printf("工場出荷状態で起動する（覚えていた設定は終わるときに上書きされる）\n");
 	g_win.layout_path = layout_path;
 	for (int p = 0; p < mu2000::MIDI_PORTS; p++)
@@ -1281,7 +1277,7 @@ int main(int argc, char **argv)
 		if (!want_card.empty())
 			insert_card(want_card, true);
 		// --audio があればそちらが勝つ。無ければ前に選んだもの
-		g_win.audio_name = audio_dev ? std::string(audio_dev) : want_audio;
+		g_win.audio_name = out_opts.audio_dev ? std::string(out_opts.audio_dev) : want_audio;
 		for (int p = 0; p < mu2000::MIDI_PORTS; p++)
 			if (in_dev[p] == -2)
 				in_dev[p] = find_device(ui::midi_in::list(), want_in[p]);
@@ -1321,7 +1317,7 @@ int main(int argc, char **argv)
 
 		std::string err;
 
-		if (!out.start(latency, [](s16 *o, u32 n) { eng.fill(o, n); }, err, exclusive,
+		if (!out.start(latency, [](s16 *o, u32 n) { eng.fill(o, n); }, err, out_opts.exclusive,
 		               g_win.audio_name)) {
 			std::fprintf(stderr, "音声: %s\n", err.c_str());
 			eng.message = "音声デバイスを開けない";
