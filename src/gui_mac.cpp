@@ -1149,7 +1149,8 @@ int main(int argc, char **argv)
 		// After boot, as in gui.cpp: starting needs the firmware
 		if (eng_opts.native_engine) {
 			eng.mu.set_native_engine(eng_opts.native_engine);
-			smu2000::voicecache::load(eng.mu, smu2000::voicecache::key(eng.mu));
+			if (std::getenv("SMU2000_VOICECACHE"))
+				smu2000::voicecache::load(eng.mu, smu2000::voicecache::key(eng.mu));
 		}
 		eng.state.store(1);
 		eng.publish();
