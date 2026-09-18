@@ -497,6 +497,8 @@ int main(int argc, char **argv)
 		std::fprintf(stderr, "警告: %s\n", mu.error().c_str());
 
 	mu.set_threaded(!single);
+	if (std::getenv("SMU2000_VOICECACHE"))
+		eng_opts.voicecache = 1;
 	ui::apply_engine_options(mu, eng_opts);
 	if (out_opts.factory)
 		std::printf("工場出荷状態で起動する（覚えていた設定は終わるときに上書きされる）\n");
@@ -522,7 +524,7 @@ int main(int argc, char **argv)
 	// 起動が終わってから入れる（起動には firmware が要る）
 	if (eng_opts.native_engine) {
 		mu.set_native_engine(eng_opts.native_engine);
-		if (std::getenv("SMU2000_VOICECACHE") &&
+		if (eng_opts.voicecache &&
 		    smu2000::voicecache::load(mu, smu2000::voicecache::key(mu)))
 			std::printf("写し取り: %d 音色を前の写しから\n", int(mu.native_cal_count()));
 		std::printf("native の口: SH-2 は要るときだけ回す\n");

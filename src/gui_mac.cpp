@@ -142,7 +142,7 @@ port_names load_settings()
 // already stripped, so both '=' and '+' have to be listed.
 bool key_to_button(int code, mu2000::button &out)
 {
-	return ui::button_for_char(char(code), out);
+	return ui::button_for_char(code, out);
 }
 
 // ---- Things handed to the window
@@ -280,6 +280,10 @@ public:
 			open_editor_window(list);
 			return;
 		}
+		if (down && eng && code == ui::MAC_KEY_FUNCTION_BASE + 0x76) {   // F4
+			eng->want_native_engine.store(eng->native_engine.load() ? 0 : 1);
+			return;
+		}
 		mu2000::button b = mu2000::button::count;
 		if (key_to_button(code, b))
 			br.press(b, down);
@@ -319,6 +323,7 @@ public:
 		s.fold34 = play.fold_extra_ports();
 		s.ready = ready();
 		s.native_fx = eng && eng->native_fx.load();
+		s.native_engine = eng && eng->native_engine.load();
 		return s;
 	}
 
@@ -365,6 +370,8 @@ public:
 		else if (id == ID_OVERVIEW)                                   open_editor_window(list);
 		else if (id == ID_NATIVE_FX && eng)
 			eng->want_native_fx.store(eng->native_fx.load() ? 0 : 2);
+		else if (id == ID_NATIVE_ENGINE && eng)
+			eng->want_native_engine.store(eng->native_engine.load() ? 0 : 1);
 		else if (id == ID_FACTORY)                                    factory_reset();
 		else if ((id == ID_OUTPUT_DIGITAL || id == ID_OUTPUT_ANALOG) && eng) {
 			eng->analog.store(id == ID_OUTPUT_ANALOG);
@@ -989,6 +996,8 @@ int main(int argc, char **argv)
 	}
 
 	static ui::engine eng(br, midi_ports[0]);
+	if (std::getenv("SMU2000_VOICECACHE"))
+		eng_opts.voicecache = 1;
 	ui::apply_engine_options(eng.mu, eng_opts);
 	eng.native_fx.store(eng_opts.native_fx);
 	for (int p = 1; p < mu2000::MIDI_PORTS; p++)
@@ -1002,6 +1011,17 @@ int main(int argc, char **argv)
 	}
 	// the overview reads voice names and instrument icons from the user's ROM (xg/voices.h)
 	ui::xgui::set_voice_rom(eng.mu.program_rom());
+
+	// **USB by default**, the way the machine is set up when it is connected to a
+	// computer. The firmware passes ports C and D only when HOST SELECT is USB,
+	// and then A and B arrive over USB as well. --host-midi gives the DIN ports A
+	// and B only.
+	//
+	// Decided before any boot: reset() keys the host-present message on this,
+	// and the --shot boot below returns early. Same move as gui.cpp.
+	eng.mu.set_usb_host(usb_host);
+	std::printf(usb_host ? "MIDI は USB の口（A-D の 64 パート）\n"
+	                     : "--host-midi: DIN の口 A・B だけ（パート 1-32）\n");
 
 	// Picture only, but taken after boot so the LCD has something on it
 	if (!shot_path.empty()) {
@@ -1061,14 +1081,6 @@ int main(int argc, char **argv)
 	eng.use_nvram = !out_opts.factory;
 	if (out_opts.factory)
 		std::printf("工場出荷状態で起動する（覚えていた設定は終わるときに上書きされる）\n");
-
-	// **USB by default**, the way the machine is set up when it is connected to a
-	// computer. The firmware passes ports C and D only when HOST SELECT is USB,
-	// and then A and B arrive over USB as well. --host-midi gives the DIN ports A
-	// and B only. Before the boot, because the boot snapshot is keyed on it
-	eng.mu.set_usb_host(usb_host);
-	std::printf(usb_host ? "MIDI は USB の口（A-D の 64 パート）\n"
-	                     : "--host-midi: DIN の口 A・B だけ（パート 1-32）\n");
 
 	// Look up the previously chosen ports by name. --midi / --midiout win.
 	//
@@ -1149,7 +1161,7 @@ int main(int argc, char **argv)
 		// After boot, as in gui.cpp: starting needs the firmware
 		if (eng_opts.native_engine) {
 			eng.mu.set_native_engine(eng_opts.native_engine);
-			if (std::getenv("SMU2000_VOICECACHE"))
+			if (eng_opts.voicecache)
 				smu2000::voicecache::load(eng.mu, smu2000::voicecache::key(eng.mu));
 		}
 		eng.state.store(1);

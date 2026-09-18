@@ -287,7 +287,7 @@ namespace smu2000 { namespace vst3 { class mac_window; } }
 	if ([chars length] < 1)
 		return -1;
 	mu2000::button b = mu2000::button::count;
-	if (!ui::button_for_char((char)[chars characterAtIndex:0], b))
+	if (!ui::button_for_char((int)[chars characterAtIndex:0], b))
 		return -1;
 	return int(b);
 }
