@@ -41,6 +41,7 @@
 #include "ui/menu.h"
 #include "ui/menu_win.h"
 #include "ui/keymap.h"
+#include "ui/options.h"
 #include "ui/settings.h"
 #include "ui/part_shapes.h"
 #include "ui/pc_editor.h"
@@ -959,8 +960,7 @@ int main(int argc, char **argv)
 	int win_w = 1000, win_h = 400;   // パネルの論理寸法（1000 × 400）と同じ比
 	bool size_given = false;
 	bool lcd_only = false;
-	bool fast_midi = false;
-	int native_fx = 0;      // --native-fx / --native-fx-full（doc/native-dsp.md）
+	ui::engine_options eng_opts;
 	// --native-engine: firmware を走らせない口（doc/native-engine.md）
 	int native_engine = 0;
 	bool grid = false;
@@ -1013,10 +1013,8 @@ int main(int argc, char **argv)
 		else if (!std::strcmp(argv[i], "--shapes-window")) open_shapes = true;
 		else if (!std::strcmp(argv[i], "--master-window")) open_master = true;
 		else if (!std::strcmp(argv[i], "--lcd")) lcd_only = true;
-		else if (!std::strcmp(argv[i], "--fast-midi")) fast_midi = true;
+		else if (ui::consume_engine_option(argv[i], eng_opts)) {}
 		else if (!std::strcmp(argv[i], "--native-engine")) native_engine = 1;
-		else if (!std::strcmp(argv[i], "--native-fx")) native_fx = 1;
-		else if (!std::strcmp(argv[i], "--native-fx-full")) native_fx = 2;
 		else if (!std::strcmp(argv[i], "--usb")) usb_host = true;
 		else if (!std::strcmp(argv[i], "--host-midi")) usb_host = false;
 		else if (!std::strcmp(argv[i], "--shot") && i + 1 < argc) shot_path = argv[++i];
@@ -1089,11 +1087,8 @@ int main(int argc, char **argv)
 	}
 
 	static engine eng(br, midi_ports[0]);
-	eng.mu.set_fast_midi(fast_midi);
-	if (native_fx) {
-		eng.mu.set_native_fx(native_fx);
-		eng.native_fx.store(native_fx);
-	}
+	ui::apply_engine_options(eng.mu, eng_opts);
+	eng.native_fx.store(eng_opts.native_fx);
 	for (int p = 1; p < mu2000::MIDI_PORTS; p++)
 		eng.midi_p[p] = &midi_ports[p];
 	eng.mout_b = &mout_b;

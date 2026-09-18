@@ -16,6 +16,7 @@
 #include "voicecache.h"
 #include "bootcache.h"
 #include "smf.h"
+#include "ui/options.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -162,10 +163,9 @@ int main(int argc, char **argv)
 	double seconds = 0.0;
 	bool duration_given = false;
 	bool trace_midi = false;
-	bool fast_midi = false;
+	ui::engine_options eng_opts;
 	bool usb_host  = false;
 	bool use_bootcache = false;   // --bootcache。起動後の写しから始める（確かめ用）
-	int native_fx = 0;            // --native-fx / --native-fx-full（doc/native-dsp.md）
 	const char *state_at = nullptr; size_t state_sample = 0;   // --state-at（確かめ用）
 	const char *forced_reset = nullptr;
 	const char *swptrace = nullptr;
@@ -220,12 +220,9 @@ int main(int argc, char **argv)
 			card_path = argv[++i];
 		else if (!std::strcmp(argv[i], "--trace-midi"))
 			trace_midi = true;
-		else if (!std::strcmp(argv[i], "--fast-midi"))
-			fast_midi = true;
+		else if (ui::consume_engine_option(argv[i], eng_opts)) {}
 		else if (!std::strcmp(argv[i], "--usb"))
 			usb_host = true;
-		else if (!std::strcmp(argv[i], "--native-fx"))
-			native_fx = 1;
 		else if (!std::strcmp(argv[i], "--native-engine"))
 			native_engine = 1;
 		else if (!std::strcmp(argv[i], "--native-off") && i + 1 < argc)
@@ -236,8 +233,6 @@ int main(int argc, char **argv)
 			voicecache = true;
 		else if (!std::strcmp(argv[i], "--no-voicecache"))
 			voicecache = false;
-		else if (!std::strcmp(argv[i], "--native-fx-full"))
-			native_fx = 2;
 		else if (!std::strcmp(argv[i], "--bootcache"))
 			use_bootcache = true;
 		else if (!std::strcmp(argv[i], "--state-at") && i + 2 < argc) {
@@ -343,10 +338,8 @@ int main(int argc, char **argv)
 	}
 
 	mu.set_threaded(!single);
-	mu.set_fast_midi(fast_midi);
+	ui::apply_engine_options(mu, eng_opts);
 	mu.set_usb_host(usb_host);
-	if (native_fx)
-		mu.set_native_fx(native_fx);
 	// 鍵は起動に使うワーク RAM も混ぜるので reset() の前に作る
 	const u64 boot_key = use_bootcache ? smu2000::bootcache::key(mu) : 0;
 	mu.reset();

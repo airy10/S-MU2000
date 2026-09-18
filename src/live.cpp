@@ -24,6 +24,7 @@
 #include "nvram.h"
 #include "ui/audio_out.h"
 #include "ui/midi_in.h"
+#include "ui/options.h"
 #include "compat/console.h"
 
 #include <atomic>
@@ -442,8 +443,7 @@ int main(int argc, char **argv)
 	bool raw = false;                 // エンジンの信号処理を飛ばす
 	double seconds = 0.0;   // 0 なら Ctrl+C まで
 	bool nomidi = false, use_waveout = false, single = false, factory = false;
-	bool fast_midi = false;
-	int native_fx = 0;      // --native-fx / --native-fx-full（doc/native-dsp.md）
+	ui::engine_options eng_opts;
 	// --native-engine: firmware を走らせない口（doc/native-engine.md）
 	int native_engine = 0;
 	const char *wav = nullptr;
@@ -472,10 +472,8 @@ int main(int argc, char **argv)
 		else if (!std::strcmp(argv[i], "--waveout")) use_waveout = true;
 		else if (!std::strcmp(argv[i], "--nomidi")) nomidi = true;
 		else if (!std::strcmp(argv[i], "--factory")) factory = true;
-		else if (!std::strcmp(argv[i], "--fast-midi")) fast_midi = true;
+		else if (ui::consume_engine_option(argv[i], eng_opts)) {}
 		else if (!std::strcmp(argv[i], "--native-engine")) native_engine = 1;
-		else if (!std::strcmp(argv[i], "--native-fx")) native_fx = 1;
-		else if (!std::strcmp(argv[i], "--native-fx-full")) native_fx = 2;
 		else if (!std::strcmp(argv[i], "--single"))
 			single = true;
 		else if (!std::strcmp(argv[i], "-v")) smu2000::g_verbose = true;
@@ -504,9 +502,7 @@ int main(int argc, char **argv)
 		std::fprintf(stderr, "警告: %s\n", mu.error().c_str());
 
 	mu.set_threaded(!single);
-	mu.set_fast_midi(fast_midi);
-	if (native_fx)
-		mu.set_native_fx(native_fx);
+	ui::apply_engine_options(mu, eng_opts);
 	if (factory)
 		std::printf("工場出荷状態で起動する（覚えていた設定は終わるときに上書きされる）\n");
 	else if (smu2000::nvram::load(mu))

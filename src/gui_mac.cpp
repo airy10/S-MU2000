@@ -51,6 +51,7 @@
 #include "ui/player.h"
 #include "ui/png.h"
 #include "ui/keymap.h"
+#include "ui/options.h"
 #include "ui/settings.h"
 #include "ui/window_mac.h"
 
@@ -859,7 +860,7 @@ int main(int argc, char **argv)
 	// Start as the machine does with HOST SELECT = USB, which is what makes ports
 	// C and D usable. --host-midi turns it off (the DIN ports A and B only)
 	bool usb_host = true;
-	bool fast_midi = false;            // skip the 31250bps serial pacing
+	ui::engine_options eng_opts;     // --fast-midi/--native-fx*, shared (ui/options.h)
 	int mout_dev = -2;
 	int moutb_dev = -2;
 	int moutmu_dev = -2;               // the machine's own MIDI OUT
@@ -910,7 +911,7 @@ int main(int argc, char **argv)
 		else if (!std::strcmp(argv[i], "--midiout") && i + 1 < argc) mout_dev = std::atoi(argv[++i]);
 		else if (!std::strcmp(argv[i], "--midiout-b") && i + 1 < argc) moutb_dev = std::atoi(argv[++i]);
 		else if (!std::strcmp(argv[i], "--midiout-mu") && i + 1 < argc) moutmu_dev = std::atoi(argv[++i]);
-		else if (!std::strcmp(argv[i], "--fast-midi")) fast_midi = true;
+		else if (ui::consume_engine_option(argv[i], eng_opts)) {}
 		else if (!std::strcmp(argv[i], "--nomidi")) {
 			// Nothing is opened and nothing is remembered: this is for tests,
 			// which must leave the real settings file the way they found it.
@@ -989,7 +990,8 @@ int main(int argc, char **argv)
 	}
 
 	static ui::engine eng(br, midi_ports[0]);
-	eng.mu.set_fast_midi(fast_midi);
+	ui::apply_engine_options(eng.mu, eng_opts);
+	eng.native_fx.store(eng_opts.native_fx);
 	for (int p = 1; p < mu2000::MIDI_PORTS; p++)
 		eng.midi_p[p] = &midi_ports[p];
 	eng.mout_b = &mout_b;
