@@ -135,29 +135,6 @@ port_names load_settings()
 	return n;
 }
 
-void save_settings(const port_names &n)
-{
-	const std::string path = settings_path();
-	if (path.empty())
-		return;
-	settings_map kv;
-	for (int p = 0; p < mu2000::MIDI_PORTS; p++)
-		kv.emplace_back(SET_IN_KEYS[p], n.in[p]);
-	kv.emplace_back(SET_OUT,    n.out);
-	kv.emplace_back(SET_OUT_B,  n.out_b);
-	kv.emplace_back(SET_OUT_MU, n.out_mu);
-	kv.emplace_back(SET_AUDIO_OUT,   n.audio);
-	kv.emplace_back(SET_AUDIO_IN,    n.audio_in);
-	kv.emplace_back(SET_CARD,     n.card);
-	kv.emplace_back(SET_PORTS34,     n.fold34 ? "fold" : "drop");
-	kv.emplace_back(SET_OUTPUT,      n.analog ? "analog" : "digital");
-	// The panel's VOLUME knob. On the real machine it is the analogue one behind
-	// the DAC, so the firmware's RAM does not hold it and it is kept here
-	char vol[32];
-	std::snprintf(vol, sizeof(vol), "%.3f", n.volume);
-	kv.emplace_back(SET_VOLUME, vol);
-	write_settings_file(path, kv);
-}
 
 // ---- Keyboard. The table is shared (ui/keymap.h, same as gui.cpp).
 // Letters arrive in lower case. macOS hands over the character with Shift
@@ -380,7 +357,7 @@ public:
 			eng->analog.store(id == ID_OUTPUT_ANALOG);
 			std::printf("音の出口: %s\n", id == ID_OUTPUT_ANALOG ? "アナログ（直流を切る）" : "デジタル");
 			std::fflush(stdout);
-			remember();
+			save_settings();
 		}
 		else if (id == ID_PLAY_FILE) {
 			const std::string path = ui::open_midi_file_panel();
@@ -485,7 +462,7 @@ public:
 
 	// Open what the menu picked. On failure it falls back to "unused".
 	// keep is true only while starting up: the name that was asked for is then
-	// kept even if the port is not there yet (see remember())
+	// kept even if the port is not there yet (see save_settings())
 	// port is 0-3 for MIDI IN A-D
 	void choose_in(int port, int dev, bool keep = false)
 	{
@@ -501,7 +478,7 @@ public:
 		}
 		in_dev[port]  = midi[port].is_open() ? dev : -1;
 		in_name[port] = midi[port].device_name();
-		remember();
+		save_settings();
 	}
 
 	void choose_out(int dev, bool keep = false)
@@ -516,7 +493,7 @@ public:
 		}
 		out_dev  = mout.is_open() ? dev : -1;
 		out_name = mout.device_name();
-		remember();
+		save_settings();
 	}
 
 	void choose_out_b(int dev, bool keep = false)
@@ -531,7 +508,7 @@ public:
 		}
 		out_dev_b  = mout_b.is_open() ? dev : -1;
 		out_name_b = mout_b.device_name();
-		remember();
+		save_settings();
 	}
 
 	// The machine's own MIDI OUT: what the firmware sends out by itself (a
@@ -549,7 +526,7 @@ public:
 		}
 		out_dev_mu  = mout_mu.is_open() ? dev : -1;
 		out_name_mu = mout_mu.device_name();
-		remember();
+		save_settings();
 	}
 
 	// ---- A/D INPUT (the recording device the machine samples)
@@ -568,7 +545,7 @@ public:
 			ain_dev = -1;
 			std::printf("A/D INPUT: なし\n");
 			std::fflush(stdout);
-			remember();
+			save_settings();
 			return;
 		}
 		const auto names = ui::audio_in::list();
@@ -589,7 +566,7 @@ public:
 		// menu shows which entry is ticked, and the entry is a name
 		ain_name = names[size_t(dev)];
 		ain_dev  = dev;
-		remember();
+		save_settings();
 	}
 
 	// ---- SmartMedia (the card slot)
@@ -625,7 +602,7 @@ public:
 		if (!card_path.empty())
 			std::printf("SmartMedia を抜いた: %s\n", card_path.c_str());
 		card_path.clear();
-		remember();
+		save_settings();
 	}
 
 	// Load it first, so a file that cannot be read does not take the slot away
@@ -648,7 +625,7 @@ public:
 		card_path = path;
 		std::printf("SmartMedia を差した: %s（%uMB）\n", path.c_str(), eng->mu.card().megabytes());
 		std::fflush(stdout);
-		remember();
+		save_settings();
 		return true;
 	}
 
@@ -726,33 +703,41 @@ public:
 	void set_fold34(bool on)
 	{
 		play.set_fold_extra_ports(on);
-		remember();
+		save_settings();
 	}
 
 	// Remembered by name rather than number (see the note on settings_path).
 	// A port that would not open keeps the name it was asked for, so a virtual
 	// port that is not up yet is not forgotten by the next start
-	void remember()
+	void save_settings()
 	{
 		// --nomidi must not write empty port names over the remembered ones
 		if (keep_settings)
 			return;
-		port_names n;
+		const std::string path = settings_path();
+		if (path.empty())
+			return;
+		settings_map kv;
 		for (int p = 0; p < mu2000::MIDI_PORTS; p++)
-			n.in[p] = in_name[p].empty() ? in_keep[p] : in_name[p];
-		n.out   = out_name.empty()    ? out_keep    : out_name;
-		n.out_b  = out_name_b.empty()  ? out_keep_b  : out_name_b;
-		n.out_mu = out_name_mu.empty() ? out_keep_mu : out_name_mu;
-		n.audio  = audio_name;
+			kv.emplace_back(SET_IN_KEYS[p],
+			                in_name[p].empty() ? in_keep[p] : in_name[p]);
+		kv.emplace_back(SET_OUT,    out_name.empty()    ? out_keep    : out_name);
+		kv.emplace_back(SET_OUT_B,  out_name_b.empty()  ? out_keep_b  : out_name_b);
+		kv.emplace_back(SET_OUT_MU, out_name_mu.empty() ? out_keep_mu : out_name_mu);
+		kv.emplace_back(SET_AUDIO_OUT,   audio_name);
 		// The recording device is kept by name even when it is not open, the
 		// same way the MIDI ports are: a device that is not there yet must not
 		// be forgotten. An empty name means "not used", which the menu sets
-		n.audio_in = ain_name.empty() ? ain_keep : ain_name;
-		n.card     = card_path;
-		n.volume   = br.gain();
-		n.fold34   = play.fold_extra_ports();
-		n.analog   = eng && eng->analog.load();
-		save_settings(n);
+		kv.emplace_back(SET_AUDIO_IN,    ain_name.empty() ? ain_keep : ain_name);
+		kv.emplace_back(SET_CARD,     card_path);
+		kv.emplace_back(SET_PORTS34,     play.fold_extra_ports() ? "fold" : "drop");
+		kv.emplace_back(SET_OUTPUT,      eng && eng->analog.load() ? "analog" : "digital");
+		// The panel's VOLUME knob. On the real machine it is the analogue one behind
+		// the DAC, so the firmware's RAM does not hold it and it is kept here
+		char vol[32];
+		std::snprintf(vol, sizeof(vol), "%.3f", br.gain());
+		kv.emplace_back(SET_VOLUME, vol);
+		write_settings_file(path, kv);
 	}
 
 	int in_dev[mu2000::MIDI_PORTS] = { -1, -1, -1, -1 };   // MIDI IN A-D; -1 is unused
@@ -1082,7 +1067,7 @@ int main(int argc, char **argv)
 	{
 		const port_names want = load_settings();
 		br.set_gain(want.volume);
-		// set before set_fold34, which writes the settings back through remember()
+		// set before set_fold34, which writes the settings back through save_settings()
 		eng.analog.store(want.analog);
 		if (want.analog)
 			std::printf("音の出口: アナログ（直流を切る）\n");
@@ -1179,7 +1164,7 @@ int main(int argc, char **argv)
 		// Hog mode is a request, not a guarantee: something else may hold it
 		if (exclusive)
 			std::printf("独り占め: %s\n", out.exclusive() ? "取れた" : "取れなかった");
-		gui.remember();
+		gui.save_settings();
 		// With --play, start streaming as soon as it begins to sound
 		if (!play_path.empty())
 			gui.play_song(play_path);
@@ -1222,7 +1207,7 @@ int main(int argc, char **argv)
 		boot_thread.join();
 	gui.join_reboot();
 	gui.flush_card();        // the sound has stopped; keep what was written to the card
-	gui.remember();          // the audio port, the A/D input and the VOLUME knob's position
+	gui.save_settings();          // the audio port, the A/D input and the VOLUME knob's position
 	// The sound has stopped by now. Keep the machine's settings only if it came up
 	if (eng.state.load() == 1 && !smu2000::nvram::save(eng.mu))
 		std::fprintf(stderr, "設定を残せなかった: %s\n", smu2000::nvram::path(eng.mu).c_str());
