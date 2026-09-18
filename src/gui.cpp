@@ -40,6 +40,7 @@
 #include "ui/master_editor.h"
 #include "ui/menu.h"
 #include "ui/menu_win.h"
+#include "ui/settings.h"
 #include "ui/part_shapes.h"
 #include "ui/pc_editor.h"
 #include "ui/pc_host.h"
@@ -162,9 +163,7 @@ std::string settings_path()
 	return dir + "\\gui.ini";
 }
 
-// gui.ini で MIDI 入力の口を表す鍵。並びは A B C D
-const char *const IN_KEYS[mu2000::MIDI_PORTS] = { "midi_in", "midi_in_b", "midi_in_c", "midi_in_d" };
-// Menu names live in ui/menu.h as ui::IN_LABELS (Windows is the reference).
+// gui.ini keys live in ui/settings.h as ui::SET_* (shared with gui_mac.cpp).
 
 void load_settings(std::string *in_name,
                    std::string &out_name, std::string &out_name_b,
@@ -176,33 +175,34 @@ void load_settings(std::string *in_name,
 	const std::string path = settings_path();
 	if (path.empty())
 		return;
-	FILE *f = std::fopen(path.c_str(), "rb");
-	if (!f)
+	settings_map kv;
+	if (!read_settings_file(path, kv))
 		return;
-	char line[512];
-	while (std::fgets(line, sizeof(line), f)) {
-		std::string t(line);
-		while (!t.empty() && (t.back() == '\n' || t.back() == '\r'))
-			t.pop_back();
-		const size_t eq = t.find('=');
-		if (eq == std::string::npos)
-			continue;
-		const std::string key = t.substr(0, eq), val = t.substr(eq + 1);
-		for (int p = 0; p < mu2000::MIDI_PORTS; p++)
-			if (key == IN_KEYS[p])
-				in_name[p] = val;
-		if (key == "midi_out")   out_name   = val;
-		if (key == "midi_out_b") out_name_b = val;
-		if (key == "midi_out_mu" && out_name_mu) *out_name_mu = val;
-		if (key == "audio_out")  audio_name = val;
-		if (key == "audio_in" && ain_name) *ain_name = val;
-		if (key == "smartmedia" && card_path) *card_path = val;
-		if (key == "ports34" && fold_ports34) *fold_ports34 = val != "drop";
-		if (key == "output" && analog) *analog = val == "analog";
-		if (key == "volume" && volume && !val.empty())
-			*volume = std::clamp(float(std::atof(val.c_str())), 0.0f, 1.0f);
+	for (int p = 0; p < mu2000::MIDI_PORTS; p++)
+		if (const std::string *v = find_setting(kv, SET_IN_KEYS[p]))
+			in_name[p] = *v;
+	if (const std::string *v = find_setting(kv, SET_OUT))   out_name   = *v;
+	if (const std::string *v = find_setting(kv, SET_OUT_B)) out_name_b = *v;
+	if (const std::string *v = find_setting(kv, SET_OUT_MU)) {
+		if (out_name_mu) *out_name_mu = *v;
 	}
-	std::fclose(f);
+	if (const std::string *v = find_setting(kv, SET_AUDIO_OUT))  audio_name = *v;
+	if (const std::string *v = find_setting(kv, SET_AUDIO_IN)) {
+		if (ain_name) *ain_name = *v;
+	}
+	if (const std::string *v = find_setting(kv, SET_CARD)) {
+		if (card_path) *card_path = *v;
+	}
+	if (const std::string *v = find_setting(kv, SET_PORTS34)) {
+		if (fold_ports34) *fold_ports34 = *v != "drop";
+	}
+	if (const std::string *v = find_setting(kv, SET_OUTPUT)) {
+		if (analog) *analog = *v == "analog";
+	}
+	if (const std::string *v = find_setting(kv, SET_VOLUME)) {
+		if (volume && !v->empty())
+			*volume = std::clamp(float(std::atof(v->c_str())), 0.0f, 1.0f);
+	}
 }
 
 void save_settings()
@@ -212,40 +212,30 @@ void save_settings()
 	const std::string path = settings_path();
 	if (path.empty())
 		return;
-	FILE *f = std::fopen(path.c_str(), "wb");
-	if (!f)
-		return;
 	auto pick = [](const std::string &now, const std::string &keep) {
 		return (now.empty() ? keep : now).c_str();
 	};
+	settings_map kv;
 	for (int p = 0; p < mu2000::MIDI_PORTS; p++)
-		std::fprintf(f, "%s=%s\n", IN_KEYS[p], pick(g_win.in_name[p], g_win.in_keep[p]));
-	std::fprintf(f, "midi_out=%s\n",   pick(g_win.out_name,    g_win.out_keep));
-	std::fprintf(f, "midi_out_b=%s\n", pick(g_win.out_name_b,  g_win.out_keep_b));
-	std::fprintf(f, "midi_out_mu=%s\n", pick(g_win.out_name_mu, g_win.out_keep_mu));
-	std::fprintf(f, "audio_out=%s\n", g_win.audio_name.c_str());
-	std::fprintf(f, "audio_in=%s\n", g_win.ain_name.c_str());
-	std::fprintf(f, "smartmedia=%s\n", g_win.card_path.c_str());
+		kv.emplace_back(SET_IN_KEYS[p], pick(g_win.in_name[p], g_win.in_keep[p]));
+	kv.emplace_back(SET_OUT,    pick(g_win.out_name,    g_win.out_keep));
+	kv.emplace_back(SET_OUT_B,  pick(g_win.out_name_b,  g_win.out_keep_b));
+	kv.emplace_back(SET_OUT_MU, pick(g_win.out_name_mu, g_win.out_keep_mu));
+	kv.emplace_back(SET_AUDIO_OUT, g_win.audio_name);
+	kv.emplace_back(SET_AUDIO_IN, g_win.ain_name);
+	kv.emplace_back(SET_CARD, g_win.card_path);
 	// パネルの VOLUME のつまみ。実機でも DAC の後ろのアナログのつまみで、
 	// firmware の RAM には入らないので、こちらで覚える
-	if (g_win.br)
-		std::fprintf(f, "volume=%.3f\n", g_win.br->gain());
-	std::fprintf(f, "ports34=%s\n", g_win.play_file.fold_extra_ports() ? "fold" : "drop");
+	if (g_win.br) {
+		char vol[32];
+		std::snprintf(vol, sizeof(vol), "%.3f", g_win.br->gain());
+		kv.emplace_back(SET_VOLUME, vol);
+	}
+	kv.emplace_back(SET_PORTS34, g_win.play_file.fold_extra_ports() ? "fold" : "drop");
 	// 音の出口。digital（S/PDIF と同じ）か analog（直流を切る。src/analog_out.h）
 	if (g_win.eng)
-		std::fprintf(f, "output=%s\n", g_win.eng->analog.load() ? "analog" : "digital");
-	std::fclose(f);
-}
-
-// 名前で探す。見つからなければ -1
-int find_device(const std::vector<std::string> &names, const std::string &want)
-{
-	if (want.empty())
-		return -1;
-	for (size_t i = 0; i < names.size(); i++)
-		if (names[i] == want)
-			return int(i);
-	return -1;
+		kv.emplace_back(SET_OUTPUT, g_win.eng->analog.load() ? "analog" : "digital");
+	write_settings_file(path, kv);
 }
 
 // ---- 口を選ぶ品書き
