@@ -16,6 +16,7 @@
 #import <Cocoa/Cocoa.h>
 
 #include "ui/fx_editor.h"
+#include "ui/keymap.h"
 #include "ui/master_editor.h"
 #include "ui/menu.h"
 #include "ui/overview.h"
@@ -37,48 +38,15 @@ namespace vst3 {
 
 const char *plug_window_type() { return kPlatformTypeNSView; }
 
-namespace {
-
-// plug_key_of()'s counterpart for this platform. A character where the key has
-// one, which is what the GUI front end maps too, so the same physical key is
-// the same panel button in both programs.
-int plug_key_of_char(int c)
-{
-	switch (c) {
-	case 'a': return PLUG_KEY_PLAY;
-	case 'e': return PLUG_KEY_EDIT;
-	case 'u': return PLUG_KEY_UTIL;
-	case 'f': return PLUG_KEY_EFFECT;
-	case 's': return PLUG_KEY_MUTE_SOLO;
-	case ']': return PLUG_KEY_PART_PLUS;
-	case '[': return PLUG_KEY_PART_MINUS;
-	case '=': case '+': return PLUG_KEY_VALUE_PLUS;
-	case '-': return PLUG_KEY_VALUE_MINUS;
-	case '\r': return PLUG_KEY_ENTER;
-	case 0x7f: case 0x08: return PLUG_KEY_EXIT;
-	case '.': return PLUG_KEY_SELECT_RIGHT;
-	case ',': return PLUG_KEY_SELECT_LEFT;
-	case 'q': return PLUG_KEY_SEQ;
-	case 'z': return PLUG_KEY_AUDITION;
-	case 'x': return PLUG_KEY_SELECT;
-	case 'm': return PLUG_KEY_SAMPLING_MODE;
-	default: break;
-	}
-	return PLUG_KEY_NONE;
-}
-
-} // namespace
 } // namespace vst3
 } // namespace smu2000
 
 // The panel's view is declared at global scope on purpose: clang accepts an
 // Objective-C class declared inside a namespace, but its ivars stop resolving
-// there, and every method of this one touches them. The two names the methods
-// need are pulled in by hand, since unqualified lookup from here cannot see
-// into the namespaces above
+// there, and every method of this one touches them. The name the methods need
+// is pulled in by hand, since unqualified lookup from here cannot see into
+// the namespaces above
 using smu2000::vst3::plug_view;
-using smu2000::vst3::plug_key_of_char;
-using smu2000::vst3::PLUG_KEY_NONE;
 
 // mac_window, defined below: the card menu's choices open its PC windows
 namespace smu2000 { namespace vst3 { class mac_window; } }
@@ -311,12 +279,17 @@ namespace smu2000 { namespace vst3 { class mac_window; } }
 
 // ---- keys
 
+// A mu2000::button value for the key, or -1. The table is shared
+// (ui/keymap.h, same as the GUI front end)
 - (int)plugKeyForEvent:(NSEvent *)event
 {
 	NSString *chars = [[event charactersIgnoringModifiers] lowercaseString];
 	if ([chars length] < 1)
-		return PLUG_KEY_NONE;
-	return plug_key_of_char((int)[chars characterAtIndex:0]);
+		return -1;
+	mu2000::button b = mu2000::button::count;
+	if (!ui::button_for_char((char)[chars characterAtIndex:0], b))
+		return -1;
+	return int(b);
 }
 
 - (void)keyDown:(NSEvent *)event
@@ -329,7 +302,7 @@ namespace smu2000 { namespace vst3 { class mac_window; } }
 	if ([event isARepeat])
 		return;
 	const int k = [self plugKeyForEvent:event];
-	if (k != PLUG_KEY_NONE)
+	if (k >= 0)
 		_owner->key(k, true);
 }
 
@@ -338,7 +311,7 @@ namespace smu2000 { namespace vst3 { class mac_window; } }
 	if (!_owner)
 		return;
 	const int k = [self plugKeyForEvent:event];
-	if (k != PLUG_KEY_NONE)
+	if (k >= 0)
 		_owner->key(k, false);
 }
 

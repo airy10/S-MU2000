@@ -14,6 +14,7 @@
 
 #include "ui/fx_editor.h"
 #include "ui/master_editor.h"
+#include "ui/keymap.h"
 #include "ui/menu.h"
 #include "ui/menu_win.h"
 #include "ui/part_shapes.h"
@@ -63,30 +64,15 @@ void register_class(WNDPROC proc)
 	done = true;
 }
 
-// ホストによってはキーがこちらに回ってくる。gui.exe と同じ割り当て
-int plug_key_of(WPARAM vk)
+// Hosts sometimes pass keys through. The table is shared (ui/keymap.h,
+// same as gui.exe); only VK codes become characters here.
+// Returns a mu2000::button value, or -1 for anything else.
+int button_key_of(WPARAM vk)
 {
-	switch (vk) {
-	case 'A': return PLUG_KEY_PLAY;
-	case 'E': return PLUG_KEY_EDIT;
-	case 'U': return PLUG_KEY_UTIL;
-	case 'F': return PLUG_KEY_EFFECT;
-	case 'S': return PLUG_KEY_MUTE_SOLO;
-	case VK_OEM_6: return PLUG_KEY_PART_PLUS;
-	case VK_OEM_4: return PLUG_KEY_PART_MINUS;
-	case VK_OEM_PLUS:  return PLUG_KEY_VALUE_PLUS;
-	case VK_OEM_MINUS: return PLUG_KEY_VALUE_MINUS;
-	case VK_BACK:   return PLUG_KEY_EXIT;
-	case VK_RETURN: return PLUG_KEY_ENTER;
-	case VK_OEM_PERIOD: return PLUG_KEY_SELECT_RIGHT;
-	case VK_OEM_COMMA:  return PLUG_KEY_SELECT_LEFT;
-	case 'Q': return PLUG_KEY_SEQ;
-	case 'Z': return PLUG_KEY_AUDITION;
-	case 'X': return PLUG_KEY_SELECT;
-	case 'M': return PLUG_KEY_SAMPLING_MODE;
-	default: break;
-	}
-	return PLUG_KEY_NONE;
+	mu2000::button b = mu2000::button::count;
+	if (!ui::button_for_char(ui::key_char_of_vk(int(vk)), b))
+		return -1;
+	return int(b);
 }
 
 } // namespace
@@ -323,15 +309,15 @@ LRESULT win_window::handle(HWND h, UINT msg, WPARAM wp, LPARAM lp)
 	case WM_KEYDOWN: {
 		if (lp & (1 << 30))              // 押しっぱなしの繰り返しは無視
 			return 0;
-		const int k = plug_key_of(wp);
-		if (k != PLUG_KEY_NONE)
+		const int k = button_key_of(wp);
+		if (k >= 0)
 			m_owner.key(k, true);
 		return 0;
 	}
 
 	case WM_KEYUP: {
-		const int k = plug_key_of(wp);
-		if (k != PLUG_KEY_NONE)
+		const int k = button_key_of(wp);
+		if (k >= 0)
 			m_owner.key(k, false);
 		return 0;
 	}

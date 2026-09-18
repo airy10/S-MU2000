@@ -50,6 +50,7 @@
 #include "ui/pc_window_mac.h"
 #include "ui/player.h"
 #include "ui/png.h"
+#include "ui/keymap.h"
 #include "ui/settings.h"
 #include "ui/window_mac.h"
 
@@ -157,34 +158,12 @@ void save_settings(const port_names &n)
 	write_settings_file(path, kv);
 }
 
-// ---- Keyboard. The layout matches MAME's mu2000 and gui.cpp
-//
+// ---- Keyboard. The table is shared (ui/keymap.h, same as gui.cpp).
 // Letters arrive in lower case. macOS hands over the character with Shift
 // already stripped, so both '=' and '+' have to be listed.
-
 bool key_to_button(int code, mu2000::button &out)
 {
-	switch (code) {
-	case 'a': out = mu2000::button::play;         return true;
-	case 'e': out = mu2000::button::edit;         return true;
-	case 'u': out = mu2000::button::util;         return true;
-	case 'f': out = mu2000::button::effect;       return true;
-	case 's': out = mu2000::button::mute_solo;    return true;
-	case ']': out = mu2000::button::part_plus;    return true;
-	case '[': out = mu2000::button::part_minus;   return true;
-	case '=': case '+': out = mu2000::button::value_plus;  return true;
-	case '-': out = mu2000::button::value_minus;  return true;
-	case '\r': out = mu2000::button::enter;       return true;
-	case 0x7f: case 0x08: out = mu2000::button::exit; return true;
-	case '.': out = mu2000::button::select_right; return true;
-	case ',': out = mu2000::button::select_left;  return true;
-	case 'q': out = mu2000::button::seq;          return true;
-	case 'z': out = mu2000::button::audition;     return true;
-	case 'x': out = mu2000::button::select;       return true;
-	case 'm': out = mu2000::button::sampling_mode; return true;
-	default: break;
-	}
-	return false;
+	return ui::button_for_char(char(code), out);
 }
 
 // ---- Things handed to the window
