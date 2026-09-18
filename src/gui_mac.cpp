@@ -50,6 +50,7 @@
 #include "ui/pc_window_mac.h"
 #include "ui/player.h"
 #include "ui/png.h"
+#include "ui/settings.h"
 #include "ui/window_mac.h"
 
 #include <algorithm>
@@ -87,8 +88,7 @@ std::string settings_path()
 	return dir.empty() ? std::string() : dir + "gui.ini";
 }
 
-// The gui.ini key for each MIDI IN port, A B C D. Same keys as gui.cpp's
-const char *const IN_KEYS[mu2000::MIDI_PORTS] = { "midi_in", "midi_in_b", "midi_in_c", "midi_in_d" };
+// gui.ini keys live in ui/settings.h as ui::SET_* (shared with gui.cpp).
 // Menu wording lives in ui/menu.h as ui::IN_LABELS.
 
 struct port_names {
@@ -112,33 +112,24 @@ port_names load_settings()
 	const std::string path = settings_path();
 	if (path.empty())
 		return n;
-	FILE *f = std::fopen(path.c_str(), "rb");
-	if (!f)
+	settings_map kv;
+	if (!read_settings_file(path, kv))
 		return n;
-	char line[512];
-	while (std::fgets(line, sizeof(line), f)) {
-		std::string t(line);
-		while (!t.empty() && (t.back() == '\n' || t.back() == '\r'))
-			t.pop_back();
-		const size_t eq = t.find('=');
-		if (eq == std::string::npos)
-			continue;
-		const std::string key = t.substr(0, eq), val = t.substr(eq + 1);
-		for (int p = 0; p < mu2000::MIDI_PORTS; p++)
-			if (key == IN_KEYS[p])
-				n.in[p] = val;
-		if (key == "midi_out")    n.out   = val;
-		if (key == "midi_out_b")  n.out_b = val;
-		if (key == "midi_out_mu") n.out_mu = val;
-		if (key == "audio_out")   n.audio = val;
-		if (key == "audio_in")    n.audio_in = val;
-		if (key == "smartmedia")  n.card  = val;
-		if (key == "ports34")     n.fold34 = val != "drop";
-		if (key == "output")      n.analog = val == "analog";
-		if (key == "volume" && !val.empty())
-			n.volume = std::clamp(float(std::atof(val.c_str())), 0.0f, 1.0f);
+	for (int p = 0; p < mu2000::MIDI_PORTS; p++)
+		if (const std::string *v = find_setting(kv, SET_IN_KEYS[p]))
+			n.in[p] = *v;
+	if (const std::string *v = find_setting(kv, SET_OUT))    n.out   = *v;
+	if (const std::string *v = find_setting(kv, SET_OUT_B))  n.out_b = *v;
+	if (const std::string *v = find_setting(kv, SET_OUT_MU)) n.out_mu = *v;
+	if (const std::string *v = find_setting(kv, SET_AUDIO_OUT))   n.audio = *v;
+	if (const std::string *v = find_setting(kv, SET_AUDIO_IN))    n.audio_in = *v;
+	if (const std::string *v = find_setting(kv, SET_CARD))  n.card  = *v;
+	if (const std::string *v = find_setting(kv, SET_PORTS34))     n.fold34 = *v != "drop";
+	if (const std::string *v = find_setting(kv, SET_OUTPUT))      n.analog = *v == "analog";
+	if (const std::string *v = find_setting(kv, SET_VOLUME)) {
+		if (!v->empty())
+			n.volume = std::clamp(float(std::atof(v->c_str())), 0.0f, 1.0f);
 	}
-	std::fclose(f);
 	return n;
 }
 
@@ -147,34 +138,23 @@ void save_settings(const port_names &n)
 	const std::string path = settings_path();
 	if (path.empty())
 		return;
-	FILE *f = std::fopen(path.c_str(), "wb");
-	if (!f)
-		return;
+	settings_map kv;
 	for (int p = 0; p < mu2000::MIDI_PORTS; p++)
-		std::fprintf(f, "%s=%s\n", IN_KEYS[p], n.in[p].c_str());
-	std::fprintf(f, "midi_out=%s\n",    n.out.c_str());
-	std::fprintf(f, "midi_out_b=%s\n",  n.out_b.c_str());
-	std::fprintf(f, "midi_out_mu=%s\n", n.out_mu.c_str());
-	std::fprintf(f, "audio_out=%s\n",   n.audio.c_str());
-	std::fprintf(f, "audio_in=%s\n",    n.audio_in.c_str());
-	std::fprintf(f, "smartmedia=%s\n",  n.card.c_str());
-	std::fprintf(f, "ports34=%s\n",     n.fold34 ? "fold" : "drop");
-	std::fprintf(f, "output=%s\n",      n.analog ? "analog" : "digital");
+		kv.emplace_back(SET_IN_KEYS[p], n.in[p]);
+	kv.emplace_back(SET_OUT,    n.out);
+	kv.emplace_back(SET_OUT_B,  n.out_b);
+	kv.emplace_back(SET_OUT_MU, n.out_mu);
+	kv.emplace_back(SET_AUDIO_OUT,   n.audio);
+	kv.emplace_back(SET_AUDIO_IN,    n.audio_in);
+	kv.emplace_back(SET_CARD,     n.card);
+	kv.emplace_back(SET_PORTS34,     n.fold34 ? "fold" : "drop");
+	kv.emplace_back(SET_OUTPUT,      n.analog ? "analog" : "digital");
 	// The panel's VOLUME knob. On the real machine it is the analogue one behind
 	// the DAC, so the firmware's RAM does not hold it and it is kept here
-	std::fprintf(f, "volume=%.3f\n", n.volume);
-	std::fclose(f);
-}
-
-// Look a port up by name. -1 when it is not there
-int find_device(const std::vector<std::string> &names, const std::string &want)
-{
-	if (want.empty())
-		return -1;
-	for (size_t i = 0; i < names.size(); i++)
-		if (names[i] == want)
-			return int(i);
-	return -1;
+	char vol[32];
+	std::snprintf(vol, sizeof(vol), "%.3f", n.volume);
+	kv.emplace_back(SET_VOLUME, vol);
+	write_settings_file(path, kv);
 }
 
 // ---- Keyboard. The layout matches MAME's mu2000 and gui.cpp
