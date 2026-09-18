@@ -119,6 +119,20 @@ struct menu_state {
 	bool analog = false;     // the PHONES output (digital otherwise)
 };
 
+// The plug-in card/panel menus (VST3/AU/CLAP share the VST3 view on both
+// platforms). Same sharing as the standalone menus above: the numbers match
+// what the Windows plug-in already used, so its choice dispatch is unchanged.
+enum : int {
+	ID_PLUG_CARD_NEW16 = 100, ID_PLUG_CARD_NEW32, ID_PLUG_CARD_NEW64, ID_PLUG_CARD_NEW128,
+	ID_PLUG_CARD_OPEN = 110, ID_PLUG_CARD_EJECT = 111,
+	ID_PLUG_LIST = 120, ID_PLUG_EDITOR = 121,
+};
+
+struct plug_menu_state {
+	std::string card_path;   // the SmartMedia image in the slot (empty is none)
+	bool card_ready = false; // the engine is up enough to swap images
+};
+
 namespace menu_detail {
 
 inline menu_item text(const char *label, int id, bool checked, bool enabled,
@@ -282,6 +296,44 @@ inline std::vector<menu_group> menu_ain_only(const std::vector<std::string> &nam
 	g.items.push_back(separator());
 	for (const menu_item &item : head.items)
 		g.items.push_back(item);
+	return { g };
+}
+
+// The plug-in card slot: a fresh SmartMedia image, the image in the slot,
+// then the PC editor windows
+inline std::vector<menu_group> menu_plug_card(const plug_menu_state &s)
+{
+	using namespace menu_detail;
+	std::vector<menu_group> groups;
+
+	menu_group fresh;
+	fresh.title = "新しい SmartMedia を作って差す";
+	fresh.items.push_back(text("16MB", ID_PLUG_CARD_NEW16, false, s.card_ready));
+	fresh.items.push_back(text("32MB", ID_PLUG_CARD_NEW32, false, s.card_ready));
+	fresh.items.push_back(text("64MB", ID_PLUG_CARD_NEW64, false, s.card_ready));
+	fresh.items.push_back(text("128MB", ID_PLUG_CARD_NEW128, false, s.card_ready));
+	groups.push_back(fresh);
+
+	menu_group g;
+	g.items.push_back(text("SmartMedia を差す...", ID_PLUG_CARD_OPEN, false, s.card_ready));
+	std::string eject = "SmartMedia を抜く";
+	if (!s.card_path.empty())
+		eject += "（" + basename(s.card_path) + "）";
+	g.items.push_back(text(eject.c_str(), ID_PLUG_CARD_EJECT, false, !s.card_path.empty()));
+	g.items.push_back(separator());
+	g.items.push_back(text("一覧を開く", ID_PLUG_LIST, false, true));
+	g.items.push_back(text("エディタを開く", ID_PLUG_EDITOR, false, true));
+	groups.push_back(g);
+	return groups;
+}
+
+// A plug-in right click that missed the card slot: the PC editor windows
+inline std::vector<menu_group> menu_plug_panel()
+{
+	using namespace menu_detail;
+	menu_group g;
+	g.items.push_back(text("一覧を開く", ID_PLUG_LIST, false, true));
+	g.items.push_back(text("エディタを開く", ID_PLUG_EDITOR, false, true));
 	return { g };
 }
 
