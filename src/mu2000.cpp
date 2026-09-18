@@ -299,9 +299,9 @@ void mu2000::slave_loop(u64 seen)
 #if defined(__APPLE__)
 	// Audio workgroup for this thread (macOS). Joins whatever the front end
 	// asked for and leaves it on the way out; EINVAL/EALREADY stay out, which
-	// is today's behavior. Gated by environment so it is measurable on and off
-	// in one binary. The wanted handle can change under us (a host re-graph),
-	// so it is re-checked every sample -- one relaxed load, off the hot path.
+	// is today's behavior. On by default (see below). The wanted handle can
+	// change under us (a host re-graph), so it is re-checked every sample --
+	// one relaxed load, off the hot path.
 	struct wg_join {
 		os_workgroup_t wg = nullptr;
 		os_workgroup_join_token_s token{};
@@ -322,7 +322,14 @@ void mu2000::slave_loop(u64 seen)
 		os_workgroup_t refused = nullptr;
 	};
 	wg_join wg;
-	const bool wg_on = std::getenv("SMU2000_AUDIO_WORKGROUP") != nullptr;
+	// On by default: a plug-in host cannot set environment variables, so an
+	// opt-in flag would leave the AUv3 path dead in practice. SMU2000_AUDIO_WORKGROUP=0
+	// opts out (measurable off in the same binary).
+	const bool wg_on = [] {
+		if (const char *e = std::getenv("SMU2000_AUDIO_WORKGROUP"))
+			return std::atoi(e) != 0;
+		return true;
+	}();
 #endif
 	for (;;) {
 #if defined(__APPLE__)
