@@ -444,8 +444,6 @@ int main(int argc, char **argv)
 	double seconds = 0.0;   // 0 なら Ctrl+C まで
 	bool nomidi = false, use_waveout = false, single = false, factory = false;
 	ui::engine_options eng_opts;
-	// --native-engine: firmware を走らせない口（doc/native-engine.md）
-	int native_engine = 0;
 	const char *wav = nullptr;
 	std::string dir;
 
@@ -473,7 +471,6 @@ int main(int argc, char **argv)
 		else if (!std::strcmp(argv[i], "--nomidi")) nomidi = true;
 		else if (!std::strcmp(argv[i], "--factory")) factory = true;
 		else if (ui::consume_engine_option(argv[i], eng_opts)) {}
-		else if (!std::strcmp(argv[i], "--native-engine")) native_engine = 1;
 		else if (!std::strcmp(argv[i], "--single"))
 			single = true;
 		else if (!std::strcmp(argv[i], "-v")) smu2000::g_verbose = true;
@@ -525,8 +522,8 @@ int main(int argc, char **argv)
 		std::printf(" %.2f 秒\n", double(i) / RATE);
 	}
 	// 起動が終わってから入れる（起動には firmware が要る）
-	if (native_engine) {
-		mu.set_native_engine(native_engine);
+	if (eng_opts.native_engine) {
+		mu.set_native_engine(eng_opts.native_engine);
 		if (std::getenv("SMU2000_VOICECACHE") &&
 		    smu2000::voicecache::load(mu, smu2000::voicecache::key(mu)))
 			std::printf("写し取り: %d 音色を前の写しから\n", int(mu.native_cal_count()));

@@ -18,11 +18,15 @@
 
 namespace ui {
 
-// Engine flags shared by all tools: fast MIDI serial pacing, and the
-// lightweight C++ effects (0 off, 1 added alongside the MEG, 2 replacing it).
+// Engine flags shared by all tools: fast MIDI serial pacing, the
+// lightweight C++ effects (0 off, 1 added alongside the MEG, 2 replacing
+// it), and the native ports (0 off, 1 on). The effects flags apply before
+// loading; the native ports only after boot, at a point each tool picks
+// itself, so only their parsing is shared.
 struct engine_options {
 	bool fast_midi = false;
 	int  native_fx = 0;
+	int  native_engine = 0;
 };
 
 // Takes a single argv entry. True when it was a shared engine flag.
@@ -31,6 +35,7 @@ inline bool consume_engine_option(const char *arg, engine_options &o)
 	if (!std::strcmp(arg, "--fast-midi")) { o.fast_midi = true; return true; }
 	if (!std::strcmp(arg, "--native-fx")) { o.native_fx = 1; return true; }
 	if (!std::strcmp(arg, "--native-fx-full")) { o.native_fx = 2; return true; }
+	if (!std::strcmp(arg, "--native-engine")) { o.native_engine = 1; return true; }
 	return false;
 }
 
