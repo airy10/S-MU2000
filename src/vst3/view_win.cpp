@@ -14,6 +14,8 @@
 
 #include "ui/fx_editor.h"
 #include "ui/master_editor.h"
+#include "ui/menu.h"
+#include "ui/menu_win.h"
 #include "ui/part_shapes.h"
 #include "ui/pc_editor.h"
 #include "ui/overview.h"
@@ -104,6 +106,7 @@ public:
 	void detach() override;
 	void set_size(int w, int h) override;
 	void card_menu(int x, int y) override;
+	void panel_menu(int x, int y) override;
 	void alert(const std::string &text) override;
 	void pc_frame(::xg::model &m, const ::ui::xg_snapshot &ram, ::ui::bridge &br) override;
 	void open_pc_window(int kind) override
@@ -178,19 +181,12 @@ LRESULT CALLBACK win_window::wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
 	return self->handle(h, msg, wp, lp);
 }
 
-// ---- SmartMedia（カードの差し込み口）。gui.exe の品書きと同じ
+// ---- SmartMedia (the card slot). Content is shared with the macOS plug-in
+// in ui/menu.h; the numbers below match it, so both sides choose the same way
 
 namespace {
 
-enum : UINT { ID_CARD_NEW16 = 100, ID_CARD_NEW32, ID_CARD_NEW64, ID_CARD_NEW128, ID_CARD_OPEN = 110, ID_CARD_EJECT = 111,
-              ID_PC_LIST = 120, ID_PC_EDITOR = 121 };
-
-void add_item(HMENU m, UINT flags, UINT_PTR id, const char *utf8)
-{
-	const std::wstring w = ui::to_wide(utf8);
-	AppendMenuW(m, flags, id, w.c_str());
-}
-
+// Card image sizes, state, and file dialogs stay here: they are Win32's business
 std::string ask_card_path(HWND h, bool create)
 {
 	wchar_t file[MAX_PATH] = {};
@@ -229,44 +225,40 @@ void win_window::card_menu(int x, int y)
 {
 	// A card menu needs somewhere to send the choice, and this window is it:
 	// WM_COMMAND comes back to handle() below with the same ids
-	const std::string path = m_owner.card_path();
-	HMENU m = CreatePopupMenu();
-	HMENU mnew = CreatePopupMenu();
-	add_item(mnew, MF_STRING, ID_CARD_NEW16, "16MB");
-	add_item(mnew, MF_STRING, ID_CARD_NEW32, "32MB");
-	add_item(mnew, MF_STRING, ID_CARD_NEW64, "64MB");
-	add_item(mnew, MF_STRING, ID_CARD_NEW128, "128MB");
-	const UINT ready = m_owner.card_ready() ? 0 : MF_GRAYED;
-	add_item(m, MF_POPUP | ready, UINT_PTR(mnew), "新しい SmartMedia を作って差す");
-	add_item(m, MF_STRING | ready, ID_CARD_OPEN, "SmartMedia を差す...");
-	std::string eject = "SmartMedia を抜く";
-	if (!path.empty())
-		eject += "（" + path.substr(path.find_last_of("\\/") + 1) + "）";
-	add_item(m, MF_STRING | (path.empty() ? MF_GRAYED : 0), ID_CARD_EJECT, eject.c_str());
-	AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
-	add_item(m, MF_STRING, ID_PC_LIST, "一覧を開く");
-	add_item(m, MF_STRING, ID_PC_EDITOR, "エディタを開く");
+	ui::plug_menu_state s;
+	s.card_path = m_owner.card_path();
+	s.card_ready = m_owner.card_ready();
+	HMENU m = ui::render_menu(ui::menu_plug_card(s));
 	POINT pt{ x, y };
 	ClientToScreen(m_hwnd, &pt);
-	TrackPopupMenu(m, TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RIGHTBUTTON, pt.x, pt.y, 0, m_hwnd, nullptr);
-	DestroyMenu(m);
+	ui::track_menu(m_hwnd, pt, m);
+}
+
+void win_window::panel_menu(int x, int y)
+{
+	// A right click that missed the card slot: the PC windows, as on macOS.
+	// The choice comes back through WM_COMMAND, so card_command() handles it
+	HMENU m = ui::render_menu(ui::menu_plug_panel());
+	POINT pt{ x, y };
+	ClientToScreen(m_hwnd, &pt);
+	ui::track_menu(m_hwnd, pt, m);
 }
 
 void win_window::card_command(UINT id)
 {
-	if (id >= ID_CARD_NEW16 && id <= ID_CARD_NEW128) {
+	if (id >= ui::ID_PLUG_CARD_NEW16 && id <= ui::ID_PLUG_CARD_NEW128) {
 		const std::string path = ask_card_path(m_hwnd, true);
 		if (!path.empty())
-			m_owner.card_make(path, 16 << (id - ID_CARD_NEW16));
-	} else if (id == ID_CARD_OPEN) {
+			m_owner.card_make(path, 16 << (id - ui::ID_PLUG_CARD_NEW16));
+	} else if (id == ui::ID_PLUG_CARD_OPEN) {
 		const std::string path = ask_card_path(m_hwnd, false);
 		if (!path.empty())
 			m_owner.card_insert_path(path);
-	} else if (id == ID_CARD_EJECT) {
+	} else if (id == ui::ID_PLUG_CARD_EJECT) {
 		m_owner.card_eject();
-	} else if (id == ID_PC_LIST) {
+	} else if (id == ui::ID_PLUG_LIST) {
 		open_pc(m_list);
-	} else if (id == ID_PC_EDITOR) {
+	} else if (id == ui::ID_PLUG_EDITOR) {
 		open_pc(m_editor);
 	}
 }

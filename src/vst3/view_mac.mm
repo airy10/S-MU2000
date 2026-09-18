@@ -17,6 +17,7 @@
 
 #include "ui/fx_editor.h"
 #include "ui/master_editor.h"
+#include "ui/menu.h"
 #include "ui/overview.h"
 #include "ui/part_shapes.h"
 #include "ui/pc_editor.h"
@@ -426,18 +427,20 @@ private:
 		return;
 	const int tag = (int)[sender tag];
 
-	if (tag == 1 || tag == 2 || tag == 4 || tag == 8) {          // 16 / 32 / 64 / 128 MB
+	if (tag >= ui::ID_PLUG_CARD_NEW16 && tag <= ui::ID_PLUG_CARD_NEW128) {
 		NSSavePanel *panel = [NSSavePanel savePanel];
 		[panel setTitle:@"新しい SmartMedia の保存先"];
 		[panel setNameFieldStringValue:@"smartmedia.img"];
 		[panel setAllowedFileTypes:@[ @"img" ]];
 		if ([panel runModal] != NSModalResponseOK)
 			return;
-		_owner->card_make(std::string([[[panel URL] path] UTF8String]), tag * 16);
+		// 16 / 32 / 64 / 128 MB, in the shared ID order
+		_owner->card_make(std::string([[[panel URL] path] UTF8String]),
+		                  16 << (tag - ui::ID_PLUG_CARD_NEW16));
 		return;
 	}
 
-	if (tag == 9) {                                              // 差す
+	if (tag == ui::ID_PLUG_CARD_OPEN) {                          // 差す
 		NSOpenPanel *panel = [NSOpenPanel openPanel];
 		[panel setTitle:@"差す SmartMedia"];
 		[panel setCanChooseFiles:YES];
@@ -449,11 +452,11 @@ private:
 		return;
 	}
 
-	if (tag == 10)                                               // 抜く
+	if (tag == ui::ID_PLUG_CARD_EJECT)                           // 抜く
 		_owner->card_eject();
-	else if (tag == 11 && _win)                                  // 一覧
+	else if (tag == ui::ID_PLUG_LIST && _win)                      // 一覧
 		_win->open_list();
-	else if (tag == 12 && _win)                                  // エディタ
+	else if (tag == ui::ID_PLUG_EDITOR && _win)                    // エディタ
 		_win->open_editor();
 }
 
@@ -471,6 +474,42 @@ void mac_window::alert(const std::string &text)
 	[a runModal];
 }
 
+// NSMenu rendering for the shared ui/menu.h content. A titled group becomes
+// a submenu; the standalone window (ui/window_mac.mm) renders them the same
+// way from the same structs
+NSMenu *plug_menu(const std::vector<ui::menu_group> &groups, SMUCardMenu *target)
+{
+	NSMenu *m = [[NSMenu alloc] init];
+	[m setAutoenablesItems:NO];
+	for (const ui::menu_group &g : groups) {
+		NSMenu *into = m;
+		if (!g.title.empty()) {
+			NSMenuItem *head = [[NSMenuItem alloc] init];
+			[head setTitle:[NSString stringWithUTF8String:g.title.c_str()]];
+			NSMenu *sub = [[NSMenu alloc] init];
+			[sub setAutoenablesItems:NO];
+			[head setSubmenu:sub];
+			[m addItem:head];
+			into = sub;
+		}
+		for (const ui::menu_item &item : g.items) {
+			if (item.separator) {
+				[into addItem:[NSMenuItem separatorItem]];
+				continue;
+			}
+			NSMenuItem *mi = [[NSMenuItem alloc] init];
+			[mi setTitle:[NSString stringWithUTF8String:item.label.c_str()]];
+			[mi setTag:item.id];
+			[mi setTarget:target];
+			[mi setAction:@selector(choose:)];
+			[mi setEnabled:item.enabled];
+			[mi setState:item.checked ? NSControlStateValueOn : NSControlStateValueOff];
+			[into addItem:mi];
+		}
+	}
+	return m;
+}
+
 // The card slot's menu, offered as a native popup. A card menu needs a target
 // to receive the choice, so one is made per call and released as the menu goes
 void mac_window::card_menu(int x, int y)
@@ -482,50 +521,8 @@ void mac_window::card_menu(int x, int y)
 	target->_owner = &m_owner;
 	target->_win = this;
 
-	NSMenu *m = [[NSMenu alloc] init];
-	[m setAutoenablesItems:NO];
-
-	NSMenuItem *item = [m addItemWithTitle:@"新しい SmartMedia を作って差す" action:nil keyEquivalent:@""];
-	NSMenu *sizes = [[NSMenu alloc] init];
-	const int mbs[4] = { 16, 32, 64, 128 };
-	const int tags[4] = { 1, 2, 4, 8 };
-	for (int i = 0; i < 4; i++) {
-		NSMenuItem *size = [[NSMenuItem alloc] initWithTitle:[NSString stringWithFormat:@"%dMB", mbs[i]]
-		                                              action:@selector(choose:)
-		                                       keyEquivalent:@""];
-		[size setTarget:target];
-		[size setTag:tags[i]];
-		[size setEnabled:m_owner.card_ready() ? YES : NO];
-		[sizes addItem:size];
-	}
-	[m setSubmenu:sizes forItem:item];
-
-	item = [m addItemWithTitle:@"SmartMedia を差す..." action:@selector(choose:) keyEquivalent:@""];
-	[item setTarget:target];
-	[item setTag:9];
-	[item setEnabled:m_owner.card_ready() ? YES : NO];
-
-	// The card in the slot, by file name, so it is clear which one is going out
-	const std::string path = m_owner.card_path();
-	NSString *eject_title = @"SmartMedia を抜く";
-	if (!path.empty()) {
-		const size_t slash = path.find_last_of("/");
-		NSString *name = [NSString stringWithUTF8String:path.substr(slash == std::string::npos ? 0 : slash + 1).c_str()];
-		eject_title = [NSString stringWithFormat:@"SmartMedia を抜く（%@）", name];
-	}
-	item = [m addItemWithTitle:eject_title action:@selector(choose:) keyEquivalent:@""];
-	[item setTarget:target];
-	[item setTag:10];
-	[item setEnabled:path.empty() ? NO : YES];
-
-	// The PC windows, where the Windows menu has them
-	[m addItem:[NSMenuItem separatorItem]];
-	item = [m addItemWithTitle:@"一覧を開く" action:@selector(choose:) keyEquivalent:@""];
-	[item setTarget:target];
-	[item setTag:11];
-	item = [m addItemWithTitle:@"エディタを開く" action:@selector(choose:) keyEquivalent:@""];
-	[item setTarget:target];
-	[item setTag:12];
+	ui::plug_menu_state s{ m_owner.card_path(), m_owner.card_ready() };
+	NSMenu *m = plug_menu(ui::menu_plug_card(s), target);
 
 	// In the view's own coordinates. The view is flipped, which is the space the
 	// panel's hit testing already worked in
@@ -541,15 +538,7 @@ void mac_window::panel_menu(int x, int y)
 	target->_owner = &m_owner;
 	target->_win = this;
 
-	NSMenu *m = [[NSMenu alloc] init];
-	[m setAutoenablesItems:NO];
-
-	NSMenuItem *item = [m addItemWithTitle:@"一覧を開く" action:@selector(choose:) keyEquivalent:@""];
-	[item setTarget:target];
-	[item setTag:11];
-	item = [m addItemWithTitle:@"エディタを開く" action:@selector(choose:) keyEquivalent:@""];
-	[item setTarget:target];
-	[item setTag:12];
+	NSMenu *m = plug_menu(ui::menu_plug_panel(), target);
 
 	[m popUpMenuPositioningItem:nil atLocation:NSMakePoint(x, y) inView:m_view];
 }

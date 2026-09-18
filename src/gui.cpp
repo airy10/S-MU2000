@@ -39,6 +39,7 @@
 #include "ui/overview.h"
 #include "ui/master_editor.h"
 #include "ui/menu.h"
+#include "ui/menu_win.h"
 #include "ui/part_shapes.h"
 #include "ui/toolbar.h"
 #include "ui/pc_editor.h"
@@ -258,50 +259,12 @@ int find_device(const std::vector<std::string> &names, const std::string &want)
 // cannot be missed on the other. Only rendering (below) and acting on the
 // choice (WM_COMMAND) stay here.
 
-// 品書きは **W 版**で作る。ソースは UTF-8 なので、A 版に渡すと
-// CP932 と思われて文字化けする
-void add_item(HMENU m, UINT flags, UINT_PTR id, const char *utf8)
-{
-	const std::wstring w = ui::to_wide(utf8);
-	AppendMenuW(m, flags, id, w.c_str());
-}
-
-// Shared menu content (ui/menu.h) rendered into HMENU. A titled group
-// becomes a submenu; an untitled one goes straight into its parent
-void append_menu_items(HMENU m, const std::vector<menu_item> &items)
-{
-	for (const menu_item &it : items) {
-		if (it.separator) {
-			AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
-			continue;
-		}
-		std::string label = it.label;
-		if (!it.shortcut.empty())
-			label += "\t" + it.shortcut;
-		add_item(m, MF_STRING | (it.checked ? MF_CHECKED : 0) | (it.enabled ? 0 : MF_GRAYED),
-		         UINT_PTR(it.id), label.c_str());
-	}
-}
-
-HMENU render_menu(const std::vector<menu_group> &groups)
-{
-	HMENU top = CreatePopupMenu();
-	for (const menu_group &g : groups) {
-		if (g.title.empty()) {
-			append_menu_items(top, g.items);
-			continue;
-		}
-		HMENU sub = CreatePopupMenu();
-		append_menu_items(sub, g.items);
-		add_item(top, MF_POPUP, UINT_PTR(sub), g.title.c_str());
-	}
-	return top;
-}
+// Popups render the shared ui/menu.h content through ui/menu_win.h.
+// Only gathering this window's state (below) stays here.
 
 // What the shared builders show, from this window's state
 menu_state menu_snapshot()
 {
-	static_assert(mu2000::MIDI_PORTS == 4, "shared menu IDs lay out 4 MIDI IN ports");
 	menu_state s;
 	s.midi_ins = ui::midi_in::list();
 	s.midi_outs = ui::midi_out::list();
@@ -319,13 +282,6 @@ menu_state menu_snapshot()
 	s.ready = g_win.eng && g_win.eng->state.load() == 1;
 	s.native_fx = g_win.eng && g_win.eng->native_fx.load();
 	return s;
-}
-
-void track_menu(HWND hwnd, POINT screen, HMENU top)
-{
-	TrackPopupMenu(top, TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RIGHTBUTTON,
-	               screen.x, screen.y, 0, hwnd, nullptr);
-	DestroyMenu(top);
 }
 
 void show_ain_menu(HWND hwnd, POINT screen)
