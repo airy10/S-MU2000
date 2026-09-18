@@ -857,6 +857,13 @@ std::string engine::card_path() const
 	return m_card_path;
 }
 
+void engine::set_realtime_workgroup(void *wg)
+{
+	std::lock_guard<std::mutex> lock(m_machine);
+	if (m_mu)
+		m_mu->set_realtime_workgroup(wg);
+}
+
 void engine::card_flush()
 {
 	const std::string path = card_path();

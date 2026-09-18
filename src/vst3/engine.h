@@ -193,6 +193,11 @@ public:
 	void card_flush();
 	std::string card_path() const;
 
+	// 機械の並列スレッドが入る audio workgroup (macOS)。渡すのは
+	// os_workgroup_t（ここでは void* のまま）。起動前は捨てるが、
+	// AUv3 の observer は描き出しごとに来るので、起動後の最初ので入る
+	void set_realtime_workgroup(void *wg);
+
 private:
 	// 機械に触る仕事を、m_machine を取ってその場でやる
 	bool on_machine(const std::function<void(mu2000 &)> &fn);

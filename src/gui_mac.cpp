@@ -1222,6 +1222,10 @@ int main(int argc, char **argv)
 		// empty MIDI name and the next start would come up with no ports
 		gui.audio_name = out.device_name();
 		std::printf("音声の出口: %s\n", out.device_name().c_str());
+		// The parallel slave thread joins the HAL unit's audio workgroup from
+		// here (Apple's parallel real-time threads pattern). Null keeps
+		// today's behavior; the slave itself is gated by environment.
+		eng.mu.set_realtime_workgroup(out.realtime_workgroup());
 		// A/D INPUT: open the recording device that was picked last time. A
 		// device that cannot be opened now keeps its name in the settings, the
 		// same as a MIDI port (gui.cpp does this here too)

@@ -5,6 +5,10 @@
 #include "mu2000.h"
 #include "lcdfont.h"
 
+#if defined(__APPLE__)
+#include <os/workgroup.h>      // slave_loop joins the audio workgroup (opt-in)
+#endif
+
 #if defined(__SSE2__) || defined(_M_X64) || defined(__x86_64__)
 #include <xmmintrin.h>
 #include <pmmintrin.h>
@@ -292,7 +296,39 @@ void mu2000::apply_threading()
 
 void mu2000::slave_loop(u64 seen)
 {
+#if defined(__APPLE__)
+	// Audio workgroup for this thread (macOS). Joins whatever the front end
+	// asked for and leaves it on the way out; EINVAL/EALREADY stay out, which
+	// is today's behavior. Gated by environment so it is measurable on and off
+	// in one binary. The wanted handle can change under us (a host re-graph),
+	// so it is re-checked every sample -- one relaxed load, off the hot path.
+	struct wg_join {
+		os_workgroup_t wg = nullptr;
+		os_workgroup_join_token_s token{};
+		~wg_join() { reset(nullptr); }
+		void reset(os_workgroup_t want)
+		{
+			if (want == wg || want == refused)
+				return;
+			if (wg) {
+				os_workgroup_leave(wg, &token);
+				wg = nullptr;
+			}
+			if (want && os_workgroup_join(want, &token) == 0)
+				wg = want;
+			else
+				refused = want;
+		}
+		os_workgroup_t refused = nullptr;
+	};
+	wg_join wg;
+	const bool wg_on = std::getenv("SMU2000_AUDIO_WORKGROUP") != nullptr;
+#endif
 	for (;;) {
+#if defined(__APPLE__)
+		if (wg_on)
+			wg.reset((os_workgroup_t)m_rt_wg_want.load(std::memory_order_acquire));
+#endif
 		// 合図を待つ。1 サンプルの中の待ちは 1 マイクロ秒に満たないので、
 		// まず回して待つ。眠っていては 44100 回/秒には間に合わない。
 		//
