@@ -219,6 +219,8 @@ public:
 
 	bool mouse_down(int x, int y, bool right) override
 	{
+		if (lcd_only)
+			return false;
 		// A secondary click opens the port picker wherever it lands; on the
 		// card slot it opens the file menu instead. Same as gui.cpp does on
 		// WM_RBUTTONUP
@@ -239,6 +241,8 @@ public:
 
 	void mouse_drag(int x, int y) override
 	{
+		if (lcd_only)
+			return;
 		if (m_pressed)
 			panel.drag(x, y, br);
 	}
@@ -253,12 +257,16 @@ public:
 
 	void wheel(int x, int y, int steps) override
 	{
+		if (lcd_only)
+			return;
 		if (steps)
 			panel.wheel_at(x, y, steps, br);
 	}
 
 	void key(int code, bool down) override
 	{
+		if (lcd_only && down)
+			return;
 		if (code == ui::MAC_KEY_FUNCTION_BASE + 0x60) {      // F5
 			if (down)
 				reload_layout();
@@ -285,6 +293,8 @@ public:
 
 	bool hand_cursor(int x, int y) override
 	{
+		if (lcd_only)
+			return false;
 		return panel.on_midi_jack(x, y) || panel.on_ad_input(x, y) ||
 		       panel.on_card_slot(x, y) || panel.on_phones(x, y);
 	}
@@ -314,6 +324,8 @@ public:
 
 	std::vector<ui::menu_group> context_menu(int x, int y) override
 	{
+		if (lcd_only)
+			return {};
 		if (panel.on_card_slot(x, y))
 			return ui::menu_card(menu_snapshot());
 		// The PHONES jack is about the output, as in gui.cpp
@@ -762,6 +774,7 @@ public:
 	ui::audio_in  *ain = nullptr;      // set once the recording device is picked
 	ui::engine    *eng = nullptr;      // set once the ROMs are loaded
 	std::atomic<int> *state = nullptr; // the engine's, so menu items can be greyed
+	bool lcd_only = false;             // --lcd: the LCD on its own, as in gui.cpp
 
 private:
 	ui::bridge   &br;
@@ -838,9 +851,7 @@ int main(int argc, char **argv)
 
 	std::string dir, shot_path, dump_layout, play_path;
 	std::string layout_path;
-	bool open_editor = false;          // open the PC editor with the panel
-	bool open_list = false;            // open the overview with the panel
-	bool open_fx = false;              // open the insertion settings with the panel
+	ui::window_options win_opts;     // --editor/--lcd etc., shared (ui/options.h)
 	// MIDI IN A-D. -2 unset (use the remembered one) / -1 unused
 	int in_dev[mu2000::MIDI_PORTS] = { -2, -2, -2, -2 };
 	// Start as the machine does with HOST SELECT = USB, which is what makes ports
@@ -855,6 +866,7 @@ int main(int argc, char **argv)
 	const char *audio_dev = nullptr;   // part of a device name; null = the remembered one
 	bool factory = false;
 	int win_w = 1400, win_h = 360;
+	bool size_given = false;
 	bool grid = false;
 	bool boot_for_shot = false;
 	bool nomidi = false;               // --nomidi: open and remember no MIDI port
@@ -910,9 +922,7 @@ int main(int argc, char **argv)
 		else if (!std::strcmp(argv[i], "--exclusive")) exclusive = true;
 		else if (!std::strcmp(argv[i], "--audio") && i + 1 < argc) audio_dev = argv[++i];
 		else if (!std::strcmp(argv[i], "--factory")) factory = true;
-		else if (!std::strcmp(argv[i], "--editor")) open_editor = true;
-		else if (!std::strcmp(argv[i], "--list-window")) open_list = true;
-		else if (!std::strcmp(argv[i], "--fx-window")) open_fx = true;
+		else if (ui::consume_window_option(argv[i], win_opts)) {}
 		else if (!std::strcmp(argv[i], "--shot") && i + 1 < argc) shot_path = argv[++i];
 		else if (!std::strcmp(argv[i], "--boot")) boot_for_shot = true;
 		else if (!std::strcmp(argv[i], "--grid")) grid = true;
@@ -926,8 +936,13 @@ int main(int argc, char **argv)
 		}
 		else if (!std::strcmp(argv[i], "--size") && i + 1 < argc) {
 			if (std::sscanf(argv[++i], "%dx%d", &win_w, &win_h) != 2) { win_w = 1400; win_h = 360; }
+			size_given = true;
 		}
 		else if (dir.empty()) dir = argv[i];
+	}
+	if (win_opts.lcd_only && !size_given) {
+		win_w = 898;
+		win_h = 290;
 	}
 
 	// Without --layout, look through the usual places in order
@@ -964,11 +979,13 @@ int main(int argc, char **argv)
 		std::fprintf(stderr,
 			"使い方: gui <rom ディレクトリ> [--midi 番号] [--midi-b 番号] [--midi-c 番号] [--midi-d 番号]"
 			" [--midiout 番号] [--midiout-b 番号] [--midiout-mu 番号]"
-			" [--latency ミリ秒] [--exclusive] [--layout panel.txt] [--play 曲.mid] [--host-midi] [--fast-midi]\n"
+			" [--latency ミリ秒] [--exclusive] [--layout panel.txt] [--play 曲.mid] [--host-midi] [--fast-midi] [--lcd]\n"
 			"        [--factory]   覚えている設定を捨てて工場出荷状態で起動する\n"
 			"        [--editor]    PC エディタも開く（窓では F2 か右クリック）\n"
 			"        [--list-window] 一覧の窓も開く（窓では F3 か右クリック）\n"
 			"        [--fx-window] インサーションの設定の窓も開く（一覧でインサーションの欄をダブルクリック）\n"
+			"        [--shapes-window] パートの音色の窓も開く（一覧で VIB などの絵をダブルクリック）\n"
+			"        [--master-window] マスターの窓も開く（一覧でマスターの行をダブルクリック）\n"
 			"        gui --dump-layout panel.txt   いまの配置を書き出す\n"
 			"        gui --list\n"
 			"        gui [<rom ディレクトリ> --boot] --shot 絵.png [--size 1400x440]\n");
@@ -1037,6 +1054,8 @@ int main(int argc, char **argv)
 	gui.keep_settings = nomidi;
 	gui.eng = &eng;
 	gui.state = &eng.state;
+	gui.lcd_only = win_opts.lcd_only;
+	gui.panel.set_lcd_only(win_opts.lcd_only);
 	gui.panel.resize(win_w, win_h);
 	gui.set_layout(layout_path);
 	gui.panel.resize(win_w, win_h);
@@ -1182,12 +1201,16 @@ int main(int argc, char **argv)
 	});
 
 	// with --editor and friends, open those windows with the panel (same order as gui.cpp)
-	if (open_editor)
+	if (win_opts.open_editor && !win_opts.lcd_only)
 		gui.open_editor_window(gui.pc);
-	if (open_fx)
+	if (win_opts.open_fx && !win_opts.lcd_only)
 		gui.open_editor_window(gui.fx);
-	if (open_list)
+	if (win_opts.open_list && !win_opts.lcd_only)
 		gui.open_editor_window(gui.list);
+	if (win_opts.open_shapes && !win_opts.lcd_only)
+		gui.open_editor_window(gui.shapes);
+	if (win_opts.open_master && !win_opts.lcd_only)
+		gui.open_editor_window(gui.master);
 
 	ui::run_window(gui, "S-MU2000", win_w, win_h);
 

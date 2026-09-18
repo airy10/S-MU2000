@@ -984,14 +984,9 @@ int main(int argc, char **argv)
 	bool exclusive = false;
 	const char *audio_dev = nullptr;
 	bool factory = false;
-	bool open_editor = false;          // 起動したら PC エディタも出す
-	bool open_list = false;            // 起動したら一覧も出す
-	bool open_fx = false;              // 起動したらインサーションの設定の窓も出す
-	bool open_shapes = false;          // 起動したらパートの音色の窓も出す
-	bool open_master = false;          // 起動したらマスターの窓も出す
+	ui::window_options win_opts;
 	int win_w = 1000, win_h = 400;   // パネルの論理寸法（1000 × 400）と同じ比
 	bool size_given = false;
-	bool lcd_only = false;
 	ui::engine_options eng_opts;
 	bool grid = false;
 	std::string layout_path, dump_layout, play_path;
@@ -1037,12 +1032,7 @@ int main(int argc, char **argv)
 		else if (!std::strcmp(argv[i], "--exclusive")) exclusive = true;
 		else if (!std::strcmp(argv[i], "--audio") && i + 1 < argc) audio_dev = argv[++i];
 		else if (!std::strcmp(argv[i], "--factory")) factory = true;
-		else if (!std::strcmp(argv[i], "--editor")) open_editor = true;
-		else if (!std::strcmp(argv[i], "--list-window")) open_list = true;
-		else if (!std::strcmp(argv[i], "--fx-window")) open_fx = true;
-		else if (!std::strcmp(argv[i], "--shapes-window")) open_shapes = true;
-		else if (!std::strcmp(argv[i], "--master-window")) open_master = true;
-		else if (!std::strcmp(argv[i], "--lcd")) lcd_only = true;
+		else if (ui::consume_window_option(argv[i], win_opts)) {}
 		else if (ui::consume_engine_option(argv[i], eng_opts)) {}
 		else if (!std::strcmp(argv[i], "--usb")) usb_host = true;
 		else if (!std::strcmp(argv[i], "--host-midi")) usb_host = false;
@@ -1063,7 +1053,7 @@ int main(int argc, char **argv)
 		}
 		else if (dir.empty()) dir = argv[i];
 	}
-	if (lcd_only && !size_given) {
+	if (win_opts.lcd_only && !size_given) {
 		win_w = 898;
 		win_h = 290;
 	}
@@ -1095,7 +1085,7 @@ int main(int argc, char **argv)
 		ui::snapshot s;
 		std::snprintf(s.message, sizeof(s.message), "S-MU2000");
 		br.publish(s);
-		return shot(shot_path, win_w, win_h, br, grid, lcd_only, layout_path);
+		return shot(shot_path, win_w, win_h, br, grid, win_opts.lcd_only, layout_path);
 	}
 
 	if (dir.empty()) {
@@ -1178,7 +1168,7 @@ int main(int argc, char **argv)
 		}
 
 		eng.publish();
-		return shot(shot_path, win_w, win_h, br, grid, lcd_only, layout_path);
+		return shot(shot_path, win_w, win_h, br, grid, win_opts.lcd_only, layout_path);
 	}
 
 	// ---- 窓を出す
@@ -1209,10 +1199,10 @@ int main(int argc, char **argv)
 
 	g_win.br   = &br;
 	g_win.eng  = &eng;
-	g_win.lcd_only = lcd_only;
-	g_win.panel.set_lcd_only(lcd_only);
+	g_win.lcd_only = win_opts.lcd_only;
+	g_win.panel.set_lcd_only(win_opts.lcd_only);
 	// 帯は普通の窓だけ。LCD だけの窓には出さない
-	if (!lcd_only) {
+	if (!win_opts.lcd_only) {
 		g_win.bar.set_items({ { "一覧", 0 }, { "エディタ", 1 },
 		                      { "音色", 2 }, { "エフェクト", 3 },
 		                      { "マスター", 4 } });
@@ -1247,15 +1237,15 @@ int main(int argc, char **argv)
 
 	eng.publish();
 	ShowWindow(hwnd, SW_SHOW);
-	if (open_editor && !lcd_only)
+	if (win_opts.open_editor && !win_opts.lcd_only)
 		open_window(hwnd, g_win.pc);
-	if (open_fx && !lcd_only)
+	if (win_opts.open_fx && !win_opts.lcd_only)
 		open_window(hwnd, g_win.fx);
-	if (open_list && !lcd_only)
+	if (win_opts.open_list && !win_opts.lcd_only)
 		open_window(hwnd, g_win.list);
-	if (open_shapes && !lcd_only)
+	if (win_opts.open_shapes && !win_opts.lcd_only)
 		open_window(hwnd, g_win.shapes);
-	if (open_master && !lcd_only)
+	if (win_opts.open_master && !win_opts.lcd_only)
 		open_window(hwnd, g_win.master);
 	UpdateWindow(hwnd);
 
