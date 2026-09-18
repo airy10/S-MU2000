@@ -34,6 +34,7 @@
 #include "nvram.h"
 #include "smartmedia.h"
 #include "smf.h"
+#include "voicecache.h"
 #include "ui/audio_out.h"
 #include "ui/bridge.h"
 #include "ui/engine.h"
@@ -1129,6 +1130,11 @@ int main(int argc, char **argv)
 			eng.state.store(2);
 			eng.publish();
 			return;
+		}
+		// After boot, as in gui.cpp: starting needs the firmware
+		if (eng_opts.native_engine) {
+			eng.mu.set_native_engine(eng_opts.native_engine);
+			smu2000::voicecache::load(eng.mu, smu2000::voicecache::key(eng.mu));
 		}
 		eng.state.store(1);
 		eng.publish();

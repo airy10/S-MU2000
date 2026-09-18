@@ -961,8 +961,6 @@ int main(int argc, char **argv)
 	bool size_given = false;
 	bool lcd_only = false;
 	ui::engine_options eng_opts;
-	// --native-engine: firmware を走らせない口（doc/native-engine.md）
-	int native_engine = 0;
 	bool grid = false;
 	std::string layout_path, dump_layout, play_path;
 	bool boot_for_shot = false;
@@ -1014,7 +1012,6 @@ int main(int argc, char **argv)
 		else if (!std::strcmp(argv[i], "--master-window")) open_master = true;
 		else if (!std::strcmp(argv[i], "--lcd")) lcd_only = true;
 		else if (ui::consume_engine_option(argv[i], eng_opts)) {}
-		else if (!std::strcmp(argv[i], "--native-engine")) native_engine = 1;
 		else if (!std::strcmp(argv[i], "--usb")) usb_host = true;
 		else if (!std::strcmp(argv[i], "--host-midi")) usb_host = false;
 		else if (!std::strcmp(argv[i], "--shot") && i + 1 < argc) shot_path = argv[++i];
@@ -1236,9 +1233,9 @@ int main(int argc, char **argv)
 			return;
 		}
 		// 起動が終わってから入れる（起動には firmware が要る）
-		if (native_engine) {
-			eng.mu.set_native_engine(native_engine);
-			eng.native_engine.store(native_engine);
+		if (eng_opts.native_engine) {
+			eng.mu.set_native_engine(eng_opts.native_engine);
+			eng.native_engine.store(eng_opts.native_engine);
 			if (std::getenv("SMU2000_VOICECACHE"))
 				smu2000::voicecache::load(eng.mu, smu2000::voicecache::key(eng.mu));
 		}
