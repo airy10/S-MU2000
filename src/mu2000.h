@@ -427,6 +427,7 @@ private:
 	}
 	u64  m_rx_at[MIDI_PORTS] = {};                   // その口が次のバイトを受け終える時刻
 	u64  m_rx_at_usb = 0;                            // USB の線（4 口で分け合う）
+	int  m_rx_usb_port = -1;                         // USB で最後に選んだ口
 	// kind 0=離し 1=押し 2=CC 3=ベンド 4=音色の指定 5=XG のパートの設定（08 pp d0=d1）
 	struct nev { u64 at; u8 kind, part, d0, d1; };
 	std::deque<nev> m_nq;
@@ -501,6 +502,12 @@ private:
 		u64 &at = usb ? m_rx_at_usb : m_rx_at[port];
 		if (at < now)
 			at = now;
+		// **口が変わると `F5 <口>` が 2 バイト挟まる**（usb_midi_in と同じ）。
+		// 数えていないと、口をまたぐ曲でこちらだけ早く鳴る
+		if (usb && port != m_rx_usb_port) {
+			m_rx_usb_port = port;
+			at += 2 * rx_byte_tick_usb();
+		}
 		at += usb ? rx_byte_tick_usb() : rx_byte_tick();
 		return (at + native_proc64()) / 64;
 	}

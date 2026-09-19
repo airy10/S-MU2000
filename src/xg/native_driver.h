@@ -768,6 +768,16 @@ public:
 
 	// **ノートシフト**（08 pp 08。64 が 0 半音、±24 まで）。実機は鍵を移して
 	// から音色を選ぶので、要素の鍵域も波形の選び方も移した鍵で決まる
+	// **スケールチューニング**（6.127）。音名ごとに音程をずらす
+	// （XG の 08 pp 41-4C。ワーク RAM では +0x3A から 12 個、64 が 0 セント）
+	int part_scale_cents(int part, int note) const
+	{
+		if (!m_ram || part < 0 || part >= PARTS)
+			return 0;
+		const u32 i = u32(((note % 12) + 12) % 12);
+		return int(m_ram[ram::part_base(part) + ram::PART_SCALE_RAM + i]) - 64;
+	}
+
 	// **RPN 1（微調）**（6.125）。パートの塊 +0xCC に「14bit の値 − 8192」が
 	// 入る（8192 で 100 セント）。音程のレジスタにだけ出る
 	int part_fine_cents(int part) const
@@ -1223,7 +1233,8 @@ private:
 		const part_cc &pc = m_cc[s.part];
 		return nv::pitch_reg(nv::read_wave(s.wave), s.note, nv::key_follow(m_rom, s.elem),
 		                     nv::bend_cents(pc.bend, pc.range) + nv::elem_tune(s.elem)
-		                     + part_fine_cents(s.part) + s.glide / 256,
+		                     + part_fine_cents(s.part)
+		                     + part_scale_cents(s.part, s.note) + s.glide / 256,
 		                     nv::key_pivot(s.elem));
 	}
 
@@ -1512,7 +1523,8 @@ public:
 			nv::slot_regs sr = nv::build_note(m_rom, el, pnote, note_att(su, part), c,
 			                                  nv::defaults(),
 			                                  nv::bend_cents(pc.bend, pc.range)
-			                                  + part_fine_cents(part) + su.glide / 256,
+			                                  + part_fine_cents(part)
+		                                  + part_scale_cents(part, pnote) + su.glide / 256,
 			                                  pvel);
 			// 音程の包絡線の行き先（byte31）。初めの高さと同じなら書かない
 			{
