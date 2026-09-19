@@ -78,8 +78,10 @@ constexpr clap_id kGainId = 0;
 
 #if defined(_WIN32)
 constexpr const char *kWindowApi = CLAP_WINDOW_API_WIN32;
-#else
+#elif defined(__APPLE__)
 constexpr const char *kWindowApi = CLAP_WINDOW_API_COCOA;
+#else
+constexpr const char *kWindowApi = CLAP_WINDOW_API_X11;
 #endif
 
 // 状態の保存は途中までしか書けない・読めないことがある。全部済むまで回す

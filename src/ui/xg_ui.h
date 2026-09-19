@@ -105,6 +105,8 @@ void set_audition_note(int note);
 // %LOCALAPPDATA%\S-MU2000\editor.ini に覚えておく（窓どうしで共通）
 bool &help_on();
 int help_lang();                        // 0 が日本語、1 が English
+// 言語を選ぶ。editor.ini に lang= があれば、次に読んだときにそちらが勝つ
+void set_help_lang(int lang);
 // 直前の部品にカーソルが載っていれば、説明を出す。name は列の見出しかパラメータのキー
 void help_tip(const char *name);
 // 「説明を出す」のチェックボックスと、言語の選択

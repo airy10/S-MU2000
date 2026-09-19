@@ -57,6 +57,8 @@
 #if defined(__APPLE__)
 #include <CoreFoundation/CoreFoundation.h>      // CFBundleRef, the host's handle
 #include <mach/mach_time.h>                     // mach_absolute_time
+#elif defined(__linux__)
+#include <time.h>                               // clock_gettime
 #endif
 
 using namespace Steinberg;
@@ -81,6 +83,7 @@ constexpr const char *kVersion    = "0.1.0.0";
 //
 //   Windows … QueryPerformanceCounter
 //   macOS   … mach_absolute_time, scaled to nanoseconds by mach_timebase_info
+//   Linux   … clock_gettime(CLOCK_MONOTONIC), already nanoseconds
 int64 perf_frequency()
 {
 #if defined(_WIN32)
@@ -98,6 +101,10 @@ uint64 perf_ticks()
 	LARGE_INTEGER t;
 	QueryPerformanceCounter(&t);
 	return uint64(t.QuadPart);
+#elif defined(__linux__)
+	struct timespec ts{};
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return uint64(ts.tv_sec) * 1000000000u + uint64(ts.tv_nsec);
 #else
 	// The timebase is constant on a given machine, so resolve it once
 	static const double scale = [] {

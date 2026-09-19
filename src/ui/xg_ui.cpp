@@ -939,6 +939,12 @@ int help_lang()
 	return g_lang;
 }
 
+void set_help_lang(int lang)
+{
+	if (lang >= 0 && lang < NLANG)
+		g_lang = lang;
+}
+
 float &overview_zoom()
 {
 	ensure_loaded();
