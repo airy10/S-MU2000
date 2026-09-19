@@ -151,6 +151,22 @@ public:
 		m_age = 0;
 	}
 
+	// **リセット（XG システムオン・GM システムオン・GS リセット）**（6.136）。
+	// パートの状態を既定に戻し、鳴っている音を切る。**写し取りの覚えは
+	// 消さない**（音色の記録＋経路ごとに覚えているので、そのまま使える）。
+	// 入れるまでは、リセットのあとも native が古い音色・古いつまみで
+	// 鳴らしていた（曲の途中でリセットを入れる曲は珍しくない）
+	void reset_parts()
+	{
+		for (int p = 0; p < PARTS; p++) {
+			all_off(p, true);
+			m_cc[p] = part_cc();
+		}
+		m_pend.clear();
+		m_bend_due.fill(0);
+		m_bend_next = ~u64(0);
+	}
+
 	// 写し取りの覚え先の鍵。**音色の記録（下 32bit）＋パートの経路（上 32bit）**。
 	// 経路が違えば別物として覚えるので、つまみを行き来しても取り直しは 1 度で済む
 	u64 cal_key(u32 rec, int part) const { return u64(rec) | (u64(part_ctx(part)) << 32); }
@@ -788,6 +804,19 @@ public:
 		return int(m_ram[ram::part_base(part) + ram::PART_SCALE_RAM + i]) - 64;
 	}
 
+	// **マスターチューン**（6.136）。全部のパートに効く。
+	// 00 00 00-03 の 4 バイトの下 4bit をつないだ 12bit（0x400 が 0 セント、
+	// 1 きざみ 0.1 セント）
+	int master_tune_tenths() const
+	{
+		if (!m_ram)
+			return 0;
+		const u8 *b = m_ram + ram::SYS_TUNE;
+		const int v = ((b[0] & 0xf) << 12) | ((b[1] & 0xf) << 8)
+		            | ((b[2] & 0xf) << 4) | (b[3] & 0xf);
+		return (v & 0xfff) - 0x400;
+	}
+
 	// **RPN 1（微調）**（6.125）。パートの塊 +0xCC に「14bit の値 − 8192」が
 	// 入る（8192 で 100 セント）。音程のレジスタにだけ出る
 	int part_fine_cents(int part) const
@@ -796,7 +825,8 @@ public:
 			return 0;
 		const u8 *b = m_ram + ram::part_base(part);
 		const int fine = int(s16(u16(u16(b[ram::PART_FINE]) << 8 | b[ram::PART_FINE + 1])));
-		return fine * 100 / 8192;
+		// マスターチューン（全部のパートに効く）も一緒に足す
+		return fine * 100 / 8192 + master_tune_tenths() / 10;
 	}
 
 	int part_shift(int part) const

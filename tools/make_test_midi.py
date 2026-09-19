@@ -698,6 +698,61 @@ def case_ccramp():
     return [track(seq(ev))], 10.0
 
 
+def case_midreset():
+    """**曲の途中でのリセット**（XG System On・GM System On）と
+    **マスターチューン**（00 00 00-03）。実際の曲は頭以外でもリセットを
+    入れることがあるし、マスターチューンで全体の音程をずらす曲もある。
+
+    リセットはパートの設定も音色も全部戻すので、native の写し取りの
+    「経路の印」が付いていかないと、古いつまみのまま鳴る。
+
+    **実機にこの MIDI を流してはいけない**（モードが変わって戻せない）。
+    エミュレータの中だけで使う試験"""
+    ev = head()
+    ev += [(1.0, bytes([0xc0, 0x50]))]                # Square Lead
+    ev += [(1.05, bytes([0xb0, 0x07, 60])),           # 音量を絞る
+           (1.06, bytes([0xb0, 0x0a, 20]))]           # 左へ振る
+    ev += note(0, 60, 100, 1.3, 0.8)                  # 1 音目。ここで写し取る
+    ev += note(0, 64, 100, 2.2, 0.8)                  # native
+    # マスターチューン（00 00 00-03。4 バイトの下 4bit で 12bit の値。
+    # 0x400 が中央、1 きざみ 0.1 セント）
+    ev += [(3.1, xg([0x00, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00]))]
+    ev += note(0, 60, 100, 3.4, 0.8)                  # 音程が上がるはず
+    ev += [(4.3, xg([0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00]))]   # 戻す
+    # 曲の途中で XG System On（音量もパンも音色も既定に戻る）
+    ev += [(4.6, XG_RESET)]
+    ev += note(0, 60, 100, 5.3, 0.8)                  # GrandPno・音量 100 のはず
+    # GM System On
+    ev += [(6.2, sysex([0x7e, 0x7f, 0x09, 0x01, 0xf7]))]
+    ev += note(0, 64, 100, 6.9, 0.8)
+    return [track(seq(ev))], 8.5
+
+
+def case_partmode():
+    """**パートの種類**（08 pp 07。0 が旋律・2-5 がドラム 1-4）。
+    旋律のパートをドラムにしたり、10 番をドラムから旋律に戻したりする。
+    native は種類で写し取りの引き方を変える（`is_drum`）ので、
+    切り替えに付いていけないと、鍵の番号の音色が鳴るか無音になる"""
+    ev = head()
+    ev += [(1.0, bytes([0xc0, 0x00]))]                # ch1 GrandPno
+    ev += note(0, 60, 100, 1.2, 0.6)                  # 旋律として 1 音目
+    # ch1 をドラム（ドラム 1）にする
+    ev += [(2.0, xg([0x08, 0x00, 0x07, 0x02]))]
+    for i, k in enumerate((36, 38, 42)):
+        ev += note(0, k, 110, 2.3 + i * 0.3, 0.1)
+    # 旋律に戻す
+    ev += [(3.5, xg([0x08, 0x00, 0x07, 0x00]))]
+    ev += [(3.6, bytes([0xc0, 0x30]))]                # Strings
+    ev += note(0, 62, 100, 3.9, 0.8)
+    # ch10 をドラムから旋律にする
+    ev += [(4.9, xg([0x08, 0x09, 0x07, 0x00]))]
+    ev += [(5.0, bytes([0xc9, 0x00]))]                # GrandPno
+    ev += note(9, 60, 100, 5.3, 0.8)
+    ev += [(6.3, xg([0x08, 0x09, 0x07, 0x02]))]       # ドラムに戻す
+    ev += note(9, 38, 110, 6.6, 0.1)
+    return [track(seq(ev))], 8.0
+
+
 CASES = {
     "piano":   case_piano,
     "chord":   case_chord,
@@ -725,6 +780,8 @@ CASES = {
     "running": case_running,
     "pat":     case_pat,
     "ccramp":  case_ccramp,
+    "midreset": case_midreset,
+    "partmode": case_partmode,
 }
 
 
