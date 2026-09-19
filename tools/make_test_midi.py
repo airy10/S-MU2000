@@ -823,6 +823,57 @@ def case_retrig():
     return [track(seq(ev))], 9.0
 
 
+def case_pedretrig():
+    """**ダンパーを踏んだまま同じ鍵を繰り返す**。6.138 で「離しは 1 回ぶん
+    だけ」にしたので、ダンパー（押さえたまま待たせる）とソステヌートとの
+    組み合わせがいちばん危ない所になった。
+
+    * 踏んだまま同じ鍵を 6 回 → 離しても待たされる → 離すと全部鳴り終わる
+    * ソステヌートで一部だけ待たせて、残りは普通に離す
+    * 踏んだまま和音を重ねて、途中で離す"""
+    ev = head()
+    ev += [(1.0, bytes([0xc0, 0x00]))]                # GrandPno
+    ev += note(0, 60, 100, 1.2, 0.6)                  # 1 音目。ここで写し取る
+    # ダンパーを踏んで、同じ鍵を 6 回
+    ev += [(2.0, DAMPER_ON)]
+    for i in range(6):
+        ev += note(0, 60, 100, 2.2 + i * 0.22, 0.12)
+    ev += [(3.8, DAMPER_OFF)]                         # ここで 6 つとも鳴り終わる
+    # ソステヌート: 先に押した音だけ待たせ、あとの音は普通に離す
+    ev += [(4.4, bytes([0x90, 52, 100]))]
+    ev += [(4.7, SOST_ON)]
+    ev += [(4.8, bytes([0x80, 52, 0x40]))]            # 待たされる
+    ev += note(0, 59, 100, 5.0, 0.4)                  # 普通に離れる
+    ev += note(0, 64, 100, 5.5, 0.4)
+    ev += [(6.1, SOST_OFF)]                           # 52 がここで離れる
+    # ダンパーを踏んで和音を重ね、途中で離す
+    ev += [(6.6, DAMPER_ON)]
+    for i, k in enumerate((48, 52, 55, 60)):
+        ev += note(0, k, 100, 6.8 + i * 0.15, 0.1)
+    ev += [(7.6, DAMPER_OFF)]
+    return [track(seq(ev))], 9.0
+
+
+def case_edges():
+    """**鍵と強さの端**（鍵 0・12・120・127、強さ 1・127）。
+    `keylevel` は鍵 36/60/84 × 強さ 30/127 の真ん中あたりだけを見ている。
+    端は曲線の表の頭と尻（音量・切る高さ・強さ・鍵の追従）を当たるので、
+    はみ出しや頭打ちの扱いが違うとここで出る。
+
+    音域の外で鳴らない音色もある（鳴らないことも実機と合っていてほしい）"""
+    ev = head()
+    t = 1.0
+    for prog in (0x00, 0x30, 0x4d):                   # GrandPno・Strings・FX
+        ev += [(t, bytes([0xc0, prog]))]
+        t += 0.2
+        for key in (0, 12, 120, 127):
+            for vel in (1, 127):
+                ev += note(0, key, vel, t, 0.35)
+                t += 0.55
+        t += 0.3
+    return [track(seq(ev))], t + 1.5
+
+
 CASES = {
     "piano":   case_piano,
     "chord":   case_chord,
@@ -854,6 +905,8 @@ CASES = {
     "partmode": case_partmode,
     "drumnrpn": case_drumnrpn,
     "retrig":  case_retrig,
+    "pedretrig": case_pedretrig,
+    "edges":   case_edges,
 }
 
 
