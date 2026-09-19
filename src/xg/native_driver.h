@@ -250,6 +250,14 @@ public:
 	}
 	// **滑りは実機の 10ms 格子に乗せる**（6.121）。`SMU2000_PORTA_GRID=0` で
 	// 前の道（写し取りの相対値を鍵の時刻に足す）に戻せる
+	static bool peg_grid()
+	{
+		static const bool on = [] {
+			const char *e = std::getenv("SMU2000_PEG_GRID");
+			return !e || (e[0] != '0' || e[1]);
+		}();
+		return on;
+	}
 	static bool porta_grid()
 	{
 		static const bool on = [] {
@@ -1538,8 +1546,12 @@ public:
 			// タイマで動いている）。録画から取った格子に乗せる
 			// フィルタの包絡線は「1 目遅らせて進め始める」ので、こちらは
 			// その 1 目ぶん手前が実機の格子になる（実測で 312 サンプル）
-			su.pnext = su.fnext > FENV_TICK ? su.fnext - FENV_TICK
-			                                : (m_clock / FENV_TICK + 1) * FENV_TICK;
+			// **音程の包絡線の段も実機の 10ms 格子**（6.132）。
+			// `SMU2000_PEG_GRID=0` で前の道（録画から取った目）に戻せる
+			su.pnext = (m_eg_have && peg_grid())
+			         ? eg_after(u64(s64(m_clock) + EG_LAG))
+			         : (su.fnext > FENV_TICK ? su.fnext - FENV_TICK
+			                                 : (m_clock / FENV_TICK + 1) * FENV_TICK);
 			if (c && c->has(0x32))
 				sr.set(0x32, pan_reg(*c, part));
 			su.lfo = sr.v[0x0a];
