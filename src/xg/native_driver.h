@@ -1095,7 +1095,9 @@ private:
 			// 追わないと、曲の終わりの CC7 のフェードアウトで離したばかりの
 			// 長い音だけが元の音量のまま鳴り続ける
 			if (!s.on) {
-				if (!s.rel || m_clock - s.rel_at > REL_FOLLOW)
+				// **ドラムには離しの段が無い**（要素を持たない）ので、
+				// 追わずにそのまま鳴らしきらせる（6.139）
+				if (!s.rel || !s.elem || m_clock - s.rel_at > REL_FOLLOW)
 					continue;
 				m_poke(u32(i) * 64 + 9, release_of(s, part, s.note));
 				continue;
@@ -1686,8 +1688,11 @@ public:
 			// ドラムは離しでも音を切らない（実機も打ったら鳴りきる）
 			s.on = false;
 			// **ドラムも「鳴っている」ことにする**。離しの段は無いが、
-			// 打の尾が残っている間はスロットを空けない（6.89）
-			s.rel = s.elem != nullptr;
+			// 打の尾が残っている間はスロットを空けない（6.89・6.139）。
+			// `s.elem != nullptr` にしていたので**ドラムだけ外れていて**、
+			// 離した打のスロットをすぐ次の打で使い回していた。実機はロールの
+			// 1 打ごとに別のスロットを使う（28・29・30・31…）
+			s.rel = true;
 			s.rel_at = m_clock;
 			s.rel_att = s.att;
 			s.rpos = 0;
@@ -1761,6 +1766,7 @@ public:
 		if (it == m_drum.end() || !m_rom)
 			return false;
 		u64 keymask = 0;
+		int nwrote = 0;
 		++m_inst;                        // この打の番号（6.138）
 		for (const nv::voice_cal &c : it->second) {
 			const int slot = take_slot(part, note);
@@ -1811,11 +1817,28 @@ public:
 				             part, note, vel, c.cal_vel, att0, att,
 				             int(c.filter_env.size()), (unsigned long long)c.mask, "\n");
 			keymask |= u64(1) << slot;
+			nwrote++;
 		}
 		if (!keymask)
 			return false;
-		key_on(keymask);
+		// **ドラムも要素を書き終えてから押す**（6.117）。そのうえで、実機は
+		// ドラムの 1 打を引くのに旋律より少し手間が掛かる（キットの表 →
+		// 鍵ごとのずれ → 記録の 3 段引き）。実測で 2 サンプルぶん遅い（6.139）
+		const s64 at0 = s64(write_done(nwrote)) + drum_proc();
+		const u64 at = at0 < 0 ? 0 : u64(at0);
+		if (at > m_clock)
+			m_pend.push_back({ keymask, at });
+		else
+			key_on(keymask);
 		return true;
+	}
+
+	// `SMU2000_DRUM_PROC` で振れる（サンプル数）
+	static s64 drum_proc()
+	{
+		static const s64 v = std::getenv("SMU2000_DRUM_PROC")
+		                   ? s64(std::atoi(std::getenv("SMU2000_DRUM_PROC"))) : -2;
+		return v;
 	}
 
 private:

@@ -540,6 +540,12 @@ private:
 	// なくてもここでドラムになるので、音色の引き方を変える必要がある
 	// （doc/native-engine.md の 6.137）
 	s8 m_part_mode[64] = {};
+	static u64 drum_lead()
+	{
+		static const u64 v = std::getenv("SMU2000_DRUM_LEAD")
+		                   ? u64(std::atoi(std::getenv("SMU2000_DRUM_LEAD"))) : 3;
+		return v;
+	}
 	bool part_is_drum(int part) const
 	{
 		if (part < 0 || part >= 64)

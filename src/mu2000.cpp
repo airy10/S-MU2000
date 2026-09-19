@@ -2054,7 +2054,13 @@ bool mu2000::native_midi(u8 byte, int port)
 	}
 	if (m_ndrv.can_play(part, note)) {
 		nown_set(part, note, true);
-		m_nq.push_back({ fire, 1, u8(part), u8(note), u8(vel) });
+		// **ドラムは実機のほうが 3 サンプル早い**（6.139）。旋律は +1 で
+		// 合っているのに、打楽器だけ +3 になる。1 打を引く道が短いためと
+		// 見ている（`SMU2000_DRUM_LEAD` で振れる）。打楽器は立ち上がりが
+		// 鋭いので、2 サンプルでも波形の相関がはっきり変わる
+		const u64 at = (part_is_drum(part) && fire > drum_lead())
+		             ? fire - drum_lead() : fire;
+		m_nq.push_back({ at, 1, u8(part), u8(note), u8(vel) });
 		return true;
 	}
 	m_ne_stats.note_fw++;
