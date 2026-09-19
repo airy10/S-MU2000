@@ -7,6 +7,7 @@
 
 #if defined(__APPLE__)
 #include <os/workgroup.h>      // slave_loop joins the audio workgroup (opt-in)
+#include <pthread/qos.h>       // slave_loop asks for performance cores
 #endif
 
 #if defined(__SSE2__) || defined(_M_X64) || defined(__x86_64__)
@@ -296,6 +297,12 @@ void mu2000::apply_threading()
 
 void mu2000::slave_loop(u64 seen)
 {
+#if defined(__APPLE__)
+	// Real-time audio helper: ask for performance cores. The QoS class (not
+	// pthread priority numbers) is what places threads on Apple silicon;
+	// default-QoS threads may land on efficiency cores under load.
+	pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+#endif
 #if defined(__APPLE__)
 	// Audio workgroup for this thread (macOS). Joins whatever the front end
 	// asked for and leaves it on the way out; EINVAL/EALREADY stay out, which
