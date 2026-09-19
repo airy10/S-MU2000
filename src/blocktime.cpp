@@ -16,6 +16,10 @@
 #include "mu2000.h"
 #include "smf.h"
 
+#ifdef __APPLE__
+#include <pthread/qos.h>
+#endif
+
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
@@ -54,6 +58,14 @@ int main(int argc, char **argv)
 	const int repeats = argc > 5 ? std::max(1, std::atoi(argv[5])) : 5;
 	const int copies = argc > 6 ? std::max(1, std::atoi(argv[6])) : 1;
 	const u32 RATE = 44100;
+
+#ifdef __APPLE__
+	// Ask for performance cores. Default-QoS processes may land on efficiency
+	// cores and migrate; real-time audio threads run elevated, so this matches
+	// production rather than flattering the numbers. The slave threads inherit
+	// it; mu2000::slave_loop raises itself the same way.
+	pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+#endif
 
 	std::vector<smf::event> events;
 	std::string err;
