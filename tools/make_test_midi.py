@@ -667,6 +667,12 @@ def case_pat():
     return [track(seq(ev))], 7.5
 
 
+def nrpn_note(kind, note, value):
+    """ドラムの NRPN（MSB が種類、LSB が鍵の番号）"""
+    return [b'\xb9\x63' + bytes([kind]), b'\xb9\x62' + bytes([note]),
+            b'\xb9\x06' + bytes([value])]
+
+
 def case_ccramp():
     """**伸ばしている音につまみを刻む**（CC7 音量・CC10 パン・CC91 リバーブ送り・
     CC11 エクスプレッション）。実際の曲がいちばんよくやる形（音量の山・
@@ -753,6 +759,70 @@ def case_partmode():
     return [track(seq(ev))], 8.0
 
 
+def case_drumnrpn():
+    """**ドラムの NRPN**（14-1D。1 打ごとの高さ・音量・パン・送り）。
+    `drums` は SysEx の形（3n rr nn）で同じ所を触るが、**NRPN の形**は
+    ここまで 1 度も送っていなかった。実際の XG の打ち込みはこちらをよく使う。
+
+    NRPN MSB が種類、LSB が鍵の番号、CC6 が値:
+      14 高さ（粗）・15 高さ（細）・16 音量・18 パン・19 リバーブ送り・1A コーラス送り"""
+    ev = head()
+    t = 1.0
+    for i, k in enumerate((36, 38, 42)):              # 素の音（ここで写し取る）
+        ev += note(9, k, 110, t + i * 0.3, 0.1)
+    t = 2.1
+    # 鍵 36 の高さを上げ、音量を下げ、左へ振り、リバーブを増やす
+    for msb, val in ((0x14, 64 + 10), (0x16, 80), (0x18, 20), (0x19, 120)):
+        ev += spread(t, nrpn_note(msb, 36, val))
+        t += 0.06
+    # 鍵 38 は高さだけ下げる
+    ev += spread(t, nrpn_note(0x14, 38, 64 - 8))
+    t += 0.3
+    for i, k in enumerate((36, 38, 42, 36)):
+        ev += note(9, k, 110, t + i * 0.35, 0.1)
+    t += 1.6
+    # 戻す
+    for msb, val in ((0x14, 64), (0x16, 127), (0x18, 64), (0x19, 40)):
+        ev += spread(t, nrpn_note(msb, 36, val))
+        t += 0.06
+    ev += note(9, 36, 110, t + 0.3, 0.1)
+    return [track(seq(ev))], t + 1.8
+
+
+def case_retrig():
+    """**同じ鍵の連打**と**極端に短い音**。実際の曲（刻みのベース・ドラムの
+    ロール・トレモロ）が当たり前にやるのに、ここまでの試験は 1 度も
+    やっていなかった。
+
+    * 同じ鍵をすぐ押し直すと、実機は**前の音を残したまま**新しいスロットで
+      鳴らす（離しの尾が重なる）。native がスロットを取り合うときに
+      前の音を切ってしまうと、刻みが痩せる
+    * 10ms しか押さない音は、離しの段に入るのが早い
+    * 離す前に押し直す（重ねる）形も入れてある"""
+    ev = head()
+    ev += [(1.0, bytes([0xc0, 0x21]))]                # Finger Bass（減衰が速い）
+    ev += note(0, 40, 110, 1.2, 0.4)                  # 1 音目。ここで写し取る
+    # 同じ鍵を 16 分で刻む（離してすぐ押す）
+    t = 2.0
+    for i in range(12):
+        ev += note(0, 40, 110, t + i * 0.125, 0.10)
+    t = 3.6
+    # 離す前に押し直す（重なる）
+    for i in range(6):
+        ev += [(t + i * 0.2, bytes([0x90, 40, 110]))]
+    ev += [(t + 1.4, bytes([0x80, 40, 0x40]))]
+    # 極端に短い音（5ms）
+    t = 5.4
+    for i in range(8):
+        ev += [(t + i * 0.15, bytes([0x90, 47, 110])),
+               (t + i * 0.15 + 0.005, bytes([0x80, 47, 0x40]))]
+    # ドラムのロール
+    ev += [(6.8, bytes([0xc9, 0x00]))]
+    for i in range(16):
+        ev += note(9, 38, 100 + (i % 3) * 9, 7.0 + i * 0.06, 0.02)
+    return [track(seq(ev))], 9.0
+
+
 CASES = {
     "piano":   case_piano,
     "chord":   case_chord,
@@ -782,6 +852,8 @@ CASES = {
     "ccramp":  case_ccramp,
     "midreset": case_midreset,
     "partmode": case_partmode,
+    "drumnrpn": case_drumnrpn,
+    "retrig":  case_retrig,
 }
 
 

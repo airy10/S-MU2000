@@ -97,6 +97,7 @@ public:
 		// 写し取った録画の代わりに、こちらで式から動かす
 		int facc = 0, ftgt = 0, finc = 0, fstage = 0, fadj = 0, fvel = 100;
 		bool hard = false;              // オールサウンドオフで切った（離しを最速に）
+		u32 inst = 0;                   // 何回目の押しか（同じ鍵を重ねたとき用）
 		u64 fnext = 0;                  // つぎに 1 段進める時刻
 		// **音程の包絡線の行き先**。実機はキーオンの直後にこれを書いて、
 		// あとはチップに任せる（doc/native-engine.md の 6.68）。
@@ -1305,7 +1306,7 @@ private:
 				keys[n++] = s.keynote;
 		}
 		for (int k = 0; k < n; k++)
-			note_off(part, keys[k]);
+			note_off(part, keys[k], true);
 	}
 
 	// ダンパーを離したとき、待たせていた音を切る
@@ -1315,7 +1316,7 @@ private:
 			slot_use &s = m_slot[i];
 			if (s.on && s.held && s.part == part) {
 				s.held = false;
-				note_off(part, s.keynote);
+				note_off(part, s.keynote, true);
 			}
 		}
 	}
@@ -1479,6 +1480,7 @@ public:
 		// **モノなら前の音を離す**（6.125）
 		if (m_cc[part].mono)
 			mono_cut(part, note);
+		++m_inst;                        // この押しの番号（6.138）
 		const int nelem = nv::element_count(m_rom, rec);
 		// **ノートシフト**（08 pp 08）。実機は鍵を移してから音色を選ぶので、
 		// ここから先はぜんぶ移した鍵で決める。離すときの照合だけ元の鍵
@@ -1642,12 +1644,31 @@ public:
 	}
 
 	// 鍵を離す。鳴っていなければ false
-	bool note_off(int part, int note)
+	// **離すのは 1 回ぶんだけ**（6.138）。同じ鍵を離さずに何度も押すと、
+	// 実機は押したぶんだけスロットを使い、ノートオフ 1 つでは**いちばん古い
+	// 1 回ぶん**しか離さない（残りには離しの速さを書かない）。こちらは
+	// 同じ鍵のスロットを全部離していたので、刻みの曲で音がごっそり消えていた。
+	// `all` は全部切るとき（オールノートオフ・モノ・ダンパー離し）
+	bool note_off(int part, int note, bool all = false)
 	{
 		bool any = false;
+		u32 want = 0;
+		if (!all) {
+			// いちばん古い押しの番号を探す
+			for (int i = 0; i < SLOTS; i++) {
+				const slot_use &s = m_slot[i];
+				if (s.on && s.part == part && s.keynote == note &&
+				    (!want || s.inst < want))
+					want = s.inst;
+			}
+			if (!want)
+				return false;
+		}
 		for (int i = 0; i < SLOTS; i++) {
 			slot_use &s = m_slot[i];
 			if (!s.on || s.part != part || s.keynote != note)
+				continue;
+			if (!all && s.inst != want)
 				continue;
 			if (m_cc[part].damper) {       // ダンパーを踏んでいる間は切らない
 				s.held = true;
@@ -1729,7 +1750,7 @@ public:
 					m_poke(u32(i) * 64 + 9, release_of(s, part, s.note));
 			}
 			if (s.on)
-				note_off(part, s.keynote);
+				note_off(part, s.keynote, true);
 		}
 	}
 
@@ -1740,6 +1761,7 @@ public:
 		if (it == m_drum.end() || !m_rom)
 			return false;
 		u64 keymask = 0;
+		++m_inst;                        // この打の番号（6.138）
 		for (const nv::voice_cal &c : it->second) {
 			const int slot = take_slot(part, note);
 			if (slot < 0)
@@ -1817,6 +1839,7 @@ private:
 		s.keynote = note;
 		s.tstart = m_clock;
 		s.age = ++m_age;
+		s.inst = m_inst;
 		return s;
 	}
 
@@ -1990,6 +2013,7 @@ private:
 	std::vector<pending_key> m_pend;
 	// firmware がレジスタを書き終える時刻（1/64 サンプル単位）
 	u64 m_busy = 0;
+	u32 m_inst = 0;                 // 押した回数（同じ鍵を重ねたとき用）
 	// 格子に乗せたベンドの、パートごとの流す時刻（0 は無し）
 	std::array<u64, PARTS> m_bend_due{};
 	u64 m_bend_next = ~u64(0);
