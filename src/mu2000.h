@@ -485,6 +485,12 @@ private:
 	{
 		return m_usb_host || m_cable[port] >= MIDI_DIN_PORTS;
 	}
+	static u64 usb_sub64()
+	{
+		static const u64 v = std::getenv("SMU2000_USB_SUB")
+		                   ? u64(std::atoi(std::getenv("SMU2000_USB_SUB"))) : 6 * 64;
+		return v;
+	}
 	static u64 rx_byte_tick_usb()
 	{
 		static const u64 v = std::getenv("SMU2000_RX_BYTE_USB")
@@ -509,7 +515,13 @@ private:
 			at += 2 * rx_byte_tick_usb();
 		}
 		at += usb ? rx_byte_tick_usb() : rx_byte_tick();
-		return (at + native_proc64()) / 64;
+		// **USB の口 B・C・D は実機のほうが 6 サンプル遅い**（6.129）。
+		// 口 A は合っている。DIN では 4 口とも同じなので、USB のときだけ。
+		// 1 口だけ使う曲を 4 通り作って測った（`SMU2000_USB_SUB` で振れる）。
+		// **`--bootcache` で測ってはいけない**。そちらだと 76 サンプルに
+		// 見えるが、ほんとうに起動させると 6 だった（6.121 と同じ罠）
+		const u64 extra = (usb && port > 0) ? usb_sub64() : 0;
+		return (at + extra + native_proc64()) / 64;
 	}
 	bool nown(int part, int note) const
 	{ return (m_nown[part][(note >> 5) & 3] & (u32(1) << (note & 31))) != 0; }
