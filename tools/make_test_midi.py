@@ -667,6 +667,37 @@ def case_pat():
     return [track(seq(ev))], 7.5
 
 
+def case_ccramp():
+    """**伸ばしている音につまみを刻む**（CC7 音量・CC10 パン・CC91 リバーブ送り・
+    CC11 エクスプレッション）。実際の曲がいちばんよくやる形（音量の山・
+    パンの振り・送りの出し入れ）なのに、ここまでの試験は「鍵を押す前に
+    決めて、鳴っている間は動かさない」ものばかりだった。
+
+    native は鳴っているスロットを 1 つずつ書き直す（`apply_cc`）。
+    離しの最中の音も追う必要がある（6.47）ので、そこも一緒に見る"""
+    ev = head()
+    ev += [(1.0, bytes([0xc0, 0x30]))]                # Strings（伸びる）
+    ev += note(0, 60, 100, 1.2, 0.8)                  # 1 音目。ここで写し取る
+    ev += note(0, 62, 100, 2.2, 2.6)                  # 伸ばす
+    for i in range(8):                                # CC7 を落としていく
+        ev += [(2.5 + i * 0.3, bytes([0xb0, 0x07, 100 - i * 10]))]
+    for i in range(6):                                # CC10 を振る
+        ev += [(2.6 + i * 0.4, bytes([0xb0, 0x0a, 20 + i * 18]))]
+    ev += [(4.9, bytes([0xb0, 0x07, 100]))]           # 戻す
+    # 離したあとも動かす（離しの尾を追えているか）
+    ev += note(0, 65, 100, 5.2, 0.5)
+    for i in range(5):
+        ev += [(5.8 + i * 0.2, bytes([0xb0, 0x07, 100 - i * 20]))]
+    ev += [(6.9, bytes([0xb0, 0x07, 100])), (6.95, bytes([0xb0, 0x0a, 64]))]
+    # エクスプレッションと送り
+    ev += note(0, 67, 100, 7.2, 1.6)
+    for i in range(6):
+        ev += [(7.4 + i * 0.25, bytes([0xb0, 0x0b, 127 - i * 18]))]
+    for i in range(4):
+        ev += [(7.5 + i * 0.35, bytes([0xb0, 0x5b, 20 + i * 30]))]
+    return [track(seq(ev))], 10.0
+
+
 CASES = {
     "piano":   case_piano,
     "chord":   case_chord,
@@ -693,6 +724,7 @@ CASES = {
     "progchg": case_progchg,
     "running": case_running,
     "pat":     case_pat,
+    "ccramp":  case_ccramp,
 }
 
 
