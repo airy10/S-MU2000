@@ -172,7 +172,11 @@ private:
 	// m_press_at is stamped on press; release() within MIN_HOLD only marks
 	// m_release_pending, and tick() completes it. A press in between flushes
 	// it first, so it can never strand a button.
+	// The pending release remembers the button by value (m_release_btn), not
+	// via m_held: build_spots() nulls m_held on every layout rebuild, and a
+	// pointer-keyed pending release would strand there.
 	std::chrono::steady_clock::time_point m_press_at{};
+	mu2000::button m_release_btn = mu2000::button::count;
 	bool m_release_pending = false;
 	static constexpr std::chrono::milliseconds MIN_HOLD{100};
 	int  m_drag_x = 0, m_drag_y = 0, m_drag_from = 0;

@@ -89,9 +89,10 @@ void panel::set_value(int ctl, int v, bridge &br)
 bool panel::tick(bridge &br)
 {
 	// A minimum-hold release whose time has come (see release())
-	if (m_release_pending && m_held && m_held->kind == spot_kind::button &&
+	if (m_release_pending &&
 	    std::chrono::steady_clock::now() - m_press_at >= MIN_HOLD) {
-		br.press(m_held->button, false);
+		br.press(m_release_btn, false);
+		m_release_btn = mu2000::button::count;
 		m_held = nullptr;
 		m_release_pending = false;
 	}
@@ -241,6 +242,7 @@ bool panel::press(int x, int y, bridge &br)
 	case spot_kind::button:
 		m_held = sp;
 		m_press_at = std::chrono::steady_clock::now();
+		m_release_btn = mu2000::button::count;
 		m_release_pending = false;
 		br.press(sp->button, true);
 		// VALUE −/+ はダイヤルとまったく同じ働き（実測で 1 目盛り = 1 回 = ±1）。
@@ -348,6 +350,7 @@ bool panel::release(bridge &br)
 		// A tap shorter than an audio block would never reach the firmware:
 		// hold it until the minimum, tick() completes the release
 		if (std::chrono::steady_clock::now() - m_press_at < MIN_HOLD) {
+			m_release_btn = m_held->button;
 			m_release_pending = true;
 			return true;
 		}
@@ -359,9 +362,10 @@ bool panel::release(bridge &br)
 
 void panel::flush_release(bridge &br)
 {
-	if (!m_release_pending || !m_held || m_held->kind != spot_kind::button)
+	if (!m_release_pending)
 		return;
-	br.press(m_held->button, false);
+	br.press(m_release_btn, false);
+	m_release_btn = mu2000::button::count;
 	m_release_pending = false;
 }
 
