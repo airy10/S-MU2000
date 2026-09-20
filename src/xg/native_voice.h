@@ -1366,6 +1366,17 @@ inline int fenv_start_level(const u8 *elem, bool instant)
 	return instant ? elem[55] : elem[54];
 }
 
+// **ソフトペダル（CC67）はフィルタの包絡線の強さを 32 下げる**（6.182）。
+// 実機は踏んでいるあいだ、深さ（ボイスの塊 +93）を「強さ - 32」で作り直す。
+// 音量・共振・減衰・立ち上がりはまったく動かない
+inline int soft_vel(int vel, bool soft)
+{
+	if (!soft)
+		return vel;
+	const int v = vel - 32;
+	return v < 0 ? 0 : v;
+}
+
 inline int fenv_init(const u8 *rom, const u8 *elem, int vel, int cc_atk = 64,
                      int note = 60)
 {
@@ -1423,11 +1434,13 @@ inline u16 cutoff_of(const u8 *rom, const u8 *elem, int note, int vel, int facc,
 	return u16(0x1000 | u16(cut));
 }
 
+// `fvel` はフィルタの包絡線の深さだけに使う強さ（ソフトペダルで下がる）。
+// 共振の頭打ちは素の強さのまま
 inline u16 cutoff_keyon(const u8 *rom, const u8 *elem, int note, int vel,
-                        bool cap = true, int cc_atk = 64)
+                        bool cap = true, int cc_atk = 64, int fvel = -1)
 {
 	return cutoff_of(rom, elem, note, vel,
-	                 fenv_init(rom, elem, vel, cc_atk, note), cap);
+	                 fenv_init(rom, elem, fvel < 0 ? vel : fvel, cc_atk, note), cap);
 }
 
 // 共振が浅ければ頭打ちを掛ける（つまみを効かせたあとに使う）
@@ -1709,7 +1722,7 @@ inline slot_regs build_note(const u8 *rom, const u8 *elem, int note, int att,
                             const defaults &d = defaults(), int cents_extra = 0,
                             int vel = 100, int cc_atk = 64, int cc_dec = 64,
                             int cc_vrate = 64, int cc_vdep = 64, int wnote = -1,
-                            int knote = -1)
+                            int knote = -1, bool soft = false)
 {
 	slot_regs r;
 	// **移調・ノートシフト・粗調は「鍵の曲線」には効かない**（6.172）。
@@ -1735,7 +1748,8 @@ inline slot_regs build_note(const u8 *rom, const u8 *elem, int note, int att,
 	// 鍵 5 通り × 強さ 3 通りで実機と完全に一致）。**既定で入**（6.116）。
 	// `SMU2000_CUT_EXACT=0` で写し取り前提の前の道に戻せる
 	r.set(0x00, cut_exact()
-	            ? cutoff_keyon(rom, elem, kn, vel, true, cc_atk)
+	            ? cutoff_keyon(rom, elem, kn, vel, true, cc_atk,
+	                           soft_vel(vel, soft))
 	            : u16(0x1000 | (rd16(rom, CUTOFF_TAB + u32(elem[37]) * 2) & 0x7ff)));
 	// **鍵を押した瞬間の 0x01 は 0xFFFF**（実機は毎回そう書いて、最初の
 	// 包絡線の目で本当の値に置き換える）。14 音色を実機と突き合わせて

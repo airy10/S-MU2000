@@ -127,6 +127,7 @@ public:
 		u16 vhi = 0;           // `0x0a` の上位（型と刻み）
 		u16 ahi = 0;           // `0x05` の上位
 		int vamp = 0;          // 遅れが明けたあとの、音量側の揺れ
+		int fdvel = 100;       // フィルタの包絡線の深さだけに使う強さ（6.182）
 		int vfull = 0;         // つまみまで入れた、せり上がり切った深さ
 		u64 vnext = ~u64(0);   // つぎに進める時刻
 		// **音程の包絡線の段**（0 が押した直後の段。3 で終わり）。
@@ -757,6 +758,7 @@ public:
 		bool mono = false;                     // CC126 モノ / CC127 ポリ
 		bool damper = false;
 		bool sost_on = false;          // CC66（ソステヌート）                   // CC64
+		bool soft = false;             // CC67（ソフトペダル。6.182）
 	};
 
 	// firmware を回したあとに、パートの音量・表現・パンをワーク RAM から取り直す。
@@ -1126,6 +1128,12 @@ public:
 			apply_bend(part);
 			apply_cc(part);
 			return false;
+		// **CC67 ソフトペダル**（6.182）。踏むと、このあと押す音の
+		// フィルタの包絡線が「強さ - 32」の深さになる。
+		// 鳴っている音はそのまま（実機も書き直さない）
+		case 0x43:
+			p.soft = value >= 64;
+			return false;
 		case 0x78:                             // CC120 オールサウンドオフ
 			all_off(part, true);
 			return false;
@@ -1284,7 +1292,7 @@ private:
 		}
 		if (rate < 0) rate = 0;
 		if (rate > 63) rate = 63;
-		s.ftgt = nv::fenv_target(m_rom, e, lvl, s.fvel);
+		s.ftgt = nv::fenv_target(m_rom, e, lvl, s.fdvel);
 		s.finc = nv::fenv_inc(m_rom, rate);
 		// 下る向きなら増分の符号を反転する（実機の 0x128BA4）
 		if (s.facc > s.ftgt && s.finc != nv::FENV_NEXT)
@@ -1297,9 +1305,10 @@ private:
 		if (!s.elem || !m_rom)
 			return;
 		s.fvel = vel;
+		s.fdvel = nv::soft_vel(vel, m_cc[s.part].soft);
 		const int kadj = nv::fenv_key_adj(s.elem, s.keynote);
 		s.fadj = kadj + nv::fenv_vel_adj(s.elem, vel);
-		s.ftgt = nv::fenv_target(m_rom, s.elem, s.elem[55], s.fvel);
+		s.ftgt = nv::fenv_target(m_rom, s.elem, s.elem[55], s.fdvel);
 		// **立ち上がりの段**。byte50 が 63（即到達）なら段 0 の行き先から
 		// 始まり、そうでなければ byte54 から byte50 の速さで登る（6.71）。
 		// **立ち上がりのつまみでこの速さも動く**（6.171）。実機は
@@ -1307,7 +1316,7 @@ private:
 		const int atk = m_cc[s.part].atk;
 		const int a50 = nv::fenv_atk_rate(m_rom, s.elem, atk);
 		s.facc = nv::cut_exact()
-		       ? nv::fenv_init(m_rom, s.elem, s.fvel, atk, s.keynote) : s.ftgt;
+		       ? nv::fenv_init(m_rom, s.elem, s.fdvel, atk, s.keynote) : s.ftgt;
 		s.finc = 0;
 		s.fstage = 0;
 		// **押鍵のときにもう段 0 の行き先に居るか**。
@@ -1359,7 +1368,7 @@ private:
 		if (rate < 0) rate = 0;
 		if (rate > 63) rate = 63;
 		s.fstage = 9;                    // もう段を進めない印
-		s.ftgt = nv::fenv_target(m_rom, e, e[58], s.fvel);
+		s.ftgt = nv::fenv_target(m_rom, e, e[58], s.fdvel);
 		s.finc = nv::fenv_inc(m_rom, rate);
 		if (s.facc > s.ftgt && s.finc != nv::FENV_NEXT)
 			s.finc = -s.finc;
@@ -2044,7 +2053,8 @@ public:
 			                                  + part_fine_cents(part)
 		                                  + part_scale_cents(part, pnote) + su.glide / 256,
 			                                  pvel, pc.atk, pc.dec,
-			                                  pc.vrate, pc.vdep, wnote, note);
+			                                  pc.vrate, pc.vdep, wnote, note,
+			                                  pc.soft);
 			if (c->synth)
 				apply_part_eq(sr, part);
 			// 音程の包絡線の行き先（byte31）。初めの高さと同じなら書かない
@@ -2109,7 +2119,8 @@ public:
 				// 明るさ（CC71）だけを、写し取りとの差ではなくそのまま足す
 				sr.set(0x00, nv::cut_exact()
 				             ? cut_plain(nv::cutoff_keyon(m_rom, el, pnote, pvel, false,
-				                                          m_cc[part].atk),
+				                                          m_cc[part].atk,
+				                                          nv::soft_vel(pvel, pc.soft)),
 				                         part, el, pvel)
 				             : cutoff_reg(su.cut, *c, part, el, note));
 				// **共振は式で出した値に CC71 の差ぶんを乗せる**（写し取った
