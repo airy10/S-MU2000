@@ -135,7 +135,7 @@ def main():
     ap.add_argument("--tab", default="attack", choices=("attack", "decay", "raw"))
     ap.add_argument("--chunk", type=int, default=48)
     ap.add_argument("--addr", help="CC ではなく 08 pp <addr> を振る（16 進）")
-    ap.add_argument("--byte", default="hi", choices=("hi", "lo"),
+    ap.add_argument("--byte", default="hi", choices=("hi", "lo", "all"),
                     help="レジスタの上位・下位どちらを見るか")
     a = ap.parse_args()
 
@@ -152,7 +152,7 @@ def main():
     tab = ATTACK_TAB if a.tab == "attack" else DECAY_TAB
     back = {}
     if raw:
-        back = {i: i for i in range(256)}
+        back = {i: i for i in range(65536)}
     else:
         # 値 → 目盛り（同じ値が 2 つ並ぶので、いちばん小さい位置）
         for i in range(127, -1, -1):
@@ -192,13 +192,15 @@ def main():
             if i >= len(ko):
                 break
             raw16 = ko[i][0].get(reg, 0)
-            hi = (raw16 >> 8) & 0xff if a.byte == "hi" else raw16 & 0xff
+            hi = ((raw16 >> 8) & 0xff if a.byte == "hi"
+                  else (raw16 & 0xff if a.byte == "lo" else raw16))
             if i == 0:
                 continue             # 頭の基準（CC=64）は読み飛ばす
             got[v] = back.get(hi)
         if 64 not in got and len(ko):
             r0 = ko[0][0].get(reg, 0)
-            got[64] = back.get((r0 >> 8) & 0xff if a.byte == "hi" else r0 & 0xff)
+            got[64] = back.get(((r0 >> 8) & 0xff if a.byte == "hi"
+                                else (r0 & 0xff if a.byte == "lo" else r0)))
     base = got.get(64)
     if base is None:
         print("CC=64 のときの目盛りが引けなかった")

@@ -82,6 +82,8 @@ public:
 		// **つまみの差を乗せる元の値**（パン・リバーブ送り・コーラス送り）。
 		// 写し取りがあればその値、無ければ式で組んだ値。ここを持たずに
 		// `cal->reg[]` を見ていたので、合成の写しでは音色のパンが消えていた
+		// ダンパーで拾われた（6.164）。ペダルを離したら離し直す
+		bool caught = false;
 		u16  base32 = 0, base33 = 0, base34 = 0;
 		int  rnd_pan = -1;
 		int  rnd_drop = 0;              // Rnd のときの送りの目減り
@@ -1030,10 +1032,15 @@ public:
 		case 0x41: p.porta_on = value >= 64; return true; // ポルタメント 入切
 		case 0x54: p.porta_src = value & 0x7f; return true;   // 滑り出す鍵を指定
 		case 0x40:                             // ダンパー
+		{
+			const bool was = p.damper;
 			p.damper = value >= 64;
 			if (!p.damper)
 				release_held(part);
+			else if (!was)
+				damper_catch(part);    // 離し中の音を拾う（6.164）
 			return true;
+		}
 		case 0x42:                             // ソステヌート
 			// ダンパーと違って、**踏んだ時点で鳴っている音だけ**を待たせる。
 			// あとから押した鍵は普通に離れる
@@ -1446,6 +1453,10 @@ private:
 			if (s.on && s.held && s.part == part) {
 				s.held = false;
 				note_off(part, s.keynote, true);
+			} else if (s.caught && s.part == part && !s.on && s.rel && s.elem) {
+				// **ペダルで拾っていた音を離し直す**（6.164）
+				s.caught = false;
+				m_poke(u32(i) * 64 + 9, release_of(s, part, s.note));
 			}
 		}
 	}
@@ -2152,6 +2163,25 @@ public:
 		if (s.hard)
 			return u16(0xf000 | (v & 0xff));
 		return s.single_cut ? u16(SINGLE_CUT_RATE | (v & 0xff)) : v;
+	}
+
+	// **ダンパーを踏んだ瞬間、離している最中の音を拾う**（6.164）。
+	// 実機は離しをやめて減衰 2 の速さに戻す。入れていなかったので、
+	// ペダルで拾ったはずの音がそのまま消えていた
+	void damper_catch(int part)
+	{
+		if (!m_rom)
+			return;
+		for (int i = 0; i < SLOTS; i++) {
+			slot_use &s = m_slot[i];
+			if (s.part != part || s.on || !s.rel || !s.elem || s.hard)
+				continue;
+			s.caught = true;
+			m_poke(u32(i) * 64 + 9,
+			       nv::damper_hold_reg(m_rom, s.elem, s.note, note_att(s, part),
+			                           m_cc[part].dec,
+			                           s.cal && s.cal->have ? s.cal->dec_adj[1] : 0));
+		}
 	}
 
 	// CC123（オールノートオフ）は離す。CC120（オールサウンドオフ）は

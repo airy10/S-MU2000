@@ -1018,6 +1018,19 @@ inline u16 release_reg(const u8 *rom, const u8 *elem, int note, int att)
 	return u16(((0x80 | (r & 0x7f)) << 8) | (att & 0xff));
 }
 
+// **ダンパーを踏んだとき、離している最中の音に入れる値**（6.164）。
+// 実機は「ペダルが拾った」形で、離しをやめて**減衰 2 の速さに戻す**
+// （8 音色で、レジスタ `0x08` の上位と 1 ビット違わず同じ値だった）。
+// ビット 15 の「離せ」の印は立てたまま
+inline u16 damper_hold_reg(const u8 *rom, const u8 *elem, int note, int att,
+                           int cc_dec = 64, int adj = 0)
+{
+	const int corr = rate_key_corr(elem, note);
+	const int r = rom[DECAY_TAB + clamp_idx(
+	                  rate_scale2(eg_rate_cc_add(int(elem[75]), cc_dec), corr) + adj)];
+	return u16(((0x80 | (r & 0x7f)) << 8) | (att & 0xff));
+}
+
 // **音色の写し取り**。式が分かっていないレジスタ（フィルタ・素通しの量など）は、
 // 起動のときに firmware へ 1 音だけ鳴らしてもらって、そのときの値を覚えておく。
 // 鍵や強さで動かないものが多いので、これだけで実機にかなり近くなる。
