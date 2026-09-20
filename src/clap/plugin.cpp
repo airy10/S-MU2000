@@ -160,8 +160,7 @@ private:
 			m_host->get_extension(m_host, CLAP_EXT_PARAMS));
 		// ROM 読みと起動（音にして 4 秒ぶんの空回し）は時間がかかるので、
 		// ここでは走らせるだけ。終わるまでは無音を返す
-		m_engine.start();
-		return true;
+		return m_engine.start(true);
 	}
 
 	bool activate(double rate)
@@ -179,6 +178,7 @@ private:
 	bool start_processing()
 	{
 		// 動いているあいだ、機械に触れてよいのは音声スレッドだけ
+		m_engine.wait_ready(30000);
 		m_engine.set_processing(true);
 		return true;
 	}

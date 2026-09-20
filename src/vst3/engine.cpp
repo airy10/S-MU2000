@@ -213,7 +213,7 @@ engine::~engine()
 		if (!smartmedia::write_blocks(card_path(), blocks, err))
 			log_line(err.c_str());
 	}
-	delete m_mu;
+	m_mu.reset();
 }
 
 std::string engine::message() const
@@ -226,10 +226,15 @@ void engine::log_line(const char *text)
 	logf("%s", text);
 }
 
-void engine::start()
+bool engine::start(bool sync = false)
 {
+	if (sync) {
+		return boot();
+	}
 	if (!m_thread.joinable())
 		m_thread = std::thread([this] { boot(); });
+	
+	return true;
 }
 
 bool engine::wait_ready(int ms)
@@ -239,13 +244,13 @@ bool engine::wait_ready(int ms)
 	while (state() == status::loading) {
 		if (std::chrono::steady_clock::now() >= limit)
 			return false;
-		std::this_thread::sleep_for(std::chrono::milliseconds(2));
+		std::this_thread::sleep_for(std::chrono::milliseconds(50));
 	}
 	return true;
 }
 
-void engine::boot()
-{
+bool engine::boot()
+{	
 	std::string tried;
 	const std::string dir = find_roms(tried);
 	if (dir.empty()) {
@@ -254,12 +259,12 @@ void engine::boot()
 		logf("ROM が見つからない。探した場所:\n%s", tried.c_str());
 		ui::driver::publish_message(m_bridge, "ROM が見つからない");
 		m_state.store(status::failed, std::memory_order_release);
-		return;
+		return false;
 	}
 	logf("ROM: %s", dir.c_str());
 	ui::driver::publish_message(m_bridge, "ROM 読み込み中");
 
-	mu2000 *mu = new mu2000;
+	std::unique_ptr<mu2000> mu = std::make_unique<mu2000>();
 	std::string warn;
 	{
 		// ROM は読むだけなので、この DLL の中で 1 組あればいい。
@@ -281,9 +286,9 @@ void engine::boot()
 			    !mu->load_wave(smu2000::join(dir, "dump"))) {
 				m_message = mu->error();
 				logf("%s", m_message.c_str());
-				delete mu;
+				mu.reset();
 				m_state.store(status::failed, std::memory_order_release);
-				return;
+				return false;
 			}
 			if (!mu->load_sintab(smu2000::join(dir, "standin/sin-table.bin"))) {
 				warn = mu->error();
@@ -377,12 +382,12 @@ void engine::boot()
 			if (voicecache && smu2000::voicecache::load(*mu, smu2000::voicecache::key(*mu)))
 				logf("写し取り: %d 音色を前の写しから", int(mu->native_cal_count()));
 		}
-		m_mu = mu;
+		m_mu = std::move(mu);
 		m_message = warn.empty() ? std::string("ROM: ") + dir
 		                         : std::string("ROM: ") + dir + "\n警告: " + warn;
 		m_state.store(status::ready, std::memory_order_release);
 		ui::driver::publish_now(*m_mu, m_bridge, true, nullptr);
-		return;
+		return true;
 	}
 
 	ui::driver::publish_message(m_bridge, "MU2000 起動中");
@@ -393,8 +398,7 @@ void engine::boot()
 	int64_t i = 0;
 	for (; i < limit; i++) {
 		if (!(i & 4095) && m_abort.load(std::memory_order_relaxed)) {
-			delete mu;
-			return;
+			return false;
 		}
 		if (mu->midi_ready())
 			break;
@@ -404,9 +408,9 @@ void engine::boot()
 	if (i >= limit) {
 		m_message = "MU2000 が起動しなかった（ROM が壊れている可能性）";
 		logf("%s", m_message.c_str());
-		delete mu;
+		mu.reset();
 		m_state.store(status::failed, std::memory_order_release);
-		return;
+		return false;
 	}
 
 	// Run past midi_ready until the firmware settles: at midi_ready the LCD
@@ -415,8 +419,7 @@ void engine::boot()
 	// forever, so only save once the steady screen is up
 	for (int64_t j = 0; j < int64_t(2.0 * NATIVE_RATE); j++) {
 		if (!(j & 4095) && m_abort.load(std::memory_order_relaxed)) {
-			delete mu;
-			return;
+			return false;
 		}
 		s32 l = 0, r = 0;
 		mu->run_sample(l, r);
@@ -435,7 +438,7 @@ void engine::boot()
 		if (voicecache && smu2000::voicecache::load(*mu, smu2000::voicecache::key(*mu)))
 			logf("写し取り: %d 音色を前の写しから", int(mu->native_cal_count()));
 	}
-	m_mu = mu;
+	m_mu = std::move(mu);
 	m_message = warn.empty() ? std::string("ROM: ") + dir
 	                         : std::string("ROM: ") + dir + "\n警告: " + warn;
 	// A restore that arrived before the machine came up is kept in
@@ -443,6 +446,7 @@ void engine::boot()
 	// which is also where the m_machine lock is already held
 	m_state.store(status::ready, std::memory_order_release);
 	ui::driver::publish_now(*m_mu, m_bridge, true, nullptr);
+	return true;
 }
 
 

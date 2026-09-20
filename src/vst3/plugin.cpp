@@ -287,8 +287,7 @@ public:
 	{
 		// ROM 読みと起動（音にして 4 秒ぶんの空回し）は時間がかかるので、
 		// ここでは走らせるだけ。終わるまでは無音を返す
-		m_engine.start();
-		return kResultOk;
+		return m_engine.start(true) ? kResultOk : kResultFalse;
 	}
 
 	tresult PLUGIN_API terminate() override { return kResultOk; }
@@ -356,13 +355,7 @@ public:
 
 	tresult PLUGIN_API setActive(TBool state) override
 	{
-		if (state) {
-			// **ここで起動を待ちきる。**setActive は本スレッドで呼ばれ、時間がかかって
-			// よいところなので、ここで待たないとホストは起動中の機械へ MIDI を流し始める。
-			// 流された分は溜めてあとでまとめて出すので、曲の頭が崩れる（issue #19）
-			if (!m_engine.wait_ready(30000))
-				m_engine.log_line("起動が終わらないまま演奏に入る");
-		} else {
+		if (!state) {
 			m_hush.store(true);
 			m_engine.set_processing(false);
 			report();
@@ -441,8 +434,6 @@ public:
 			}
 		}
 
-		// 起動が終わっていないと戻せない。終わるまで待つ
-		m_engine.wait_ready(3000);
 		if (!blob.empty() || !setup.empty())
 			m_engine.load_state(blob.empty() ? nullptr : blob.data(), blob.size(),
 			                    setup.empty() ? nullptr : setup.data(), setup.size());
@@ -532,6 +523,7 @@ public:
 		if (!state)
 			m_hush.store(true);
 		// 動いているあいだ、機械に触れてよいのは音声スレッドだけ
+		m_engine.wait_ready(30000);
 		m_engine.set_processing(state != 0);
 		return kResultOk;
 	}

@@ -67,7 +67,7 @@ public:
 	bool m_voicecache = false;      // plugin.ini の voicecache=1
 
 	// ROM を探して読み、起動するまでを別スレッドで進める。すぐ返る
-	void start();
+	bool start(bool sync);
 	// 起動が終わるまで待つ。**DAW の本スレッドからだけ**呼ぶこと。
 	// 待ちきれずに時間切れなら false。始まっていなければ始めてから待つ
 	bool wait_ready(int ms);
@@ -160,7 +160,7 @@ private:
 	mutable std::mutex m_card_mutex;        // m_card_path を守る
 	std::string m_card_path;
 
-	void boot();
+	bool boot();
 	void apply_deferred_state();   // 起動前に来た状態を戻す（m_machine を持って呼ぶ）
 	// 機械まるごとの状態を戻す。読めなければ XG の値の控えを流す（m_machine を持って呼ぶ）
 	bool restore(const uint8_t *p, size_t n, const std::vector<uint8_t> &setup);
@@ -180,7 +180,7 @@ private:
 	std::thread         m_thread;
 	std::atomic<bool>   m_abort{false};
 
-	mu2000     *m_mu = nullptr;
+	std::unique_ptr<mu2000> m_mu = nullptr;
 	// 読み込んだ ROM を掴んでおく。他の枚数ぶんと分け合っている
 	std::shared_ptr<void> m_roms;
 	// boot() が state を立てる前に書き、読むのは state が loading でなくなってから
