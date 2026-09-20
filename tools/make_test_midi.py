@@ -307,7 +307,13 @@ def case_assign():
     ev += [(10.2, b'\xb0\x01\x64')]
     ev += [(11.0, b'\xb0\x01\x00')]
     ev += [(11.4, xg([0x08, 0x00, 0x20, 0x0a]))]
-    return [track(seq(ev))], 12.0
+    # --- モジュレーション → LFO の音量（6.199）
+    ev += [(11.6, xg([0x08, 0x00, 0x22, 0x40]))]
+    ev += note(0, 60, 100, 11.8, 1.6)
+    ev += [(12.2, b'\xb0\x01\x64')]
+    ev += [(13.0, b'\xb0\x01\x00')]
+    ev += [(13.4, xg([0x08, 0x00, 0x22, 0x00]))]
+    return [track(seq(ev))], 14.0
 
 
 def case_sxparam():

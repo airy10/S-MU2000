@@ -751,6 +751,18 @@ constexpr u32 VIB_TICK    = 882;        // 20ms
 // 深さ 64・CC1 = 100 では 0xad で、実機と 1 ビットも違わない
 constexpr u32 PMOD_CAP_XG = 0x1E62F0;
 
+// **つまみの割り当て「LFO の音量」**（6.199。実機 0x129B34）。
+// つまみごとの `値 × 深さ / 1024` を足して **15 で頭打ち**し、
+// **byte16 を下駄**にしてから 2 倍する。つまみが全部既定なら
+// `byte16 × 2` になって、これまでの `vib_amp_depth` と同じ
+inline int amod_reg(int sum, int base)
+{
+	int n = sum < 0 ? 0 : (sum > 15 ? 15 : sum);
+	if (n < base)
+		n = base;
+	return (n * 2) & 0x7f;
+}
+
 inline int pmod_reg(const u8 *rom, int sum, bool xg = true)
 {
 	const int s = sum < 0 ? 0 : (sum > 127 ? 127 : sum);
@@ -1919,6 +1931,8 @@ inline slot_regs build_note(const u8 *rom, const u8 *elem, int note, int att,
 	// LFO の深さ（音量側）。実機（0x129B34）は byte16 を 2 倍して下位に置くが、
 	// **遅れ（byte12）と byte13 がどちらも 0 のときだけ**使う（0x127D18）。
 	// Vibes（byte12=0・byte13=0・byte16=2）は 4、Koto（byte12=48）は 0
+	// **打鍵のときの上位は `0xFA00`**。鳴っている途中の書き直し
+	//（0x12E60C）だけが `0xAA00` になる（6.199）
 	r.set(0x05, u16((d.lfo_amp & 0xff00)
 	                | u16((elem[12] || elem[13]) ? 0 : ((elem[16] * 2) & 0x7f))));
 	// LFO の型と刻み。上位は byte11 に**byte9 が 0 でなければ** 0x40 を足したもの
