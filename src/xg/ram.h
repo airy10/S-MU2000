@@ -34,6 +34,15 @@ constexpr u32 TICK_MARK     = 0x3e948;
 // と進めて、`x >> 1` をパンの位置（0-127）に使う。native もここを読んで
 // 進めて書き戻すので、実機モードと行き来しても列が途切れない
 constexpr u32 PAN_RND       = 0x3e94c;
+// **液晶のメーターの元**（doc/native-engine.md の 6.148）。パート 1-16 の
+// 「今いちばん大きい音の目盛り」が 1 バイトずつ並ぶ。firmware は 25ms ごとに
+// ここを 0x43E240 へ写し、さらになまして 0x43E282 に置き、液晶へ描く。
+//
+// **ここは書いてはいけない。** firmware の音の管理が使っている場所で、
+// 外から書くと演奏が壊れる（試験が 5 件崩れた）。native の口では
+// firmware が演奏画面を描き直さないので、書いても誰も読まない。
+// メーターは native が液晶へ直に描く（mu2000::draw_meter）
+constexpr u32 METER_SRC     = 0x2dd8;
 constexpr u32 SYS_TUNE      = SYSTEM + 0;
 constexpr u32 SYS_VOLUME    = SYSTEM + 4;   // 00 00 04（マスター音量）
 // **パートの音量の目盛り**（0-128）。実機はここを音量の目盛りに掛ける

@@ -942,6 +942,29 @@ def case_panrnd():
     return [track(seq(ev))], t + 1.0
 
 
+def case_meter():
+    """**液晶のメーター**（doc/native-engine.md の 6.148）。
+
+    実機は「演奏画面を描く係」でメーターを描くが、これは firmware が自分で
+    音を持っている間しか呼ばれない。native の口は note on を firmware に
+    渡さないので、そのままだと棒が 1 本も動かない（利用者からの報告）。
+    native が棒の字を液晶へ直に置くようにしてある。
+
+    15 パートに別々の強さと音量で 1 音ずつ。1 音目で写し取り、2 音目を
+    native が鳴らす。`run_tests.py` の「メーター」が液晶を突き合わせる"""
+    ev = head()
+    chs = [c for c in range(16) if c != 9]
+    combos = [(32, 32), (64, 64), (96, 100), (110, 127), (127, 100),
+              (48, 80), (80, 48), (100, 110), (120, 64), (24, 127),
+              (64, 32), (96, 127), (40, 100), (72, 96), (112, 112)]
+    for i, ch in enumerate(chs):
+        vel, vol = combos[i]
+        ev += [(1.0, bytes([0xc0 | ch, 0x00])), (1.1, bytes([0xb0 | ch, 0x07, vol]))]
+        ev += note(ch, 60, vel, 1.3, 0.5)      # 1 音目（写し取り）
+        ev += note(ch, 62, vel, 2.6, 1.6)      # 2 音目（native が鳴らす）
+    return [track(seq(ev))], 4.8
+
+
 CASES = {
     "piano":   case_piano,
     "chord":   case_chord,
@@ -978,6 +1001,7 @@ CASES = {
     "fxchange": case_fxchange,
     "dialloop": case_dialloop,
     "panrnd": case_panrnd,
+    "meter": case_meter,
 }
 
 

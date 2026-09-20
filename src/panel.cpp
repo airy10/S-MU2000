@@ -184,6 +184,7 @@ int main(int argc, char **argv)
 	bool list = false;
 	int turn = 0;
 	double turn_at = -1.0;
+	double lcd_at = -1.0;
 	int turn_at_n = 0;
 	std::string wavfile;
 	double hold = 0.0;
@@ -205,6 +206,8 @@ int main(int argc, char **argv)
 			{ turn_at = std::atof(argv[++i]); turn_at_n = std::atoi(argv[++i]); }
 		// 書き出す wav（音を聞き比べる用）
 		else if (!std::strcmp(argv[i], "--wav") && i + 1 < argc) wavfile = argv[++i];
+		// **その時刻の液晶の中身**を 16 進で出す（メーターの棒を突き合わせる用）
+		else if (!std::strcmp(argv[i], "--lcd-at") && i + 1 < argc) lcd_at = std::atof(argv[++i]);
 		else if (!std::strcmp(argv[i], "--hold") && i + 2 < argc) { holdkey = argv[++i]; hold = std::atof(argv[++i]); }
 		else if (!std::strcmp(argv[i], "--settle") && i + 1 < argc) settle = std::atof(argv[++i]);
 		else if (!std::strcmp(argv[i], "--mid") && i + 2 < argc) { midfile = argv[++i]; play = std::atof(argv[++i]); }
@@ -325,6 +328,15 @@ int main(int argc, char **argv)
 				while (at < evs.size() && evs[at].time <= now) {
 					for (u8 b : evs[at].bytes) mu.midi_in(b);
 					at++;
+				}
+				if (lcd_at >= 0.0 && now >= lcd_at) {
+					lcd_at = -1.0;
+					const u8 *dd = mu.lcd().ddram();
+					std::printf("LCDHEX");
+					for (int line = 0; line < 2; line++)
+						for (int pos = 0; pos < 24; pos++)
+							std::printf(" %02x", dd[line * 0x40 + pos]);
+					std::printf("\n");
 				}
 				if (!turned && turn_at >= 0.0 && now >= turn_at) {
 					turned = true;

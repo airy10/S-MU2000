@@ -81,6 +81,7 @@ public:
 		// 鳴らし始めに 1 度引いて、そのあとは動かさない（6.147）
 		int  rnd_pan = -1;
 		int  rnd_drop = 0;              // Rnd のときの送りの目減り
+		int  vel = 0;                   // 押した強さ（液晶のメーター用）
 		int part = -1, note = -1, att = 0;
 		// **MIDI で押された鍵**。note のほうは XG のノートシフト（08 pp 08）を
 		// 足した「鳴らす鍵」なので、離すときの照合はこちらで見る
@@ -1433,6 +1434,49 @@ private:
 		return u16((base & 0xff00) | nv::clamp_att(int(base & 0xff) + d));
 	}
 
+public:
+	// **液晶のメーター**（doc/native-engine.md の 6.148）。実機はパートごとに
+	// 「いちばん大きい音の目盛り」を持っていて、演奏画面がそれを棒にして描く。
+	// native の口では firmware が音を持たないので、そこがずっと 0 になり
+	// **メーターが動かない**（利用者からの報告）。鳴らしている音から作り直す。
+	//
+	// 離したあとも少しの間は残す（打楽器のような短い音でも、25ms おきの
+	// 見回りで拾えるように）
+	static constexpr u64 METER_TAIL = 44100 / 4;
+
+	void fill_meter(u8 *dst, int n) const
+	{
+		for (int i = 0; i < n; i++)
+			dst[i] = 0;
+		if (!m_rom)
+			return;
+		for (const slot_use &s : m_slot) {
+			if (s.part < 0 || s.part >= n || s.vel <= 0)
+				continue;
+			if (!s.on && !(s.rel && m_clock - s.rel_at < METER_TAIL))
+				continue;
+			const int v = meter_of(s.part, s.vel);
+			if (v > int(dst[s.part]))
+				dst[s.part] = u8(v);
+		}
+	}
+
+private:
+	// 目盛り = 強さ x パートの目盛り / 128。
+	// **パートの目盛りはワーク RAM から取る**（PART_GAIN。音量・
+	// エクスプレッション・マスター音量・インサーションの損まで畳んである。
+	// 6.114）。実機との差は 1 以内（実測 15 通り）
+	int meter_of(int part, int vel) const
+	{
+		if (!m_ram)
+			return 0;
+		const int g = int(m_ram[ram::part_base(part) + ram::PART_GAIN]) - 1;
+		if (g <= 0)
+			return 0;
+		const int v = (vel * g) >> 7;
+		return v > 127 ? 127 : v;
+	}
+
 	// **Rnd（パン 0）かどうか**。パートのパンの値がそのまま 0 のとき
 	bool pan_is_rnd(int part) const { return m_cc[part].pan == 0; }
 
@@ -1607,6 +1651,7 @@ public:
 			}
 			// **段 0 から始める**。実機は 10ms ごとに「着いたか」を見て次の段へ
 			su.pvel = pvel;
+			su.vel = vel;                    // 液晶のメーター用（6.148）
 			su.pstage = 0;
 			// **刻みはフィルタの包絡線と同じ**（実機はどちらも同じ 10ms の
 			// タイマで動いている）。録画から取った格子に乗せる
@@ -1819,6 +1864,7 @@ public:
 			su.tstart = m_clock;
 			su.rnd_pan = pan_is_rnd(part) ? pan_rnd_draw() : -1;
 			su.rnd_drop = 0;
+			su.vel = vel;
 			m_traj = true;
 			m_traj_next = 0;
 			su.att = att0 + 2 * (nv::velocity_att(m_rom, vel) - nv::velocity_att(m_rom, c.cal_vel));

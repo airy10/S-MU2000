@@ -178,6 +178,7 @@ int main(int argc, char **argv)
 	const char *swptrace = nullptr;
 	bool single = false;   // スレーブを別スレッドにしない
 	double boot = -1.0;     // 負なら firmware が受信を有効にするまで待つ
+	double lcd_at = -1.0;   // --lcd-at 秒: その時刻の液晶の中身を 16 進で出す
 	const char *mu_dac_path = nullptr;
 	u32 mu_dac_from = 0, mu_dac_count = 0;
 	const char *meg_path = nullptr;    // MEG の中身を書き出す先
@@ -205,6 +206,9 @@ int main(int argc, char **argv)
 			replay = argv[++i];
 		else if (!std::strcmp(argv[i], "--boot") && i + 1 < argc)
 			boot = std::atof(argv[++i]);
+		// **その時刻の液晶の中身**を 16 進で出す（メーターの棒を突き合わせる）
+		else if (!std::strcmp(argv[i], "--lcd-at") && i + 1 < argc)
+			lcd_at = std::atof(argv[++i]);
 		else if (!std::strcmp(argv[i], "--dump-dac") && i + 3 < argc) {
 			mu_dac_path = argv[++i];
 			mu_dac_from = u32(std::strtoul(argv[++i], nullptr, 0));
@@ -439,6 +443,12 @@ int main(int argc, char **argv)
 					std::fwrite(rr.data(), 1, rr.size(), sf);
 					std::fclose(sf);
 				}
+				// 液晶の中身（DDRAM 128 バイト）も一緒に
+				std::snprintf(path, sizeof path, "%s/lcd%03d.bin", snapdir, sdone);
+				if (std::FILE *sf = std::fopen(path, "wb")) {
+					std::fwrite(mu.lcd().ddram(), 1, 0x80, sf);
+					std::fclose(sf);
+				}
 				sdone++;
 			}
 		}
@@ -456,6 +466,15 @@ int main(int argc, char **argv)
 					             rr[b + 0x0b], rr[b + 0x13], rr[b + 0x12], rr[b + 0x18]);
 			}
 			std::fprintf(stderr, "\n");
+		}
+		if (lcd_at >= 0.0 && i >= size_t((boot + lcd_at) * rate)) {
+			lcd_at = -1.0;
+			const u8 *dd = mu.lcd().ddram();
+			std::printf("LCDHEX");
+			for (int line = 0; line < 2; line++)
+				for (int pos = 0; pos < 24; pos++)
+					std::printf(" %02x", dd[line * 0x40 + pos]);
+			std::printf("\n");
 		}
 		if (state_at && i == size_t(boot * rate) + state_sample) {
 			const std::vector<u8> st = mu.save_state();
