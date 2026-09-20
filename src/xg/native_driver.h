@@ -653,6 +653,9 @@ public:
 		case 0x12: p.cho = dd; break;
 		case 0x13: p.rev = dd; break;
 		case 0x18: p.bri = dd; break;
+		case 0x15: p.vrate = dd; break;
+		case 0x16: p.vdep = dd; break;
+		case 0x17: p.vdly = dd; break;
 		case 0x19: p.res = dd; break;
 		case 0x1a: p.atk = dd; break;
 		case 0x1b: p.dec = dd; break;
@@ -700,6 +703,8 @@ public:
 		int bri = -1, res = -1;                // CC74 / CC71（明るさ・共振）
 		// EG のつまみ（CC73 立ち上がり・CC75 減衰・CC72 離し。08 pp 1A/1B/1C）
 		int atk = -1, dec = -1, rel = -1;
+		// ビブラート（08 pp 15 速さ・16 深さ・17 遅れ ＝ NRPN 01 08/09/0A）
+		int vrate = -1, vdep = -1, vdly = -1;
 		int var = -1;                          // CC94（バリエーション送り）
 		// ポルタメント（CC5 速さ・CC65 入切・CC84 で滑り出す鍵を指定）。
 		// last は最後に押した鍵で、つぎの音はここから滑る
@@ -754,6 +759,9 @@ public:
 			take_ram(m_cc[p].atk,  s.atk,  b[0x1a]);
 			take_ram(m_cc[p].dec,  s.dec,  b[0x1b]);
 			take_ram(m_cc[p].rel,  s.rel,  b[0x1c]);
+			take_ram(m_cc[p].vrate, s.vrate, b[0x15]);
+			take_ram(m_cc[p].vdep,  s.vdep,  b[0x16]);
+			take_ram(m_cc[p].vdly,  s.vdly,  b[0x17]);
 			// ベンド幅（08 pp 23。64 が 0 半音）。RPN でも SysEx でもここに入る
 			const int r2 = int(b[0x23]) - 64;
 			m_cc[p].range = r2 < 0 ? 0 : (r2 > 24 ? 24 : r2);
@@ -773,9 +781,8 @@ public:
 		mix(b[0x11]);
 		mix(b[0x14]);
 		// **ビブラート（08 pp 15 速さ・16 深さ・17 遅れ ＝ CC76・77・78）**。
-		// これも式が起こせていない（`0x0a` の上位と下位の両方を動かす）ので、
-		// EG のつまみと同じく**写し取り直し**で合わせる。既定の 64 のままなら
-		// 印は変わらないので、写し取りが余計に走ることは無い
+		// 速さと深さは式が出た（6.162）が、遅れ（+0x17）はまだなので、
+		// 写し取りの道では 3 つとも印に混ぜたままにしておく
 		mix(b[0x15]);
 		mix(b[0x16]);
 		mix(b[0x17]);
@@ -1941,7 +1948,8 @@ public:
 			                                  nv::bend_cents(pc.bend, pc.range)
 			                                  + part_fine_cents(part)
 		                                  + part_scale_cents(part, pnote) + su.glide / 256,
-			                                  pvel, pc.atk, pc.dec);
+			                                  pvel, pc.atk, pc.dec,
+			                                  pc.vrate, pc.vdep);
 			// 音程の包絡線の行き先（byte31）。初めの高さと同じなら書かない
 			{
 				const u16 tgt = nv::peg_reg(m_rom, nv::peg_cents(el, el[31], pvel), el);
@@ -2498,7 +2506,7 @@ private:
 	// 前に sync_cc() で見たワーク RAM の値。ここから動いていれば
 	// firmware が書き替えたということ
 	struct ram_seen { u8 vol = 0, expr = 0, pan = 0, mod = 0, rev = 0, cho = 0, bri = 0, res = 0,
-	                    atk = 0, dec = 0, rel = 0; };
+	                    atk = 0, dec = 0, rel = 0, vrate = 0, vdep = 0, vdly = 0; };
 	std::array<ram_seen, PARTS> m_seen{};
 	// 自分で引いた音色（0 なら引けていない）と、ドラムかどうか（-1 なら分からない）
 	// firmware がそのスロットに最後に書いた時刻（+1。0 は触っていない）

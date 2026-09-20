@@ -376,6 +376,54 @@ inline int send_att(const u8 *rom, int cc)
 	return int(rom[SEND_TAB + u32(std::min(127, cc) - 1)]);
 }
 
+// **ビブラートのつまみ**（08 pp 15 速さ・16 深さ ＝ NRPN 01 08/09）。
+// どちらもレジスタ `0x0a` を動かす（上位が速さ、下位が深さ）。
+// `tools/native/egtab.py` で 128 段ぜんぶ測り、2 音色で突き合わせた
+// （doc/native-engine.md の 6.162）。
+//
+//   速さ: つまみ < 64 なら min(素の目盛り, 表)、> 64 なら max(素の目盛り, 表)
+//         （表の 63 と 0 は「基準を残す」印になる）
+//   深さ: 素の深さに表の値を足す
+constexpr u8 VIB_RATE_TAB[128] = {
+	  0,   0,   0,   0,   0,   0,   0,   1,   1,   1,   1,   2,   2,   2,   2,   3,
+	  3,   4,   4,   5,   6,   7,   8,   9,   9,  10,  10,  10,  11,  11,  12,  12,
+	 13,  13,  14,  14,  14,  15,  15,  15,  17,  17,  17,  17,  19,  19,  19,  21,
+	 21,  21,  23,  23,  23,  25,  25,  25,  27,  27,  29,  29,  29,  29,  29,  63,
+	 63,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,  38,  38,  38,  38,  38,
+	 38,  38,  38,  38,  38,  38,  38,  38,  38,  46,  46,  46,  46,  46,  46,  46,
+	 46,  46,  46,  46,  46,  46,  53,  53,  53,  53,  53,  53,  53,  53,  63,  63,
+	 63,  63,  63,  63,  63,  63,  63,  63,  63,  63,  63,  63,  63,  63,  63,  63,
+};
+
+constexpr u8 VIB_DEPTH_TAB[128] = {
+	  0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+	  0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+	  0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+	  0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+	  0,  29,  40,  52,  69,  86,  86,  86,  86,  86, 145, 145, 145, 145, 145, 150,
+	150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 160, 160, 160, 160,
+	160, 160, 160, 160, 160, 160, 160, 160, 163, 163, 163, 163, 163, 163, 163, 163,
+	163, 163, 168, 168, 168, 168, 168, 168, 168, 168, 168, 168, 173, 173, 173, 173,
+};
+
+inline int vib_rate(int base, int cc)
+{
+	if (cc < 0 || cc == 64)
+		return base;
+	const int c = cc > 127 ? 127 : cc;
+	const int t = int(VIB_RATE_TAB[c]);
+	const int v = c < 64 ? (t < base ? t : base) : (t > base ? t : base);
+	return v < 0 ? 0 : (v > 63 ? 63 : v);
+}
+
+inline int vib_depth(int base, int cc)
+{
+	if (cc < 0 || cc == 64)
+		return base;
+	const int v = base + int(VIB_DEPTH_TAB[cc > 127 ? 127 : cc]);
+	return v < 0 ? 0 : (v > 255 ? 255 : v);
+}
+
 // モジュレーション（CC1）→ レジスタ 0x0a の下位（LFO の深さ）に足す。
 // 実測は 10 段で、**音色によらない**（GrandPno・Strings・SawLead で同じ）。
 // 0x0a の上位は LFO の型と刻みなので触らない
@@ -1387,7 +1435,8 @@ inline int send_level_att(const u8 *rom, int part_send, int extra_send, int pan)
 inline slot_regs build_note(const u8 *rom, const u8 *elem, int note, int att,
                             const voice_cal *cal = nullptr,
                             const defaults &d = defaults(), int cents_extra = 0,
-                            int vel = 100, int cc_atk = 64, int cc_dec = 64)
+                            int vel = 100, int cc_atk = 64, int cc_dec = 64,
+                            int cc_vrate = 64, int cc_vdep = 64)
 {
 	slot_regs r;
 	const u8 *we = wave_entry(rom, wave_set(elem), wave_note(rom, elem, note));
@@ -1436,10 +1485,16 @@ inline slot_regs build_note(const u8 *rom, const u8 *elem, int note, int att,
 	// で、実機はどちらも 0 を書く。byte10=0 の組（JumpBrss・StdiumOr）は
 	// ちゃんと深さを書くので、効いているのは byte10 ではなく byte9 のほう。
 	// **音量側（0x05）は 0 にならない**（Choral の byte16=13 → 26 が一致）
-	const int plfo = (elem[12] || elem[13] || elem[9] >= 2)
-	                 ? 0 : ((elem[14] * 3) & 0x7f);
-	r.set(0x0a, u16(((((elem[9] ? 0x40 : 0) | (elem[11] & 0x3f)) << 8))
-	                | u16(plfo)));
+	// **ビブラートのつまみ**（08 pp 15・16）で速さも深さも動く（6.162）。
+	// 止まっている音色（遅れ byte12・byte13 があるもの、byte9 が 2）は
+	// つまみを回しても動かない。**素の深さが 0 でも、つまみでは動く**
+	// （SquareLd は素が 0 で、つまみ 96 のとき実機は 0xa0）
+	const bool vgate = (elem[12] || elem[13] || elem[9] >= 2);
+	const int plfo0 = vgate ? 0 : ((elem[14] * 3) & 0x7f);
+	const int lrate = vib_rate(int(elem[11] & 0x3f), cc_vrate);
+	const int plfo  = vgate ? 0 : vib_depth(plfo0, cc_vdep);
+	r.set(0x0a, u16(((((elem[9] ? 0x40 : 0) | (lrate & 0x3f)) << 8))
+	                | u16(plfo & 0xff)));
 	// 音程の包絡線。速さが 127（即到達）のときだけ初めの高さは byte31 を使う
 	const int prate = peg_rate_reg(rom, elem, note, vel);
 	r.set(0x0b, u16(prate << 8));
