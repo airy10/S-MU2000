@@ -473,6 +473,7 @@ public:
 					bool moved = false;
 					while (clock >= s.fnext) {
 						fenv_step(s);
+						lfo_tick(s);     // 離しのあいだも揺れる（6.192）
 						s.fnext += FENV_TICK;
 						moved = true;
 					}
@@ -480,7 +481,7 @@ public:
 						s.cut = fenv_cut(s);
 						m_poke(u32(i) * 64 + 0x00, cut_with_cc(s, s.cut));
 					}
-					if (s.finc) {
+					if (s.finc || s.lfdep) {
 						live++;
 						if (s.fnext < next)
 							next = s.fnext;
@@ -544,16 +545,7 @@ public:
 					//（6.189）。実機は**足すぶんを先に作ってから
 					// 位相を進める**（だから 1 刻み遅れる）。
 					// 遅れ（ビブラートの vdly）のあいだは位相も止まる
-					if (s.lstep) {
-						s.lcut = nv::lfo_fcut(
-						    nv::lfo_fwave(s.lph, s.ltri), s.lfdep);
-						// **位相が進むのは深さが 0 でないあいだだけ**。
-						// 実機（0x1298D0）は深さが 0 なら位相を進める
-						// 係（0x12A0FC）を呼ばない。だからつまみで深さが
-						// 乗ったとき、位相は打鍵のところから始まる
-						if (s.lfdep)
-							s.lph = nv::lfo_next(s.lph, s.lstep);
-					}
+					lfo_tick(s);
 					s.fnext += FENV_TICK;
 					moved = true;
 				}
@@ -1028,23 +1020,29 @@ public:
 	static constexpr u32 AC2_NUM   = 0x59;   // AC2 の CC 番号（既定 17）
 	static constexpr u32 AC2_BLOCK = 0x5a;
 
-	// その 6 つ組が既定（＝音に何も起きない）か。既定は 64,64,64,0,0,0
-	bool assign_idle(int part, u32 off) const
+	// その 6 つ組が既定（＝音に何も起きない）か。既定は 64,64,64,0,0,0。
+	//
+	// **5 番目（LFO のフィルタ変調の深さ）だけはこちらで鳴らせる**
+	//（6.192）。そこは 6.191 で式が分かったので、それだけが
+	// 既定から外れているなら firmware に渡さなくてよい
+	bool assign_idle(int part, u32 off, bool allow_fmod = false) const
 	{
 		if (!m_ram || part < 0 || part >= PARTS)
 			return false;                  // 分からないときは任せる側に倒す
 		const u8 *b = m_ram + ram::part_base(part) + off;
-		return b[0] == 64 && b[1] == 64 && b[2] == 64 && !b[3] && !b[4] && !b[5];
+		return b[0] == 64 && b[1] == 64 && b[2] == 64 && !b[3]
+		    && (allow_fmod || !b[4]) && !b[5];
 	}
 
 	// モジュレーションの割り当ては既定が 64,64,64,**10**,0,0（LFO の音程が 10）。
-	// ここが動いていると、こちらの CC1 の式（6.14 の 10 段の表）が合わない
+	// ここが動いていると、こちらの CC1 の式（6.14 の 10 段の表）が合わない。
+	// **フィルタ変調の深さ（5 番目）だけはこちらで鳴らせる**（6.192）
 	bool mod_idle(int part) const
 	{
 		if (!m_ram || part < 0 || part >= PARTS)
 			return false;
 		const u8 *b = m_ram + ram::part_base(part) + MW_BLOCK;
-		return b[0] == 64 && b[1] == 64 && b[2] == 64 && b[3] == 10 && !b[4] && !b[5];
+		return b[0] == 64 && b[1] == 64 && b[2] == 64 && b[3] == 10 && !b[5];
 	}
 
 	// ベンドは +0x23 が幅（RPN で普通に動く。こちらも読んでいる）なので、
@@ -1063,7 +1061,7 @@ public:
 		if (part < 0 || part >= PARTS)
 			return;
 		const u32 bit = poly ? 30u : 31u;
-		if (assign_idle(part, poly ? PAT_BLOCK : AT_BLOCK))
+		if (assign_idle(part, poly ? PAT_BLOCK : AT_BLOCK, true))
 			m_cc[part].unknown &= ~(1u << bit);
 		else
 			m_cc[part].unknown |= 1u << bit;
@@ -1085,7 +1083,7 @@ public:
 			(k ? m_cc[part].ac2 : m_cc[part].ac1) = value & 0x7f;
 			refresh_lfo_depth(part);
 			const u32 bit = k ? 28u : 29u;
-			if (value && !assign_idle(part, blk[k]))
+			if (value && !assign_idle(part, blk[k], true))
 				m_cc[part].unknown |= 1u << bit;
 			else
 				m_cc[part].unknown &= ~(1u << bit);
@@ -1423,6 +1421,20 @@ private:
 		s.fnext = (m_eg_have && eg_grid())
 		        ? eg_after(u64(s64(s.tstart + dly) + EG_LAG)) + skip
 		        : u64(s64(s.tstart + dly + at0 + skip) + EG_LAG);
+	}
+
+	// **フィルタ側 LFO の 1 刻み**（6.189・6.192）。押しているあいだも
+	// 離しのあいだも同じに回る。入れ忘れていたときは、離したとたん
+	// 揺れが止まって、切る高さが古いぶんだけずれたまま固まっていた
+	void lfo_tick(slot_use &s)
+	{
+		if (!s.lstep)
+			return;
+		s.lcut = nv::lfo_fcut(nv::lfo_fwave(s.lph, s.ltri), s.lfdep);
+		// **位相が進むのは深さが 0 でないあいだだけ**。
+		// 実機（0x1298D0）は深さが 0 なら位相を進める係を呼ばない
+		if (s.lfdep)
+			s.lph = nv::lfo_next(s.lph, s.lstep);
 	}
 
 	// **離しの段**。鍵を離すと、実機はもう 1 段張って 0 へ向かう。
