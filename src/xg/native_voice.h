@@ -1536,9 +1536,25 @@ inline u16 drum_pitch_reg(const u8 *rom, const u8 *rec, int cents)
 
 // ドラムの 1 打のレジスタを、記録だけから組む（写し取りを使わない）。
 // 4 打 × 全鍵 58 個で実機と一致したものだけを入れてある
+// **ドラムの「音量」（セットアップの 02、NRPN 16）は
+// `0x09` ではなく、**立ち上がりの目盛り**を動かす**（6.180）。
+//
+//   目盛り = clamp(rec[13] + 音量 - 64, 0, 127)
+//   0x06    = ATTACK_TAB[目盛り] << 8 | (目盛り >= 126 ? 0x00 : 0x7e)
+//
+// 既定の 64 でちょうど rec[13] そのものになる。
+// Standard Kit の鍵 36（rec[13] = 122）・鍵 38・42（127）を
+// 音量 0-127 の全段で確かめた（`tools/native/drumlvl.py`）。
+// `0x07`・`0x08`・`0x09` は音量で動かない
+inline int drum_atk_idx(const u8 *rec, int level)
+{
+	const int v = int(rec[13] & 0x7f) + (level < 0 ? 64 : level) - 64;
+	return v < 0 ? 0 : (v > 127 ? 127 : v);
+}
+
 inline slot_regs drum_note(const u8 *rom, const u8 *rec, int att,
                            const defaults &d = defaults(),
-                           int coarse = 64, int fine = 64)
+                           int coarse = 64, int fine = 64, int level = 64)
 {
 	slot_regs r;
 	if (!rom || !rec)
@@ -1556,8 +1572,11 @@ inline slot_regs drum_note(const u8 *rom, const u8 *rec, int att,
 	r.set(0x04, u16((rec[12] >> 2) << 11));
 	r.set(0x05, d.lfo_amp);
 	// **速さの表は 2 倍しない**（旋律は rate_scale で 2 倍する）
-	r.set(0x06, u16(u16(rom[ATTACK_TAB + u32(rec[13] & 0x7f)]) << 8
-	                | (rec[13] >= 0x7f ? 0x00 : 0x7e)));
+	{
+		const int ai = drum_atk_idx(rec, level);
+		r.set(0x06, u16(u16(rom[ATTACK_TAB + u32(ai)]) << 8
+		                | (ai >= 126 ? 0x00 : 0x7e)));
+	}
 	r.set(0x07, u16(u16(rom[DECAY_TAB + u32(rec[14] & 0x7f)]) << 8 | 0x04));
 	r.set(0x08, u16(u16(rom[DECAY_TAB + u32(rec[15] & 0x7f)]) << 8
 	                | u16(((0x7f - int(rec[10])) * 2) & 0xff)));
