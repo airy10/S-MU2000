@@ -34,7 +34,11 @@ LINE = re.compile(r'^(N |W |R )?(00800000) ([0-9a-f]{4}) ([0-9a-f]{4}).*s=(\d+)'
 MASK = {0x1cf: 0, 0x1ce: 16, 0x18f: 32, 0x18e: 48}
 KEYON = 0x20e
 # 毎サンプル書き替わる（MEG の戻りのミキサ）ので比べない
-SKIP = set([0x0e, 0x0f] + list(range(0x38, 0x40)))
+# 毎サンプル書き替わる（MEG の戻りのミキサ）ので比べない。
+# **0x21-0x2b の奇数番と 0x30・0x31 も外す**。実機の firmware は
+# 1 音ごとには書かないので、起動のときの残りが最初の押鍵に混ざる
+SKIP = set([0x0e, 0x0f, 0x30, 0x31] + list(range(0x38, 0x40))
+           + [r for r in range(0x20, 0x2c) if r & 1])
 
 
 def find_roms(given):
@@ -136,15 +140,18 @@ def main():
         left = list(ns)
         pair = []
         for slot_f in fs:
-            hit = None
-            for slot_n in left:
-                if wave(af[slot_f]) >= 0 and wave(af[slot_f]) == wave(an[slot_n]):
-                    hit = slot_n
-                    break
-            if hit is None and left:
-                hit = left[0]
-            if hit is None:
+            if not left:
                 break
+            d = af[slot_f]
+
+            def score(sn):
+                e = an[sn]
+                # 波形の番地が合うものを最優先。そのうえで食い違いの少ない相手
+                same_wave = 0 if (wave(d) >= 0 and wave(d) == wave(e)) else 1
+                nd = sum(1 for r in d if r in e and d[r] != e[r])
+                return (same_wave, nd)
+
+            hit = min(left, key=score)
             left.remove(hit)
             pair.append((slot_f, hit))
         rows = []

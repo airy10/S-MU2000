@@ -1628,9 +1628,16 @@ private:
 			extra = d < 0 ? 127 : d;
 			pan = dp < 0 ? 64 : dp;
 		}
-		return u16((base & 0xff00)
-		           | u16(nv::send_level_att(m_rom, now < 0 ? (cho ? 0 : 40) : now,
-		                                    extra, pan)));
+		// **パンが Rnd のときは、送りの表を位置 0 で引く**（6.147）。
+		// 当たった位置ではなく 0 なので、音色（打）の寄りは効かない
+		if (s.rnd_pan >= 0)
+			pan = 0;
+		// **リバーブは 0x33 の下位、コーラスは 0x34 の上位**（`send_reg` と同じ）。
+		// ここを下位で書いていたので、コーラスを使う曲で送りが丸ごと狂っていた
+		const int v = nv::send_level_att(m_rom, now < 0 ? (cho ? 0 : 40) : now,
+		                                 extra, pan);
+		return cho ? u16(u16(v) << 8 | (base & 0x00ff))
+		           : u16((base & 0xff00) | u16(v));
 	}
 
 	u16 pan_reg(const nv::voice_cal &c, int part, int rnd, u16 base) const

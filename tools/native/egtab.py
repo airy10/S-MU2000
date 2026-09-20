@@ -34,7 +34,11 @@ NEEDED = ("mu2000.zip", "swp30.zip")
 LINE = re.compile(r'^(N |W |R )?(00800000) ([0-9a-f]{4}) ([0-9a-f]{4}).*s=(\d+)')
 MASK = {0x1cf: 0, 0x1ce: 16, 0x18f: 32, 0x18e: 48}
 KEYON = 0x20e
-SKIP = set([0x0e, 0x0f] + list(range(0x38, 0x40)))
+# 毎サンプル書き替わる（MEG の戻りのミキサ）ので比べない。
+# **0x21-0x2b の奇数番と 0x30・0x31 も外す**。実機の firmware は
+# 1 音ごとには書かないので、起動のときの残りが最初の押鍵に混ざる
+SKIP = set([0x0e, 0x0f, 0x30, 0x31] + list(range(0x38, 0x40))
+           + [r for r in range(0x20, 0x2c) if r & 1])
 # src/xg/native_voice.h と同じ
 ATTACK_TAB, DECAY_TAB = 0x1F4DB8, 0x1F4E38
 
@@ -59,7 +63,13 @@ def vlq(n):
     return bytes(reversed(out))
 
 
-def make_mid(path, cc, vals, msb, lsb, prog, note, vel):
+def xg_sysex(body):
+    """XG のパラメータチェンジ（43 10 4C hh mm ll dd）"""
+    data = bytes([0x43, 0x10, 0x4c]) + bytes(body)
+    return b'ð' + vlq(len(data) + 1) + data + b'÷'
+
+
+def make_mid(path, cc, vals, msb, lsb, prog, note, vel, addr=None):
     tick = 480                       # 4 分音符 = 0.5 秒
     ev = [(0, bytes([0xff, 0x51, 0x03]) + (500000).to_bytes(3, 'big')),
           (240, bytes([0xb0, 0x00, msb])), (240, bytes([0xb0, 0x20, lsb])),
@@ -69,7 +79,12 @@ def make_mid(path, cc, vals, msb, lsb, prog, note, vel):
         # **1 段ごとに声を空ける**（オールサウンドオフ）。余韻の長い音色だと
         # 64 声が埋まって、65 段目から実機が鳴らしてくれない
         ev.append((t, bytes([0xb0, 0x78, 0x00])))
-        ev.append((t + tick // 16, bytes([0xb0, cc & 0x7f, v & 0x7f])))
+        if addr is None:
+            ev.append((t + tick // 16, bytes([0xb0, cc & 0x7f, v & 0x7f])))
+        else:
+            # **パートの設定を SysEx で振る**（08 pp <addr> vv）。
+            # CC の無いもの（ビブラートの速さ・深さなど）はこちら
+            ev.append((t + tick // 16, xg_sysex([0x08, 0x00, addr, v & 0x7f])))
         ev.append((t + tick // 8, bytes([0x90, note, vel])))
         ev.append((t + tick // 4, bytes([0x80, note, 0])))
         t += tick // 2               # 0.25 秒ごと
@@ -111,7 +126,7 @@ def keyons(trc):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("cc", type=int)
+    ap.add_argument("cc", type=int, nargs="?", default=0)
     ap.add_argument("--roms")
     ap.add_argument("--voice", default="0,0,48")
     ap.add_argument("--note", type=int, default=60)
@@ -119,6 +134,9 @@ def main():
     ap.add_argument("--reg", default="06")
     ap.add_argument("--tab", default="attack", choices=("attack", "decay", "raw"))
     ap.add_argument("--chunk", type=int, default=48)
+    ap.add_argument("--addr", help="CC ではなく 08 pp <addr> を振る（16 進）")
+    ap.add_argument("--byte", default="hi", choices=("hi", "lo"),
+                    help="レジスタの上位・下位どちらを見るか")
     a = ap.parse_args()
 
     roms = find_roms(a.roms)
@@ -140,8 +158,10 @@ def main():
         for i in range(127, -1, -1):
             back[rom[tab + i]] = i
 
-    print("音色 %d,%d,%d  鍵 %d  強さ %d  CC%d  レジスタ 0x%02x（%s の表）"
-          % (msb, lsb, prog, a.note, a.vel, a.cc, reg, a.tab))
+    print("音色 %d,%d,%d  鍵 %d  強さ %d  %s  レジスタ 0x%02x の%s（%s の表）"
+          % (msb, lsb, prog, a.note, a.vel,
+             ("CC%d" % a.cc) if a.addr is None else ("08 pp %s" % a.addr),
+             reg, "上位" if a.byte == "hi" else "下位", a.tab))
     # **1 回の演奏で取れるのは 56 段まで**。実機は 64 声を使い切ると、
     # 離したあともしばらく声を返さないので、65 段目から鳴らしてくれない。
     # 少しずつに割って、どの回も頭に CC=64 を置いて基準を揃える
@@ -151,7 +171,8 @@ def main():
     for c0 in range(0, len(vals), CH):
         chunk = [64] + vals[c0:c0 + CH]
         mid = WORK / "eg.mid"
-        secs = make_mid(mid, a.cc, chunk, msb, lsb, prog, a.note, a.vel)
+        secs = make_mid(mid, a.cc, chunk, msb, lsb, prog, a.note, a.vel,
+                        None if a.addr is None else int(a.addr, 16))
         trc = WORK / "eg.txt"
         env = dict(os.environ)
         env["SMU2000_NO_VOICECACHE"] = "1"
@@ -170,12 +191,14 @@ def main():
         for i, v in enumerate(chunk):
             if i >= len(ko):
                 break
-            hi = (ko[i][0].get(reg, 0) >> 8) & 0xff
+            raw16 = ko[i][0].get(reg, 0)
+            hi = (raw16 >> 8) & 0xff if a.byte == "hi" else raw16 & 0xff
             if i == 0:
                 continue             # 頭の基準（CC=64）は読み飛ばす
             got[v] = back.get(hi)
         if 64 not in got and len(ko):
-            got[64] = back.get((ko[0][0].get(reg, 0) >> 8) & 0xff)
+            r0 = ko[0][0].get(reg, 0)
+            got[64] = back.get((r0 >> 8) & 0xff if a.byte == "hi" else r0 & 0xff)
     base = got.get(64)
     if base is None:
         print("CC=64 のときの目盛りが引けなかった")

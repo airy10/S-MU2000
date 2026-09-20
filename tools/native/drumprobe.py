@@ -33,7 +33,11 @@ NEEDED = ("mu2000.zip", "swp30.zip")
 LINE = re.compile(r'^(N |W |R )?(00800000) ([0-9a-f]{4}) ([0-9a-f]{4}).*s=(\d+)')
 MASK = {0x1cf: 0, 0x1ce: 16, 0x18f: 32, 0x18e: 48}
 KEYON = 0x20e
-SKIP = set([0x0e, 0x0f] + list(range(0x38, 0x40)))
+# 毎サンプル書き替わる（MEG の戻りのミキサ）ので比べない。
+# **0x21-0x2b の奇数番と 0x30・0x31 も外す**。実機の firmware は
+# 1 音ごとには書かないので、起動のときの残りが最初の押鍵に混ざる
+SKIP = set([0x0e, 0x0f, 0x30, 0x31] + list(range(0x38, 0x40))
+           + [r for r in range(0x20, 0x2c) if r & 1])
 
 # ワーク RAM の並び（src/xg/ram.h と同じ）
 PARTS, STRIDE = 0x28d64, 0x134
