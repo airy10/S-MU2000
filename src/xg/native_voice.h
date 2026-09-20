@@ -477,6 +477,7 @@ inline int mod_depth(int cc)
 	return int(STEP[i]);
 }
 
+
 // ピッチベンド → セント。firmware は 2 回とも 0 の側へ切り捨てる
 // （ベンド幅 2 半音・目一杯で 167 目盛り。実測と一致）
 inline int bend_cents(int bend14, int range_semitones)
@@ -739,6 +740,23 @@ constexpr u32 VIB_CAP_TAB = 0x1E6370;   // パートの深さ → 頭打ち
 constexpr u32 VIB_CNT_TAB = 0x1E63F0;   // カウンタ → 目盛り（＝カウンタ × 2）
 constexpr u32 VIB_REG_TAB = 0x1E6596;   // 目盛り → レジスタ
 constexpr u32 VIB_TICK    = 882;        // 20ms
+
+// **つまみの割り当て「LFO の音程」**（6.198。実機 0x129D62）。
+// つまみごとの `値 × 深さ / 128` を足して 127 で頭打ちし、
+// XG モードなら表 `0x1E62F0`（それ以外は VIB_CAP_TAB）を引いてから
+// VIB_REG_TAB でレジスタの値にする。
+//
+// **既定の深さ（10）なら、上の 10 段の表と完全に同じ**になる
+//（CC1 = 13→09、26→17、64→43、100→60、127→84 を確かめた）。
+// 深さ 64・CC1 = 100 では 0xad で、実機と 1 ビットも違わない
+constexpr u32 PMOD_CAP_XG = 0x1E62F0;
+
+inline int pmod_reg(const u8 *rom, int sum, bool xg = true)
+{
+	const int s = sum < 0 ? 0 : (sum > 127 ? 127 : sum);
+	const u32 tab = xg ? PMOD_CAP_XG : VIB_CAP_TAB;
+	return int(rom[VIB_REG_TAB + u32(rom[tab + u32(s)])]);
+}
 
 // **LFO はフィルタの切る高さも揺らす**（6.189）。音程と音量の LFO は
 // チップが持っているが、**フィルタぶんは firmware が自前で勘定している**

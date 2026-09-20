@@ -514,7 +514,7 @@ public:
 					u16 v = re[s.rpos].v;
 					if (re[s.rpos].reg == 0x0a) {
 						s.lfo = v;
-						v = lfo_reg(v, *s.cal, s.part);
+						v = lfo_reg(v, *s.cal, s.part, s.keynote);
 					} else if (re[s.rpos].reg == 0x00) {
 						s.cut = v;
 						v = cutoff_reg(v, *s.cal, s.part, s.elem, s.keynote,
@@ -645,7 +645,7 @@ public:
 				}
 				if (fe[s.tpos].reg == 0x0a) {      // 深さにモジュレーションを足す
 					s.lfo = v;
-					v = lfo_reg(v, *s.cal, s.part);
+					v = lfo_reg(v, *s.cal, s.part, s.keynote);
 				} else if (fe[s.tpos].reg == 0x00) {   // 切る高さに明るさを足す
 					s.cut = v;
 					v = cutoff_reg(v, *s.cal, s.part, s.elem, s.keynote,
@@ -1141,10 +1141,10 @@ public:
 		if (!m_ram || part < 0 || part >= PARTS)
 			return false;                  // 分からないときは任せる側に倒す
 		const u8 *b = m_ram + ram::part_base(part) + off;
-		// **こちらで鳴らせるのは 0・1・2・4**（6.191・6.195・6.196）。
-		// 残りは LFO の音程（3）と LFO の音量（5）で、そこだけはまだ任せる
+		// **こちらで鳴らせるのは 0・1・2・3・4**（6.191-6.198）。
+		// 残りは LFO の音量（5）だけで、そこだけはまだ任せる
 		if (mine)
-			return !b[3] && !b[5];
+			return !b[5];
 		return b[0] == 64 && b[1] == 64 && b[2] == 64 && !b[3] && !b[4] && !b[5];
 	}
 
@@ -1156,9 +1156,9 @@ public:
 		if (!m_ram || part < 0 || part >= PARTS)
 			return false;
 		const u8 *b = m_ram + ram::part_base(part) + MW_BLOCK;
-		// 音程・切る高さ・音量・LFO のフィルタはこちらで鳴らせるので、
-		// **LFO の音程が既定（10）で、LFO の音量が 0** なら任せない（6.196）
-		return b[3] == 10 && !b[5];
+		// 音程・切る高さ・音量・LFO の音程・LFO のフィルタは
+		// こちらで鳴らせるので、**LFO の音量だけ**を見る（6.198）
+		return !b[5];
 	}
 
 	// ベンドは +0x23 が幅（RPN で普通に動く。こちらも読んでいる）なので、
@@ -1416,7 +1416,8 @@ private:
 				       : (s.rnd_pan < 0 && s.cal->synth ? exact_pan(s, part)
 				                                        : pan_reg(*s.cal, part, s.rnd_pan, s.base32)));
 			if (s.lfo)
-				m_poke(u32(i) * 64 + 0x0a, lfo_reg(s.lfo, *s.cal, part));
+				m_poke(u32(i) * 64 + 0x0a,
+				       lfo_reg(s.lfo, *s.cal, part, s.keynote));
 			if (s.cal->has(0x33))
 				m_poke(u32(i) * 64 + 0x33,
 				       s.cal->synth
@@ -1883,13 +1884,46 @@ private:
 		return u16(hi ? ((w << 8) | (base & 0xff)) : ((base & 0xff00) | w));
 	}
 
-	// LFO のレジスタ。下位が深さで、モジュレーション（CC1）のぶんを足す
-	u16 lfo_reg(u16 base, const nv::voice_cal &c, int part) const
+	// **つまみの割り当て「LFO の音程」の合計**（6.198）。
+	// 実機（0x12A034）はベンド・モジュレーション・AT・AC1・AC2 を
+	// `値 × 深さ / 128` で足し、そこに**鍵ごとの PAT**を加える
+	int assign_pmod(int part, int note, int mod_now) const
+	{
+		if (!m_ram || part < 0 || part >= PARTS)
+			return 0;
+		const part_cc &c = m_cc[part];
+		auto term = [](int d, int v) { return (d && v) ? (d * v) / 128 : 0; };
+		int sum = 0;
+		sum += term(asn_byte(part, 0x20), mod_now < 0 ? 0 : mod_now);
+		sum += term(asn_byte(part, 0x49), c.chpress);
+		sum += term(asn_byte(part, 0x56), c.ac1);
+		sum += term(asn_byte(part, 0x5d), c.ac2);
+		if (note >= 36 && note < 98)
+			sum += term(asn_byte(part, 0x4f),
+			            int(m_pat[size_t(part)][size_t(note)]));
+		const int pb = asn_byte(part, 0x26);
+		if (pb) {
+			int v = c.bend;
+			if (v < 0)
+				v += 63;
+			v = (v >> 6) - 128;
+			if (v)
+				sum += (v < 0 ? -v : v) * pb / 128;
+		}
+		return sum;
+	}
+
+	// LFO のレジスタ。下位が深さで、つまみのぶんを足す（6.198）。
+	// 写し取ったときの値との**差**で動かすのはこれまでどおり。
+	// 割り当てが既定（深さ 10）なら、前の 10 段の表と同じ値になる
+	u16 lfo_reg(u16 base, const nv::voice_cal &c, int part, int note = 60) const
 	{
 		const int now = m_cc[part].mod;
-		if (now < 0)
+		const int sum = assign_pmod(part, note, now < 0 ? c.cal_mod : now);
+		const int was = assign_pmod(part, note, c.cal_mod);
+		if (sum == was || !m_rom)
 			return base;
-		const int d = nv::mod_depth(now) - nv::mod_depth(c.cal_mod);
+		const int d = nv::pmod_reg(m_rom, sum) - nv::pmod_reg(m_rom, was);
 		return u16((base & 0xff00) | nv::clamp_att(int(base & 0xff) + d));
 	}
 
@@ -2562,7 +2596,7 @@ public:
 			su.lfo = sr.v[0x0a];
 			su.cut = sr.v[0x00];
 			if (c) {
-				sr.set(0x0a, lfo_reg(su.lfo, *c, part));
+				sr.set(0x0a, lfo_reg(su.lfo, *c, part, note));
 				// 式で出した値なら鍵の追従はもう入っている（6.123）。
 				// 明るさ（CC71）だけを、写し取りとの差ではなくそのまま足す
 				sr.set(0x00, nv::cut_exact()
