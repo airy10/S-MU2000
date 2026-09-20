@@ -68,25 +68,27 @@ inline int parse(const std::string &text, std::vector<glyph> &out)
 		while (b < line.size() && (line[b] == ' ' || line[b] == '\t'))
 			b++;
 		line = line.substr(b);
-		if (line.empty() || line[0] == '#') {
-			if (line.empty())
-				flush();
+		if (line.empty()) {
+			flush();
 			continue;
 		}
-		// `.` と `#` だけの行は点の行
-		bool dots = true;
-		for (char c : line)
-			if (c != '.' && c != '#') { dots = false; break; }
-		if (dots && cur.code >= 0) {
-			if (nrow < 8) {
-				unsigned char v = 0;
-				for (size_t x = 0; x < 5 && x < line.size(); x++)
-					if (line[x] == '#')
-						v |= (unsigned char)(1u << (4 - x));
-				cur.row[nrow++] = v;
-			}
+		// **点の行かどうかを、覚え書きより先に見る**。`.` と `#` だけで
+		// 5 桁までなら点の行。いちばん左が点いている行（`###.#` など）は
+		// `#` で始まるので、先に覚え書きとして捨てていた（利用者の報告）
+		bool dots = line.size() <= 5;
+		if (dots)
+			for (char c : line)
+				if (c != '.' && c != '#') { dots = false; break; }
+		if (dots && cur.code >= 0 && nrow < 8) {
+			unsigned char v = 0;
+			for (size_t x = 0; x < 5 && x < line.size(); x++)
+				if (line[x] == '#')
+					v |= (unsigned char)(1u << (4 - x));
+			cur.row[nrow++] = v;
 			continue;
 		}
+		if (line[0] == '#')
+			continue;                      // 覚え書き
 		// それ以外は「コード＋覚え書き」の行
 		char *end = nullptr;
 		const long code = std::strtol(line.c_str(), &end, 16);

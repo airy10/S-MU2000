@@ -57,14 +57,18 @@ def parse_art(path=ART):
         return out
     for line in Path(path).read_text(encoding="utf-8").splitlines():
         t = line.strip()
-        if not t or t.startswith("#"):
-            if not t and code is not None:
+        if not t:
+            if code is not None:
                 out[code] = (rows + [0] * 8)[:8]
                 code, rows = None, []
             continue
-        if set(t) <= set(".#"):
+        # **点の行かどうかを、覚え書きより先に見る**（src/lcdfont.h と同じ）。
+        # いちばん左が点いている行は `#` で始まるので、覚え書きと間違えていた
+        if len(t) <= 5 and set(t) <= set(".#"):
             if code is not None and len(rows) < 8:
                 rows.append(sum(1 << (4 - x) for x, c in enumerate(t[:5]) if c == "#"))
+                continue
+        if t.startswith("#"):
             continue
         m = re.match(r"([0-9a-fA-F]{1,2})\b", t)
         if m:
