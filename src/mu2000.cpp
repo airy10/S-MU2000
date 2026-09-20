@@ -3,6 +3,7 @@
 // MU2000 一台ぶんの組み立て。配置は MAME の ymmu2000.cpp と同じ。
 
 #include "mu2000.h"
+#include "lcdfont.h"
 
 #if defined(__SSE2__) || defined(_M_X64) || defined(__x86_64__)
 #include <xmmintrin.h>
@@ -432,12 +433,19 @@ void mu2000::fill_missing_glyphs(std::vector<u8> &rom)
 	//     .###.         .#.#.
 	//     .##..         .##..
 	//     .#...         .#...
+	//
+	// ここは**下敷き**で、`art/lcdfont.txt` があればそちらが上から被さる
+	// （手描きの字はぜんぶあちらに集める。src/lcdfont.h）
 	static const u8 TRI_FILLED[8] = { 0x08, 0x0c, 0x0e, 0x0f, 0x0e, 0x0c, 0x08, 0x00 };
 	static const u8 TRI_HOLLOW[8] = { 0x08, 0x0c, 0x0a, 0x09, 0x0a, 0x0c, 0x08, 0x00 };
 	for (int y = 0; y < 8; y++) {
 		rom[0x10 * 16 + y] = TRI_FILLED[y];
 		rom[0x11 * 16 + y] = TRI_HOLLOW[y];
 	}
+
+	// **手描きの字を上から被せる**（art/lcdfont.txt）。実機を見て描き起こした
+	// ものだけを入れる場所で、ROM から起こした字は入れない（src/lcdfont.h）
+	smu2000::lcdfont::overlay_default(rom);
 }
 
 void mu2000::set_lcd_font(u8rom p)
