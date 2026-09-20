@@ -31,6 +31,8 @@ def main():
     ap.add_argument("--note", type=int, default=60)
     ap.add_argument("--vel", type=int, default=100)
     ap.add_argument("--step", type=int, default=8)
+    ap.add_argument("--lo", type=int, default=0)
+    ap.add_argument("--hi", type=int, default=127)
     ap.add_argument("--regs", default="00,04,06,07,08,09,0a,0b")
     a = ap.parse_args()
 
@@ -47,9 +49,9 @@ def main():
     msb, lsb, prog = (int(x) for x in a.voice.split(","))
     regs = [int(x, 16) for x in a.regs.split(",")]
 
-    vals = list(range(0, 128, a.step))
-    if 127 not in vals:
-        vals.append(127)
+    vals = list(range(a.lo, a.hi + 1, a.step))
+    if a.hi not in vals:
+        vals.append(a.hi)
     print("音色 %d,%d,%d  鍵 %d  強さ %d  CC%d を振る"
           % (msb, lsb, prog, a.note, a.vel, a.cc))
     print("%-5s %s" % ("値", " ".join("0x%02x " % r for r in regs)))

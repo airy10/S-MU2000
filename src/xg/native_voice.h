@@ -28,6 +28,58 @@ constexpr u32 SET_TABLE  = 0x200AF0;   // 波形の組 → 波形の並びの中
 constexpr u32 SET_COUNT  = 0x1F8;
 constexpr u32 WAVE_BASE  = 0x1F55A0;   // 波形の記録（16 バイトずつ）
 constexpr u32 ATTACK_TAB = 0x1F4DB8;   // アタックの速さ（128 バイト）
+// **EG のつまみ（CC72/73/75）で速さの目盛りをどう動かすか**（6.157）。
+// `tools/native/egtab.py` で 128 段ぜんぶ測って、3 音色で突き合わせた。
+//
+//   つまみ <= 64 : 目盛り = min(63, 素の目盛り + (65 - つまみ) / 2)
+//   つまみ >  64 : 目盛り = min(素の目盛り, 表[つまみ - 64])
+//
+// 上の向き（遅くする側）は音色ごとの目盛りからの足し算だが、**下の向き
+// （速くする側）は音色によらない**。3 音色（Strings1・GrandPno・Flute）の
+// どれも、つまみ 72 で目盛り 28、つまみ 127 で 1 になる。
+// 表は ROM にそのまま入っていた（頭が 63 ＝「変えない」）
+constexpr u32 EG_RATE_CC = 0x1E54A4;    // つまみ 64-127 → 目盛り（64 バイト）
+
+inline int eg_rate_cc(const u8 *rom, int base, int cc)
+{
+	if (!rom || cc < 0 || cc == 64)
+		return base;
+	const int c = cc > 127 ? 127 : cc;
+	if (c < 64) {
+		const int v = base + (65 - c) / 2;
+		return v > 63 ? 63 : v;
+	}
+	const int cap = int(rom[EG_RATE_CC + u32(c - 64)]);
+	return cap < base ? cap : base;
+}
+
+// **減衰のつまみ（CC75）は足し算**（立ち上がりと違って表を使わない）。
+// 3 音色とも同じずれで、下は 0 で止まる（実機の値がそこで飽和する）。
+//
+//   つまみ <= 64 : 目盛り + (67 - つまみ) / 4
+//   つまみ >  64 : 目盛り - (つまみ - 64) × 7 / 16
+//
+// 1/4 と 7/16 は `tools/native/egtab.py` で 128 段ぜんぶ測って合わせた
+inline int eg_rate_cc_add(int base, int cc)
+{
+	if (cc < 0 || cc == 64)
+		return base;
+	const int c = cc > 127 ? 127 : cc;
+	const int v = c < 64 ? base + (67 - c) / 4
+	                     : base - (c - 64) * 7 / 16;
+	return v < 0 ? 0 : (v > 63 ? 63 : v);
+}
+
+// **立ち上がりのつまみ（CC73）は減衰 1（0x07）も動かす**（6.157）。
+// 遅くする側は何も起きず、速くする側だけ 4 段ごとに 1 目盛り速くなる
+inline int eg_dec1_cc(int base, int cc)
+{
+	if (cc <= 68)
+		return base;
+	const int d = ((cc > 127 ? 127 : cc) - 68) / 4;
+	const int r = base - d;
+	return r < 0 ? 0 : (r > 63 ? 63 : r);
+}
 constexpr u32 DECAY_TAB  = 0x1F4E38;   // 減衰の速さ（128 バイト）
 constexpr u32 VEL_CURVE  = 0x1E5E5E;   // 強さの曲線（128 バイトの行が並ぶ。行 0 はそのまま）
 constexpr u32 LEVEL_TAB  = 0x1E6798;   // 0-127 → 減衰（128 バイトの行が並ぶ。行 1 が 0x1E6818）
@@ -804,7 +856,11 @@ inline int voice_raw_level(const u8 *rom, u32 rec, const u8 *elem)
 {
 	if (!rom || !rec)
 		return 64;
-	return (int(rom[rec + 1]) * int(elem[59]) + 49) / 99;
+	// **切り捨て**。前は四捨五入（+49）にしていたが、それは減衰の表から
+	// 逆に引いた値で当てていたので外していた。実機のボイスの塊 +118 を
+	// 直に読むと（`tools/native/levelprobe.py`）、GM の 128 音色 112 件で
+	// **切り捨てが 111 件合い、四捨五入は 61 件しか合わない**（6.158）
+	return int(rom[rec + 1]) * int(elem[59]) / 99;
 }
 
 // 掛ける前の音量の目盛り（鍵の曲線まで入れたもの）。
@@ -1330,7 +1386,7 @@ inline int send_level_att(const u8 *rom, int part_send, int extra_send, int pan)
 inline slot_regs build_note(const u8 *rom, const u8 *elem, int note, int att,
                             const voice_cal *cal = nullptr,
                             const defaults &d = defaults(), int cents_extra = 0,
-                            int vel = 100)
+                            int vel = 100, int cc_atk = 64, int cc_dec = 64)
 {
 	slot_regs r;
 	const u8 *we = wave_entry(rom, wave_set(elem), wave_note(rom, elem, note));
@@ -1396,14 +1452,19 @@ inline slot_regs build_note(const u8 *rom, const u8 *elem, int note, int att,
 	// で、その目盛りで ROM の表を引いたものがレジスタの上位バイトになる。
 	// 深さは byte70、折れ点の鍵は byte71（鍵 36・60・84 で確かめた）。
 	const int corr = rate_key_corr(elem, note);
-	const u8 atk = rom[ATTACK_TAB + std::min(0x7f, int(elem[73]) * 2)];
+	// **立ち上がりのつまみ（CC73）で目盛りが動く**（6.157）
+	const int arate = eg_rate_cc(rom, int(elem[73]), cc_atk);
+	const u8 atk = rom[ATTACK_TAB + std::min(0x7f, arate * 2)];
 	// 写し取りがあれば、そのときのずれを表の目盛りに足す（上の dec_adj を見よ）
 	const int a1 = cal && cal->have ? cal->dec_adj[0] : 0;
 	const int a2 = cal && cal->have ? cal->dec_adj[1] : 0;
-	const u8 dc1 = rom[DECAY_TAB  + clamp_idx(rate_scale(elem[74], corr) + a1)];
-	const u8 dc2 = rom[DECAY_TAB  + clamp_idx(rate_scale2(elem[75], corr) + a2)];
+	const u8 dc1 = rom[DECAY_TAB  + clamp_idx(
+	                   rate_scale(eg_dec1_cc(int(elem[74]), cc_atk), corr) + a1)];
+	// **減衰のつまみ（CC75）で目盛りが動く**（6.157）
+	const u8 dc2 = rom[DECAY_TAB  + clamp_idx(
+	                   rate_scale2(eg_rate_cc_add(int(elem[75]), cc_dec), corr) + a2)];
 	// はじめの音量。アタックが最速（63）のときだけ 0 で、あとは 0x7e
-	r.set(0x06, u16(atk << 8 | (elem[73] >= 0x3f ? 0x00 : 0x7e)));
+	r.set(0x06, u16(atk << 8 | (arate >= 0x3f ? 0x00 : 0x7e)));
 	r.set(0x07, u16(dc1 << 8 | (((0x7f - elem[77]) * 2) & 0xff)));
 	r.set(0x08, u16(dc2 << 8 | (((0x7f - elem[78]) * 2) & 0xff)));
 	r.set(0x09, u16(att & 0xff));
