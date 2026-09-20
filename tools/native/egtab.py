@@ -66,7 +66,7 @@ def vlq(n):
 def xg_sysex(body):
     """XG のパラメータチェンジ（43 10 4C hh mm ll dd）"""
     data = bytes([0x43, 0x10, 0x4c]) + bytes(body)
-    return b'ð' + vlq(len(data) + 1) + data + b'÷'
+    return bytes([0xf0]) + vlq(len(data) + 1) + data + bytes([0xf7])
 
 
 def make_mid(path, cc, vals, msb, lsb, prog, note, vel, addr=None):

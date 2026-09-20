@@ -1328,23 +1328,24 @@ inline slot_regs drum_note(const u8 *rom, const u8 *rec, int att,
 // 強さ 40/100/127 で 22/4/0。曲線 0 なら 26/5/0 で合わない
 constexpr int DRUM_VEL_CURVE = 1;
 
-// 音量の目盛りに音量つまみを掛ける。**旋律と違って丸める**（+64 してから
-// 7 ビット落とす）。丸めないと 57 打のうち 8 打で 1 段ずれた
-inline int drum_level_scaled(int level, int gain)
-{
-	if (gain <= 0 || level <= 0)
-		return 0;
-	const int v = (level * (gain > 128 ? 128 : gain) + 64) >> 7;
-	return v < 1 ? 1 : (v > 128 ? 128 : v);
-}
-
-// `0x09` に入れる減衰。**57 打のうち 45 打が実機と完全に一致**
-// （残り 12 打はさらに下駄が乗る。まだ出どころが割れていない）
-inline int drum_att(const u8 *rom, int level, int vel, int gain = VOL_GAIN_DEF)
+// `0x09` に入れる減衰。**1 キット 57 打 × 強さ 3 通りで、実機と完全に一致**。
+//
+//   目盛り = clamp((音量 + 記録[+29] + 1) × つまみ >> 7, 1, 128)
+//   減衰   = 2 × clamp(表[0x80 + 目盛り] + 強さの減衰(曲線 1), 0, 127)
+//
+// **記録の +29**（波形の記録の 4 バイト目。符号つき）が効く。45 打はここが 0
+// なので気づかず、残り 12 打だけ外していた（6.160）。実機は
+// `0x12A436`-`0x12A540` でこれを組んでいる
+inline int drum_att(const u8 *rom, const u8 *rec, int level, int vel,
+                    int gain = VOL_GAIN_DEF)
 {
 	if (!rom)
 		return 0x40;
-	int a = int(rom[LEVEL_TAB + 0x80 + u32(drum_level_scaled(level, gain))])
+	const int adj = rec ? int(s8(rec[29])) : 0;
+	int l = (level + adj + 1) * (gain > 128 ? 128 : (gain < 0 ? 0 : gain)) >> 7;
+	if (l < 1) l = 1;
+	if (l > 128) l = 128;
+	int a = int(rom[LEVEL_TAB + 0x80 + u32(l)])
 	      + velocity_att(rom, vel, DRUM_VEL_CURVE);
 	if (a > 127) a = 127;
 	if (a < 0) a = 0;

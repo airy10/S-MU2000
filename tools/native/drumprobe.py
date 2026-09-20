@@ -147,12 +147,16 @@ def main():
     secs = make_mid(mid, notes, a.vel, a.kit)
 
     trc = WORK / "fw.txt"
+    for old in WORK.glob("ram*.bin"):
+        old.unlink()
     env = dict(os.environ)
     env["SMU2000_NO_VOICECACHE"] = "1"
     env["SMU2000_RAMSNAP"] = str(WORK)
-    env["SMU2000_RAMSNAP_T0"] = "%.3f" % (secs - 0.5)
-    env["SMU2000_RAMSNAP_DT"] = "1"
-    env["SMU2000_RAMSNAP_N"] = "1"
+    # **1 打ごとに写す**。実機のボイスの塊 +118（掛ける前の音量の目盛り）を
+    # 読めば、減衰の表の平らなところに埋もれずに値そのものが見える
+    env["SMU2000_RAMSNAP_T0"] = "%.4f" % (1.0 + 0.125 + 0.06)
+    env["SMU2000_RAMSNAP_DT"] = "0.25"
+    env["SMU2000_RAMSNAP_N"] = str(len(notes) + 1)
     r = subprocess.run([str(BUILD / ("render" + EXE)), str(roms), str(mid),
                         str(WORK / "fw.wav"), "%.3f" % secs,
                         "--boot", "%.3f" % BOOT, "--trace-swp", str(trc)],
@@ -162,7 +166,9 @@ def main():
         print("鳴らせなかった")
         return 1
 
-    ram = (WORK / "ram000.bin").read_bytes()
+    ram = (WORK / ("ram%03d.bin" % len(notes))).read_bytes()
+    if not (WORK / ("ram%03d.bin" % len(notes))).exists():
+        ram = (WORK / "ram000.bin").read_bytes()
     rom = (roms / "mu2000_flash.bin").read_bytes()
     kit = ram[part_base(9) + PART_KIT]
     mode = ram[part_base(9) + PART_MODE]
@@ -184,6 +190,21 @@ def main():
             return None
         return rom[DRUM_RECORDS + off: DRUM_RECORDS + off + 42]
 
+    # 1 打ごとの写しから「実機が使った目盛り」を拾う
+    VB, VSTRIDE, VLEVEL = 0x424364, 0x94, 118
+    fwlvl = {}
+    prevlv = None
+    for i, n in enumerate(notes):
+        f = WORK / ("ram%03d.bin" % i)
+        if not f.exists():
+            continue
+        r2 = f.read_bytes()
+        lv = [r2[VB + sl * VSTRIDE + VLEVEL - 0x400000] for sl in range(64)]
+        used = [sl for sl in range(64) if lv[sl] and (prevlv is None or lv[sl] != prevlv[sl])]
+        prevlv = lv
+        if used:
+            fwlvl[n] = lv[used[0]]
+
     ko = keyons(trc)
     rows = []
     # 打った順に並ぶ（1 打 1 スロット）
@@ -199,15 +220,17 @@ def main():
             "r09": regs.get(0x09, -1), "r32": regs.get(0x32, -1),
             "r33": regs.get(0x33, -1), "r34": regs.get(0x34, -1),
             "wlvl": rec[26] if rec else -1,
+            "fwlvl": fwlvl.get(n, -1),
             "rec": rec.hex() if rec else "",
         })
 
-    print("%-4s %4s %4s %4s | %6s %6s %6s | %5s" %
-          ("鍵", "音量", "パン", "送り", "0x09", "0x32", "0x33", "波形段"))
+    print("%-4s %4s %4s %4s | %6s %6s %6s | %5s %6s %6s" %
+          ("鍵", "音量", "パン", "送り", "0x09", "0x32", "0x33", "波形段", "実機目盛", "差"))
     for r in rows:
-        print("%-4d %4d %4d %4d |   %04x   %04x   %04x | %5d"
+        print("%-4d %4d %4d %4d |   %04x   %04x   %04x | %5d %6d %6d"
               % (r["note"], r["lvl"], r["pan"], r["rev"],
-                 r["r09"], r["r32"], r["r33"], r["wlvl"]))
+                 r["r09"], r["r32"], r["r33"], r["wlvl"], r["fwlvl"],
+                 r["fwlvl"] - r["lvl"] if r["fwlvl"] >= 0 else 0))
     if a.csv:
         import csv
         with open(a.csv, "w", newline="") as f:

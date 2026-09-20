@@ -2173,7 +2173,10 @@ public:
 			// **写しが無いときは、ドラムセットアップから直に組む**（6.155）
 			if (synth) {
 				const int lv = drum_setup_of(part, note, 0x02);
-				su.att = nv::drum_att(m_rom, lv < 0 ? 127 : lv, vel,
+				const u8 *rc = m_ram ? nv::drum_record(
+				    m_rom, int(m_ram[ram::part_base(part) + nv::PART_KIT]), note)
+				                     : nullptr;
+				su.att = nv::drum_att(m_rom, rc, lv < 0 ? 127 : lv, vel,
 				                      vol_gain_of(part, part_vol(part), part_expr(part)));
 				su.lvl0 = 0;
 				su.arest = 0;
