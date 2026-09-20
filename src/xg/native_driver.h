@@ -128,6 +128,14 @@ public:
 		u16 ahi = 0;           // `0x05` の上位
 		int vamp = 0;          // 遅れが明けたあとの、音量側の揺れ
 		int fdvel = 100;       // フィルタの包絡線の深さだけに使う強さ（6.182）
+		// **フィルタ側の LFO**（6.189）。firmware が自前で持っている
+		// 15bit の位相と、そこから作った「切る高さへ足すぶん」
+		u32 lph = 0;           // 位相（0-0x7fff）
+		u16 lstep = 0;         // 10ms あたりの歩幅
+		int lfdep = 0;         // 深さ（遅れが明けるまで 0）
+		int lfull = 0;         // 遅れが明けたあとの深さ
+		int lcut = 0;          // 切る高さへ足すぶん
+		bool ltri = true;      // 三角波か（byte9 が 0 でなければ）
 		int vfull = 0;         // つまみまで入れた、せり上がり切った深さ
 		u64 vnext = ~u64(0);   // つぎに進める時刻
 		// **音程の包絡線の段**（0 が押した直後の段。3 で終わり）。
@@ -529,6 +537,16 @@ public:
 				bool moved = false;
 				while (clock >= s.fnext) {
 					fenv_step(s);
+					// **フィルタ側の LFO** も同じ 10ms の刻み
+					//（6.189）。実機は**足すぶんを先に作ってから
+					// 位相を進める**（だから 1 刻み遅れる）。
+					// 遅れ（ビブラートの vdly）のあいだは位相も止まる
+					if (s.lstep) {
+						s.lcut = nv::lfo_fcut(
+						    nv::lfo_fwave(s.lph, s.ltri), s.lfdep);
+						if (s.lfdep)
+							s.lph = nv::lfo_next(s.lph, s.lstep);
+					}
 					s.fnext += FENV_TICK;
 					moved = true;
 				}
@@ -549,6 +567,10 @@ public:
 						if (!s.vdly && s.vamp > 0)
 							mova = true;     // 遅れが明けた
 					} else {
+						// **フィルタ側の LFO が掛かり出すのは、
+						// せり上げの 1 歩目と同じ刻み**（6.189）。
+						// 遅れが 0 になった刻みではまだ掛からない
+						s.lfdep = s.lfull;
 						s.vcnt += s.vstep;
 						if (s.vcnt > s.vtgt)
 							s.vcnt = s.vtgt;
@@ -562,6 +584,14 @@ public:
 					const int d = nv::vib_ramp_reg(m_rom, s.vcnt) & 0x7f;
 					m_poke(u32(i) * 64 + 0x0a,
 					       u16(s.vhi | u16(d < s.vfull ? d : s.vfull)));
+					// 実機はこの刻みでも切る高さを作り直す
+					//（6.189。位相は進めない）
+					if (s.lstep && s.elem && fenv_on()) {
+						s.lcut = nv::lfo_fcut(
+						    nv::lfo_fwave(s.lph, s.ltri), s.lfdep);
+						m_poke(u32(i) * 64 + 0x00,
+						       cut_with_cc(s, s.cut));
+					}
 				}
 				if ((s.vdly > 0 || s.vcnt < s.vtgt) && s.vnext < next)
 					next = s.vnext;
@@ -1370,9 +1400,14 @@ private:
 		// Crystal（byte50 = 62）は 1 目めから動く。一律に飛ばしていたので、
 		// そういう音色だけ包絡線が丸ごと 10ms 遅れていた
 		const u32 skip = at_tgt ? FENV_TICK : 0;
+		// **遅れて鳴る要素は、その要素が鳴り出してから数える**
+		//（6.189）。レジスタは要素をまとめて先に書くが、実機の
+		// 10ms 刻みは**その要素が実際に打たれてから**始まる。
+		// 書いた時刻から数えると、1 目ぶん早く進んでいた
+		const u64 dly = s.elem ? nv::elem_delay(s.elem) : 0;
 		s.fnext = (m_eg_have && eg_grid())
-		        ? eg_after(u64(s64(s.tstart) + EG_LAG)) + skip
-		        : u64(s64(s.tstart + at0 + skip) + EG_LAG);
+		        ? eg_after(u64(s64(s.tstart + dly) + EG_LAG)) + skip
+		        : u64(s64(s.tstart + dly + at0 + skip) + EG_LAG);
 	}
 
 	// **離しの段**。鍵を離すと、実機はもう 1 段張って 0 へ向かう。
@@ -1419,20 +1454,35 @@ private:
 		// 0x100 ぶん明るくなっていた（鍵 36 で写し取るので、そこだけ合う）。
 		// 明るさ（CC71）は写し取りとの差ではなく、そのまま足す
 		if (s.cal && !nv::cut_exact())
-			return cutoff_reg(base, *s.cal, s.part, s.elem, s.keynote);
-		return cut_plain(base, s.part, s.elem, s.fvel);
+			return cutoff_reg(base, *s.cal, s.part, s.elem, s.keynote,
+			                  s.lcut);
+		return cut_plain(base, s.part, s.elem, s.fvel, s.lcut);
 	}
 
 	// 式で出した `0x00` に、明るさ（CC71）だけを足す
 	// **明るさのつまみは頭打ちの前に効く**（6.167）。`base` は頭打ちを
 	// 掛けていない値を渡すこと
-	u16 cut_plain(u16 base, int part, const u8 *elem, int vel) const
+	u16 cut_plain(u16 base, int part, const u8 *elem, int vel,
+	              int lfo = 0) const
 	{
 		const int now = m_cc[part].bri;
 		int v = int(base & 0xfff);
 		if (now >= 0 && now != 64)
 			v += nv::bright_shift(now);
 		v = v < 0 ? 0 : (v > 0xfff ? 0xfff : v);
+		// **LFO の揺れはここ**（6.189）。実機（0x127E82）も
+		// 鍵の追従を足して頭打ちしたあと、頭打ちの前に足す。
+		//
+		// **頭は 0x7ff**。実機は 0x800 の下駄を履いたまま
+		// 0xfff で止めてから `& 0x7ff` で面だけ取るので、
+		// こちらでは 0x7ff で止めるのと同じ。これをしないと
+		// TubulBel（もう 0x7ff）で 0x802 を書いてしまい、
+		// 上の面が変わって音が丸ごと壊れた。
+		// 下は 1（実機は 0x800 以下になると 1 にする）
+		if (lfo) {
+			v += lfo;
+			v = v <= 0 ? 1 : (v > 0x7ff ? 0x7ff : v);
+		}
 		return nv::cutoff_cap(u16((base & 0xf000) | u16(v)), elem, vel,
 		                      res_knob(part));
 	}
@@ -1606,16 +1656,16 @@ private:
 	// 写し取りは音色あたり 1 音なので、写した鍵と違う鍵ではここがずれる
 	// （利用者の曲で、食い違いの大半がこれだった）
 	u16 cutoff_reg(u16 base, const nv::voice_cal &c, int part,
-	               const u8 *elem = nullptr, int note = -1) const
+	               const u8 *elem = nullptr, int note = -1, int lfo = 0) const
 	{
 		const int now = m_cc[part].bri;
 		int d = 0;
 		if (elem && note >= 0)
 			d = nv::cutoff_key_curve(m_rom, elem, note)
 			  - nv::cutoff_key_curve(m_rom, elem, c.cal_note);
-		if (d == 0 && (now < 0 || now == c.cal_bri))
+		if (d == 0 && lfo == 0 && (now < 0 || now == c.cal_bri))
 			return base;
-		int v = int(base & 0xfff) + d;
+		int v = int(base & 0xfff) + d + lfo;
 		if (now >= 0)
 			v += nv::bright_shift(now) - nv::bright_shift(c.cal_bri);
 		v = v < 0 ? 0 : (v > nv::CUTOFF_MAX ? nv::CUTOFF_MAX : v);
@@ -2159,10 +2209,23 @@ public:
 			su.vcnt = su.vtgt = su.vdly = 0;
 			su.vnext = ~u64(0);
 			su.vamp = 0;
+			// **フィルタ側の LFO**（6.189）。鍵を押すと
+			// 位相は 0 に戻り、その場で 1 歩進む
+			su.lstep = nv::flfo_on()
+			         ? nv::lfo_step(m_rom,
+			                        nv::vib_rate(int(el[11] & 0x3f), pc.vrate))
+			         : u16(0);
+			su.ltri  = el[9] != 0;
+			su.lph   = su.lstep;
+			su.lfull = su.lstep ? nv::lfo_fdepth(m_rom, el) : 0;
+			su.lfdep = su.lfull;
+			su.lcut  = 0;
 			if (nv::vib_ramps(el)) {
 				su.vtgt  = nv::vib_ramp_target(el);
 				su.vstep = nv::vib_ramp_step(el);
 				su.vdly  = nv::vib_delay_ticks(el);
+				if (su.vdly > 0)
+					su.lfdep = 0;        // 遅れのあいだは掛からない
 				su.vhi   = u16(sr.v[0x0a] & 0xff00);
 				su.ahi   = u16(sr.v[0x05] & 0xff00);
 				su.vamp  = nv::vib_amp_depth(el);
