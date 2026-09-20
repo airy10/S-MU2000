@@ -903,6 +903,21 @@ def case_fxchange():
     return [track(seq(ev))], 10.0
 
 
+def case_dialloop():
+    """**ノートオン・ノートオフだけを繰り返す曲**（Domino のループ再生と同じ形）。
+    音色の指定を 1 度も送らないので、**パネルのダイヤルで音色を替える道**を
+    そのまま見られる（`run_tests.py` の「ダイヤル」がこれを使う）。
+
+    native の口は音色を自分で引くので、パネルで替えられたことに気づけないと
+    「画面は変わるのに音が変わらない」になる（doc/native-engine.md の 6.146）"""
+    ev = head()
+    t = 1.2
+    for i in range(16):
+        ev += note(0, 60 + (i % 3) * 4, 100, t, 0.4)
+        t += 0.5
+    return [track(seq(ev))], t + 1.0
+
+
 CASES = {
     "piano":   case_piano,
     "chord":   case_chord,
@@ -937,6 +952,7 @@ CASES = {
     "pedretrig": case_pedretrig,
     "edges":   case_edges,
     "fxchange": case_fxchange,
+    "dialloop": case_dialloop,
 }
 
 

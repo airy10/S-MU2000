@@ -267,7 +267,7 @@ SHAPE_MIN = {
     "ins2": 0.95, "progchg": 0.98, "running": 0.95, "pat": 0.95,
     "ccramp": 0.95, "midreset": 0.98, "partmode": 0.95,
     "drumnrpn": 0.95, "retrig": 0.95, "pedretrig": 0.98, "edges": 0.95,
-    "fxchange": 0.95,
+    "fxchange": 0.95, "dialloop": 0.95,
     # keylevel は鍵と強さで音量が大きく動く音色ばかりなので、鍵を押す時刻の
     # ばらつき（6.90）が相関に出やすい。**音量のほうは `native の口` が見る**。
     # 音 1 つずつは tools/native/notelevel.py で見られる
@@ -498,6 +498,55 @@ def step_usb(rep, roms, cases):
     rep.add("USB の口", not bad, "、".join(bad or notes) + ("（下限を割った）" if bad else ""))
 
 
+def step_dial(rep, roms, cases):
+    """**パネルのダイヤルで音色を替える**（doc/native-engine.md の 6.146）。
+    ジョグダイヤルの音色替えは MIDI を通らないので、native が拾えないと
+    「画面は変わるのに音が変わらない」。鳴らしている最中に 4 目盛り回して、
+    液晶と波形を firmware の道と突き合わせる"""
+    import math
+    exe = BUILD / ("panel" + EXE)
+    mid = WORK / "dialloop.mid"
+    if not exe.exists() or not mid.exists():
+        rep.add("ダイヤル", True, "この回では見ない")
+        return
+    lcd, wav = {}, {}
+    for tag, extra in (("fw", []), ("ne", ["--native"])):
+        out = WORK / ("dial_%s.wav" % tag)
+        log = WORK / ("dial_%s.log" % tag)
+        rc = run([exe, roms, "--keys", "play", "--mid", mid, "10",
+                  "--turn-at", "3.0", "4", "--wav", out] + extra, out=log, err=log)
+        if rc != 0 or not out.exists():
+            rep.add("ダイヤル", False, "%s で鳴らせなかった" % tag)
+            return
+        txt = log.read_text(encoding="utf-8", errors="replace").splitlines()
+        hit = [l for l in txt if l.startswith("  0 |")]
+        lcd[tag] = hit[0] if hit else ""
+        wav[tag] = out
+    if lcd["fw"] != lcd["ne"]:
+        rep.add("ダイヤル", False,
+                "液晶が違う: %s / %s" % (lcd["fw"].strip(), lcd["ne"].strip()))
+        return
+    fa, ra, ca, _ = fpmod.load_wav(str(wav["fw"]))
+    fb, _, cb, _ = fpmod.load_wav(str(wav["ne"]))
+    n = min(len(fa) // ca, len(fb) // cb)
+    cs = []
+    for s0 in range(0, n - ra, ra):
+        sa = fa[s0 * ca:(s0 + ra) * ca:ca]
+        sb = fb[s0 * cb:(s0 + ra) * cb:cb]
+        na = sum(float(x) * x for x in sa)
+        nb = sum(float(x) * x for x in sb)
+        if na < 1e3 or nb < 1e3:
+            continue
+        num = sum(float(x) * float(y) for x, y in zip(sa, sb))
+        cs.append(num / math.sqrt(na * nb))
+    if not cs:
+        rep.add("ダイヤル", False, "音が無い")
+        return
+    med = sorted(cs)[len(cs) // 2]
+    ok = med >= 0.95
+    rep.add("ダイヤル", ok, "音色が替わって波形の相関 %.0f%%" % (100 * med))
+
+
 # パネルの試験で押すボタン（品書きを一巡りする）
 PANEL_KEYS = ("play,util,enter,value+,value+,exit,edit,enter,value+,exit,exit,"
               "part+,mute,play,drum,piano,organ,select,edit,enter,enter,exit,exit")
@@ -607,6 +656,7 @@ def main():
         print()
         print("== 8. パネル（native の口でもボタンと液晶が効くか）")
         step_panel(rep, roms)
+        step_dial(rep, roms, cases)
 
         print()
         print("== 9. USB の口（プラグインの既定）")

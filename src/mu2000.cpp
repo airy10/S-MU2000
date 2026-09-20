@@ -1147,6 +1147,8 @@ void mu2000::set_native_engine(int mode)
 		p = part_prog();
 	for (s8 &m : m_part_mode)
 		m = -1;
+	for (auto &q : m_prog_seen)
+		q[0] = q[1] = q[2] = 0xff;
 	m_fw_note_total = 0;
 	m_fw_note_until = 0;
 	m_nq.clear();
@@ -1748,6 +1750,34 @@ void mu2000::traj_finish_one(int i)
 // バンクとプログラムから音色の記録を引いて、native の口に渡す。
 // firmware がワーク RAM に入れるのを待たなくて済む（引き方は
 // xg::voice_rom::lookup。旋律系のバンク 640 音色で firmware と食い違い 0）
+// **パネルで替えられた音色を拾う**（6.146）。ジョグダイヤルや PART+/- の
+// 音色替えは MIDI を通らないので、こちらが持っている `m_prog_sel` が古い
+// ままになり、**画面は変わるのに音が変わらない**（実機モードへ行って戻ると
+// 直るのは、そこで選びが作り直されるため）。
+//
+// ワーク RAM の値が**前に見たときから動いていたら**拾う。こちらが MIDI で
+// 動かしたぶんは firmware が同じ値を書くので、二重には効かない
+void mu2000::sync_prog()
+{
+	if (m_ram.size() < xg::ram::PARTS)
+		return;
+	for (int p = 0; p < 64; p++) {
+		const u32 b = xg::ram::part_base(p);
+		if (b + 4 > m_ram.size())
+			continue;
+		const u8 msb = m_ram[b + 1], lsb = m_ram[b + 2], prog = m_ram[b + 3];
+		u8 *seen = m_prog_seen[p];
+		if (seen[0] == msb && seen[1] == lsb && seen[2] == prog)
+			continue;
+		seen[0] = msb; seen[1] = lsb; seen[2] = prog;
+		part_prog &sel = m_prog_sel[p];
+		if (sel.msb == msb && sel.lsb == lsb && sel.prog == prog)
+			continue;                    // MIDI で先に効かせてあった
+		sel.msb = msb; sel.lsb = lsb; sel.prog = prog;
+		native_select_voice(p);
+	}
+}
+
 void mu2000::native_select_voice(int part)
 {
 	if (part < 0 || part >= 64 || !m_prog)
@@ -1856,6 +1886,7 @@ void mu2000::native_pump()
 			for (int p = 0; p < 64; p++) {
 				m_prog_sel[p] = part_prog();
 				m_part_mode[p] = -1;
+				m_prog_seen[p][0] = m_prog_seen[p][1] = m_prog_seen[p][2] = 0xff;
 			}
 			std::memset(m_nown, 0, sizeof(m_nown));
 			m_ndrv.reset_parts();
@@ -2322,6 +2353,7 @@ void mu2000::run_sample(s32 &left, s32 &right)
 			// ならないので、**一度も拾えない**ことがあった。RPN でベンド幅を
 			// 広げても native は既定の 2 半音のまま鳴らしていた
 			m_ndrv.sync_cc();
+			sync_prog();
 		}
 		// **パネルを触っている間は全速**（6.119）。ボタン・ダイヤル・液晶は
 		// ぜんぶ firmware の仕事なので、細く回したままだと手触りが 20 分の 1 に
