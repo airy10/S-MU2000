@@ -1299,7 +1299,10 @@ private:
 		       ? nv::fenv_init(m_rom, s.elem, s.fvel, atk, s.keynote) : s.ftgt;
 		s.finc = 0;
 		s.fstage = 0;
-		if (s.facc == s.ftgt) {
+		// **押鍵のときにもう段 0 の行き先に居るか**。
+		// ここで段を進めた音は、押した直後の 1 目で値が動かない
+		const bool at_tgt = (s.facc == s.ftgt);
+		if (at_tgt) {
 			fenv_next(s);
 		} else if (nv::fenv_atk_instant(m_rom, s.elem, atk, s.keynote)) {
 			s.finc = nv::FENV_NEXT;
@@ -1317,15 +1320,19 @@ private:
 		if (s.cal)
 		for (const nv::fstep &e : s.cal->filter_env)
 			if (e.reg == 0x00 && !e.rel) { at0 = e.at; break; }
-		// 鍵を押した直後の 1 目は、実機も値を動かさない（張った値を書くだけ）。
-		// だから 1 目ぶん遅らせて進め始める
 		// **実機の 10ms 割り込みは世界共通**（6.118）。鍵を押したあと最初に
 		// 来る目が 1 目め。写し取りの at0 は写し取った音の鍵からの相対なので、
 		// そのまま足すと鍵ごとに位相がずれる（実機の位相は 304、こちらは
-		// 曲ごとに 86-308 とばらばらだった）。位相をまだ学べていない間だけ at0 を使う
+		// 曲ごとに 86-308 とばらばらだった）。位相をまだ学べていない間だけ at0 を使う。
+		//
+		// **1 目飛ばすのは、押鍵のときにもう行き先に居る音だけ**（6.177）。
+		// GrandPno（byte50 = 63 で即到達）は実機も 1 目めで値を動かさないが、
+		// Crystal（byte50 = 62）は 1 目めから動く。一律に飛ばしていたので、
+		// そういう音色だけ包絡線が丸ごと 10ms 遅れていた
+		const u32 skip = at_tgt ? FENV_TICK : 0;
 		s.fnext = (m_eg_have && eg_grid())
-		        ? eg_after(u64(s64(s.tstart) + EG_LAG)) + FENV_TICK
-		        : u64(s64(s.tstart + at0 + FENV_TICK) + EG_LAG);
+		        ? eg_after(u64(s64(s.tstart) + EG_LAG)) + skip
+		        : u64(s64(s.tstart + at0 + skip) + EG_LAG);
 	}
 
 	// **離しの段**。鍵を離すと、実機はもう 1 段張って 0 へ向かう。
