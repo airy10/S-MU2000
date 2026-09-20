@@ -79,6 +79,10 @@ public:
 		int  rel_att = 0;               // 離しのときに書いた減衰（戻さないための下限）
 		// **Rnd のパンで当たった位置**（0-127。-1 は Rnd ではない）。
 		// 鳴らし始めに 1 度引いて、そのあとは動かさない（6.147）
+		// **つまみの差を乗せる元の値**（パン・リバーブ送り・コーラス送り）。
+		// 写し取りがあればその値、無ければ式で組んだ値。ここを持たずに
+		// `cal->reg[]` を見ていたので、合成の写しでは音色のパンが消えていた
+		u16  base32 = 0, base33 = 0, base34 = 0;
 		int  rnd_pan = -1;
 		int  rnd_drop = 0;              // Rnd のときの送りの目減り
 		int  vel = 0;                   // 押した強さ（液晶のメーター用）
@@ -1140,17 +1144,23 @@ private:
 			}
 			m_poke(u32(i) * 64 + 9, u16(note_att(s, part)));
 			if (s.cal->has(0x32))
-				m_poke(u32(i) * 64 + 0x32, pan_reg(*s.cal, part, s.rnd_pan));
+				m_poke(u32(i) * 64 + 0x32,
+				       s.rnd_pan < 0 && s.cal->synth ? exact_pan(s, part)
+				                                     : pan_reg(*s.cal, part, s.rnd_pan, s.base32));
 			if (s.lfo)
 				m_poke(u32(i) * 64 + 0x0a, lfo_reg(s.lfo, *s.cal, part));
 			if (s.cal->has(0x33))
 				m_poke(u32(i) * 64 + 0x33,
-				       send_reg(*s.cal, 0x33, false, m_cc[part].rev, s.cal->cal_rev,
-				                s.rnd_drop));
+				       s.cal->synth
+				       ? exact_send(s, part, false, s.base33)
+				       : send_reg(*s.cal, 0x33, false, m_cc[part].rev, s.cal->cal_rev,
+				                  s.rnd_drop, s.base33));
 			if (s.cal->has(0x34))
 				m_poke(u32(i) * 64 + 0x34,
-				       send_reg(*s.cal, 0x34, true, m_cc[part].cho, s.cal->cal_cho,
-				                s.rnd_drop));
+				       s.cal->synth
+				       ? exact_send(s, part, true, s.base34)
+				       : send_reg(*s.cal, 0x34, true, m_cc[part].cho, s.cal->cal_cho,
+				                  s.rnd_drop, s.base34));
 			if (s.cut)
 				m_poke(u32(i) * 64 + 0x00,
 				       cutoff_reg(s.cut, *s.cal, part, s.elem, s.note));
@@ -1495,9 +1505,8 @@ private:
 	// `drop` は**パンの Rnd で目減りするぶん**（6.147）。Rnd のときは送りの
 	// 表を位置 0 で引くので、写し取ったとき（音色の持つパンの位置）のぶんだけ減る
 	u16 send_reg(const nv::voice_cal &c, int which, bool hi, int now, int was,
-	             int drop = 0) const
+	             int drop, u16 base) const
 	{
-		const u16 base = c.reg[which];
 		if (drop == 0 && (now < 0 || now == was))
 			return base;
 		const int cur = hi ? (base >> 8) : (base & 0xff);
@@ -1581,7 +1590,38 @@ private:
 	}
 
 	// パンのレジスタ（写し取った値からの差ぶんで動かす）
-	u16 pan_reg(const nv::voice_cal &c, int part, int rnd = -1) const
+	// **合成の写しのときは、つまみを織り込んだ値をその場で組み直す**（6.154）。
+	// 写し取りが無いので「基準からの差」ではなく絶対値で出す。
+	// パンは `PAN_BASE[CC10] + PAN_CURVE[音色（打）のパン]`（6.155）
+	u16 exact_pan(const slot_use &s, int part) const
+	{
+		const int q = m_cc[part].pan < 0 ? 64 : m_cc[part].pan;
+		if (s.elem)
+			return nv::voice_pan_reg(m_rom, s.elem, s.note, 64, q);
+		const int dp = drum_setup_of(part, s.keynote, 0x04);
+		return nv::drum_pan_reg(m_rom, dp < 0 ? 64 : dp, q);
+	}
+
+	// 送り（0x33・0x34）。上位はそのまま、下位を組み直す
+	u16 exact_send(const slot_use &s, int part, bool cho, u16 base) const
+	{
+		const int now = cho ? m_cc[part].cho : m_cc[part].rev;
+		int extra = 127;
+		int pan = 64;
+		if (s.elem) {
+			pan = nv::voice_pan_pos(m_rom, s.elem, s.note);
+		} else {
+			const int d = drum_setup_of(part, s.keynote, cho ? 0x06 : 0x05);
+			const int dp = drum_setup_of(part, s.keynote, 0x04);
+			extra = d < 0 ? 127 : d;
+			pan = dp < 0 ? 64 : dp;
+		}
+		return u16((base & 0xff00)
+		           | u16(nv::send_level_att(m_rom, now < 0 ? (cho ? 0 : 40) : now,
+		                                    extra, pan)));
+	}
+
+	u16 pan_reg(const nv::voice_cal &c, int part, int rnd, u16 base) const
 	{
 		// Rnd のときは**音色のパンの寄りを無視して**、当たった位置そのもの
 		// （実機もそうしている。6.147）
@@ -1589,9 +1629,9 @@ private:
 			return nv::pan_rnd_reg(m_rom, rnd);
 		const int now = m_cc[part].pan, was = c.cal_pan;
 		if (now < 0 || now == was)
-			return c.reg[0x32];
-		const int l = nv::clamp_att((c.reg[0x32] >> 8) + nv::pan_att(m_rom, now) - nv::pan_att(m_rom, was));
-		const int r = nv::clamp_att((c.reg[0x32] & 0xff) + nv::pan_att(m_rom, 128 - now)
+			return base;
+		const int l = nv::clamp_att((base >> 8) + nv::pan_att(m_rom, now) - nv::pan_att(m_rom, was));
+		const int r = nv::clamp_att((base & 0xff) + nv::pan_att(m_rom, 128 - now)
 		                            - nv::pan_att(m_rom, 128 - was));
 		return u16(l << 8 | r);
 	}
@@ -1700,16 +1740,43 @@ public:
 
 	// その音を native で鳴らせるか（実際に鳴らす前に決める必要がある。
 	// 鳴らせないなら firmware に回すので、遅らせてはいけない）
+	// **写し取りを 1 音もしない道**（段 4。`SMU2000_NOCAL=1`）。
+	// 式だけでレジスタを組み、つまみの基準は既定の位置に置く
+	// （`nv::default_cal`）。まだ式で出せない所（パート EQ・ミキサ）は
+	// 実測の定数のままなので、そこを詰めるための足場でもある
+	static bool nocal_mode()
+	{
+		static const bool v = std::getenv("SMU2000_NOCAL") != nullptr;
+		return v;
+	}
+
+	// 合成の写し。要素ごとに 1 つずつ要る（中身は同じ）ので使い回す。
+	// **大きさは変えない**。スロットは `slot_use::cal` でこの中を指すので、
+	// あとから伸ばすと前の音の指し先が宙に浮く（dense で落ちた）
+	static constexpr int SYNTH_CALS = 16;
+	const std::vector<nv::voice_cal> &synth_cals() const
+	{
+		if (m_synth.empty())
+			m_synth.assign(SYNTH_CALS, nv::default_cal());
+		return m_synth;
+	}
+
 	bool can_play(int part, int note) const
 	{
 		if (!m_rom || part < 0 || part >= PARTS)
 			return false;
 		if (m_cc[part].unknown)              // 知らない CC が効いている間は firmware へ
 			return false;
-		if (is_drum(part))
-			return m_drum.find(drum_key(part, note)) != m_drum.end();
+		if (is_drum(part)) {
+			if (m_drum.find(drum_key(part, note)) != m_drum.end())
+				return true;
+			return nocal_mode() && m_ram && nv::drum_record(
+			    m_rom, int(m_ram[ram::part_base(part) + nv::PART_KIT]), note) != nullptr;
+		}
 		const u32 rec = record_of(part);
-		return rec && m_cal.find(cal_key(rec, part)) != m_cal.end();
+		if (!rec)
+			return false;
+		return nocal_mode() || m_cal.find(cal_key(rec, part)) != m_cal.end();
 	}
 
 	// 鍵を押す。写し取りが無ければ false（呼んだ側が firmware に回す）
@@ -1721,9 +1788,11 @@ public:
 		if (!rec || !m_rom)
 			return false;
 		const auto it = m_cal.find(cal_key(rec, part));
-		if (it == m_cal.end())
+		if (it == m_cal.end() && !nocal_mode())
 			return false;
-		const std::vector<nv::voice_cal> &cals = it->second;
+		const std::vector<nv::voice_cal> &cals =
+		    it != m_cal.end() ? it->second
+		                      : synth_cals();
 
 		// **モノなら前の音を離す**（6.125）
 		if (m_cc[part].mono)
@@ -1848,10 +1917,17 @@ public:
 			su.rnd_drop = su.rnd_pan < 0 ? 0
 			            : nv::pan_send_drop(m_rom, nv::voice_pan_pos(
 			                  m_rom, el, pnote, c ? c->cal_pan : 64));
+			// **つまみの差を乗せる元は、式で組んだ値**（写し取りがあれば
+			// build_note がそれで上書きしているので同じ値になる）
+			su.base32 = sr.v[0x32];
+			su.base33 = sr.v[0x33];
+			su.base34 = sr.v[0x34];
 			if (su.rnd_pan >= 0)
 				sr.set(0x32, nv::pan_rnd_reg(m_rom, su.rnd_pan));
-			else if (c && c->has(0x32))
-				sr.set(0x32, pan_reg(*c, part));
+			else if (c && c->synth)
+				sr.set(0x32, exact_pan(su, part));
+			else if (c)
+				sr.set(0x32, pan_reg(*c, part, -1, su.base32));
 			su.lfo = sr.v[0x0a];
 			su.cut = sr.v[0x00];
 			if (c) {
@@ -1864,10 +1940,15 @@ public:
 				// **共振は式で出した値に CC71 の差ぶんを乗せる**（写し取った
 				// 値ではない。強さで変わるので写し取りは使えない。6.69）
 				sr.set(0x04, reso_reg(sr.v[0x04], *c, part));
-				if (c->has(0x33))
-					sr.set(0x33, send_reg(*c, 0x33, false, pc.rev, c->cal_rev, su.rnd_drop));
-				if (c->has(0x34))
-					sr.set(0x34, send_reg(*c, 0x34, true, pc.cho, c->cal_cho, su.rnd_drop));
+				if (c->synth) {
+					sr.set(0x33, exact_send(su, part, false, su.base33));
+					sr.set(0x34, exact_send(su, part, true, su.base34));
+				} else {
+					sr.set(0x33, send_reg(*c, 0x33, false, pc.rev, c->cal_rev,
+					                      su.rnd_drop, su.base33));
+					sr.set(0x34, send_reg(*c, 0x34, true, pc.cho, c->cal_cho,
+					                      su.rnd_drop, su.base34));
+				}
 			}
 			write_slot(slot, sr);
 			if (debug_on())
@@ -2037,8 +2118,12 @@ public:
 	bool drum_on(int part, int note, int vel)
 	{
 		const auto it = m_drum.find(drum_key(part, note));
-		if (it == m_drum.end() || !m_rom)
+		const bool synth = it == m_drum.end();
+		if ((synth && !nocal_mode()) || !m_rom)
 			return false;
+		// 合成のときは 1 つだけ使う（ドラムは 1 打 1 スロット）
+		const std::vector<nv::voice_cal> &dcals = synth ? synth_cals() : it->second;
+		const size_t ndcal = synth ? 1 : dcals.size();
 		u64 keymask = 0;
 		int nwrote = 0;
 		// **同じオルタネートグループの打を止める**（6.151）。ハイハットの
@@ -2047,7 +2132,8 @@ public:
 		const int cutn = grp ? alt_cut(part, note, grp) : 0;
 		wrote_regs(cutn);
 		++m_inst;                        // この打の番号（6.138）
-		for (const nv::voice_cal &c : it->second) {
+		for (size_t di = 0; di < ndcal; di++) {
+			const nv::voice_cal &c = dcals[di];
 			const int slot = take_slot(part, note);
 			if (slot < 0)
 				break;
@@ -2065,35 +2151,63 @@ public:
 			m_traj = true;
 			m_traj_next = 0;
 			su.att = att0 + 2 * (nv::velocity_att(m_rom, vel) - nv::velocity_att(m_rom, c.cal_vel));
-			const int att = note_att(su, part);
+			// **写しが無いときは、ドラムセットアップから直に組む**（6.155）
+			if (synth) {
+				const int lv = drum_setup_of(part, note, 0x02);
+				su.att = nv::drum_att(m_rom, lv < 0 ? 127 : lv, vel,
+				                      vol_gain_of(part, part_vol(part), part_expr(part)));
+				su.lvl0 = 0;
+				su.arest = 0;
+			}
+			const int att = synth ? nv::clamp_att(su.att) : note_att(su, part);
 			su.lfo = c.has(0x0a) ? c.reg[0x0a] : 0;
 			// **式で組む道**（`SMU2000_DRUM_EXACT=1`）。記録の 42 バイトから
 			// 0x00・0x02・0x04・0x06-0x08・0x11・0x12-0x17 を出す（6.86・6.87）。
 			// パン・送り・EQ は写し取りのまま（パートの設定を含むので）
 			const u8 *drec = nullptr;
-			if (nv::drum_exact() && m_ram)
+			if ((nv::drum_exact() || synth) && m_ram)
 				drec = nv::drum_record(m_rom,
 				                       int(m_ram[ram::part_base(part) + nv::PART_KIT]), note);
 			nv::slot_regs dr;
-			if (drec)
-				dr = nv::drum_note(m_rom, drec, att);
+			if (drec) {
+				// **高さも写しではなくドラムセットアップから**（3n rr 00/01）。
+				// 渡していなかったので、曲が打の高さを変えても効かなかった
+				const int co = drum_setup_of(part, note, 0x00);
+				const int fi = drum_setup_of(part, note, 0x01);
+				dr = nv::drum_note(m_rom, drec, att, nv::defaults(),
+				                   co < 0 ? 64 : co, fi < 0 ? 64 : fi);
+			}
+			if (synth) {
+				// パン・送りもドラムセットアップから（6.155）。
+				// `su.keynote` はもう入っているので exact_* が使える
+				dr.set(0x32, su.rnd_pan >= 0 ? nv::pan_rnd_reg(m_rom, su.rnd_pan)
+				                             : exact_pan(su, part));
+				dr.set(0x33, exact_send(su, part, false, dr.v[0x33]));
+				dr.set(0x34, exact_send(su, part, true, dr.v[0x34]));
+			}
+			// **つまみの差を乗せる元**。写しがあればその値、
+			// 無ければドラムセットアップから組んだ値
+			su.base32 = synth ? dr.v[0x32] : (c.has(0x32) ? c.reg[0x32] : dr.v[0x32]);
+			su.base33 = synth ? dr.v[0x33] : (c.has(0x33) ? c.reg[0x33] : dr.v[0x33]);
+			su.base34 = synth ? dr.v[0x34] : (c.has(0x34) ? c.reg[0x34] : dr.v[0x34]);
 			for (int i = 0; i < 0x40; i++)
-				if (drec && (dr.write & (u64(1) << i)) && i != 9 && i != 0x32
-				    && i != 0x33 && i != 0x34 && !(i >= 0x20 && i <= 0x2b)
-				    && i != 0x03 && i != 0x05 && i != 0x0a)
+				if (drec && (dr.write & (u64(1) << i)) && i != 9
+				    && (synth || (i != 0x32 && i != 0x33 && i != 0x34
+				                  && !(i >= 0x20 && i <= 0x2b)
+				                  && i != 0x03 && i != 0x05 && i != 0x0a)))
 					m_poke(u32(slot) * 64 + u32(i), dr.v[i]);
-				else if (c.has(i))
+				else if (c.has(i) || (synth && (i == 9 || (i >= 0x32 && i <= 0x34))))
 					m_poke(u32(slot) * 64 + u32(i),
 					       i == 9 ? u16(att)
-					              : (i == 0x32 ? pan_reg(c, part, su.rnd_pan)
+					              : (i == 0x32 ? pan_reg(c, part, su.rnd_pan, su.base32)
 					              : (i == 0x0a ? lfo_reg(c.reg[0x0a], c, part)
 					              : (i == 0x33 ? send_reg(c, 0x33, false, m_cc[part].rev, c.cal_rev,
-					                                      su.rnd_drop)
+					                                      su.rnd_drop, su.base33)
 					              : (i == 0x34 ? send_reg(c, 0x34, true, m_cc[part].cho, c.cal_cho,
-					                                      su.rnd_drop)
+					                                      su.rnd_drop, su.base34)
 					                           : c.reg[i])))));
 
-			su.drum_rel = c.has(9) ? u16(c.reg[9]) : 0;
+			su.drum_rel = c.has(9) ? u16(c.reg[9]) : u16(att);
 			if (busy() > m_peak)
 				m_peak = busy();
 			if (debug_on())
@@ -2318,6 +2432,8 @@ private:
 	const u8 *m_rom = nullptr;
 	const u8 *m_ram = nullptr;
 	u8 *m_ramw = nullptr;           // 同じワーク RAM（Rnd の種を書き戻す用）
+	// 写し取り無しで鳴らすときの合成の写し（`nocal_mode`）
+	mutable std::vector<nv::voice_cal> m_synth;
 	std::unordered_map<u64, std::vector<nv::voice_cal>> m_cal;
 	std::unordered_map<u64, std::vector<nv::voice_cal>> m_drum;
 	std::array<slot_use, SLOTS> m_slot;

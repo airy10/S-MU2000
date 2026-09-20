@@ -933,6 +933,9 @@ struct fstep {
 
 struct voice_cal {
 	bool have = false;
+	// **合成の写し**（`default_cal`。写し取りをしていない）。つまみの差では
+	// なく、その場で式を組み直す目印（doc/native-engine.md の 6.154）
+	bool synth = false;
 	int  base_level = 64;      // 校正した素の音量
 	int  cal_vel = 100;        // 写し取ったときの強さ（強さを変えるときの基準）
 	// 写し取ったときの鍵。レジスタ 0x00（切る高さ）は鍵でも動くので、
@@ -966,6 +969,40 @@ struct voice_cal {
 	// そのスロットが鳴らしていた波形の番地（0x16/0x17）
 	u32 wave_addr() const { return u32(reg[0x16]) << 16 | reg[0x17]; }
 };
+
+// **写し取りの代わりに置く「既定のつまみでの写し」**（段 4。`SMU2000_NOCAL`）。
+//
+// 写し取りが持っているのは、突き詰めると 2 つだけになった:
+//   * **つまみがどこにあったか**（cal_vol・cal_pan・cal_rev …）。鳴らすときは
+//     そこからの**差**でレジスタを動かすので、基準の位置さえ分かればよい
+//   * **式で出せない所の値**（0x20-0x2b のパート EQ・0x32-0x37 のミキサ）
+//
+// `defaults` は「パート 1・音量 100・パン中央・リバーブ送り 40」で測った値
+// なので、基準のつまみもそこに合わせれば辻褄が合う。**写し取りを 1 音も
+// せずに鳴らせる**ようになる。まだ式で出せない所は defaults のままなので、
+// つまみを既定から動かした曲では、そのぶんだけ実機と離れる
+inline voice_cal default_cal(const defaults &d = defaults())
+{
+	voice_cal c;
+	c.have = false;                // build_note の丸写しはしない（式を使う）
+	c.synth = true;
+	c.base_level = 0;              // 目盛りは ROM から出す（6.113）
+	c.cal_vel = 100;
+	c.cal_note = 60;
+	c.cal_vol = 100;
+	c.cal_expr = 127;
+	c.cal_pan = 64;
+	c.cal_mod = 0;
+	c.cal_rev = 40;
+	c.cal_cho = 0;
+	c.cal_bri = 64;
+	c.cal_res = 64;
+	c.dec_adj[0] = c.dec_adj[1] = 0;
+	// つまみの差を乗せる元になる値だけ入れておく（パン・送り・ミキサ）
+	for (int i = 0; i < 6; i++)
+		c.set(0x32 + i, d.mix[i]);
+	return c;
+}
 
 // 要素と、写し取ったスロットを**波形の番地で**結び付ける。
 // 要素の並びとスロットの並びが同じとは限らないので、順番では当てにならない
@@ -1219,6 +1256,74 @@ inline slot_regs drum_note(const u8 *rom, const u8 *rec, int att,
 	for (int i = 0; i < 6; i++)
 		r.set(0x32 + i, d.mix[i]);
 	return r;
+}
+
+// ---- **ドラムの音量・パン・送り**（doc/native-engine.md の 6.155）
+//
+// 写し取りを捨てる（段 4）ための最後の 3 本。`tools/native/drumprobe.py` で
+// 1 キット 57 打 × 強さ 3 通りを実機と突き合わせて出した。
+//
+// 元になる値は**ドラムセットアップ**（`3n rr pp`。ワーク RAM）:
+//   +02 音量  +04 パン  +05 リバーブ送り  +06 コーラス送り
+// キットを選ぶと firmware が ROM の記録（42 バイトの +2/+4/+5/+6）から
+// ここへ写すので、曲が `3n rr pp` で上書きしていてもそのまま読める。
+
+// **ドラムは強さの曲線が 1**（旋律は要素の byte68 で選ぶ）。
+// 強さ 40/100/127 で 22/4/0。曲線 0 なら 26/5/0 で合わない
+constexpr int DRUM_VEL_CURVE = 1;
+
+// 音量の目盛りに音量つまみを掛ける。**旋律と違って丸める**（+64 してから
+// 7 ビット落とす）。丸めないと 57 打のうち 8 打で 1 段ずれた
+inline int drum_level_scaled(int level, int gain)
+{
+	if (gain <= 0 || level <= 0)
+		return 0;
+	const int v = (level * (gain > 128 ? 128 : gain) + 64) >> 7;
+	return v < 1 ? 1 : (v > 128 ? 128 : v);
+}
+
+// `0x09` に入れる減衰。**57 打のうち 45 打が実機と完全に一致**
+// （残り 12 打はさらに下駄が乗る。まだ出どころが割れていない）
+inline int drum_att(const u8 *rom, int level, int vel, int gain = VOL_GAIN_DEF)
+{
+	if (!rom)
+		return 0x40;
+	int a = int(rom[LEVEL_TAB + 0x80 + u32(drum_level_scaled(level, gain))])
+	      + velocity_att(rom, vel, DRUM_VEL_CURVE);
+	if (a > 127) a = 127;
+	if (a < 0) a = 0;
+	return a * 2;
+}
+
+// `0x32`（パン）。**57 打すべて実機と一致**。旋律の `voice_pan_reg` と同じ形で、
+// 音色のパンの代わりにドラムセットアップのパンを使う
+inline u16 drum_pan_reg(const u8 *rom, int pan, int part_pan = 64)
+{
+	if (!rom)
+		return 0x0808;
+	const int p = pan < 0 ? 64 : (pan > 127 ? 127 : pan);
+	const int q = (part_pan < 0 ? 64 : part_pan) & 0x7f;
+	int l = int(rom[PAN_BASE_TAB + u32(q)]) + int(rom[PAN_CURVE_TAB + u32(p)]);
+	int r = int(rom[PAN_BASE_TAB + u32(0x80 - q)])
+	      + int(rom[PAN_CURVE_TAB + u32(0x80 - p)]);
+	if (l > 255) l = 255;
+	if (r > 255) r = 255;
+	return u16((l << 8) | r);
+}
+
+// `0x33`・`0x34` の下位（送り）。**ドラム 57 打すべて実機と一致**。
+// パートの送り（CC91/CC93）と**打ごとの送り**を掛け合わせてから表を引き、
+// 真ん中で 16 の下駄、パンで振るぶん目減りする。
+// **旋律にも使える**（打ごとの送りを 127 にすれば掛け算が消える）
+inline int send_level_att(const u8 *rom, int part_send, int extra_send, int pan)
+{
+	if (!rom)
+		return 0xff;
+	const int ps = part_send < 0 ? 40 : (part_send > 127 ? 127 : part_send);
+	const int ds = extra_send < 0 ? 127 : (extra_send > 127 ? 127 : extra_send);
+	const int eff = (ps * ds) / 127;
+	const int v = 16 + send_att(rom, eff) + pan_send_adj(rom, pan < 0 ? 64 : pan);
+	return v < 0 ? 0 : (v > 255 ? 255 : v);
 }
 
 // 1 音ぶんのレジスタを作る。att は 0x09 に入れる減衰（0-255。小さいほど大きい音）

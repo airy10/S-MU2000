@@ -114,7 +114,7 @@ def render(roms, midi, wav, seconds, extra, env):
     return r.returncode == 0 and Path(wav).exists()
 
 
-def warm_pair(roms, name, midi, seconds, out, home):
+def warm_pair(roms, name, midi, seconds, out, home, nocal=False):
     """実機の道と、**写し取り済みの** native の口で 1 本ずつ鳴らす"""
     env = {"LOCALAPPDATA": str(home), "XDG_DATA_HOME": str(home),
            "HOME": str(home)}
@@ -123,6 +123,12 @@ def warm_pair(roms, name, midi, seconds, out, home):
     ne = out / ("%s_ne.wav" % name)
     if not render(roms, midi, fw, seconds, [], {"SMU2000_NO_VOICECACHE": "1"}):
         return "実機の道が鳴らせなかった"
+    if nocal:
+        # **写し取りを一切しない**（段 4）。1 回目も 2 回目も無いので 1 本だけ
+        if not render(roms, midi, ne, seconds, ["--native-engine"],
+                      {"SMU2000_NOCAL": "1", "SMU2000_NO_VOICECACHE": "1"}):
+            return "写し取り無しで鳴らせなかった"
+        return None
     # 1 回目で写しを貯める（捨てる）
     warm = ["--native-engine", "--voicecache"]
     if not render(roms, midi, out / ("%s_w1.wav" % name), seconds, warm, env):
@@ -137,16 +143,20 @@ def main():
     ap.add_argument("names", nargs="*")
     ap.add_argument("--warm", action="store_true",
                     help="写し取り済みで鳴らし直して測る（1 音目から native）")
+    ap.add_argument("--nocal", action="store_true",
+                    help="写し取りを一切せず、式だけで鳴らして測る（段 4）")
     ap.add_argument("--roms")
     a = ap.parse_args()
 
+    if a.nocal:
+        a.warm = True
     if not a.warm:
         names = a.names
         if not names:
             names = sorted(p.stem for p in WORK.glob("*.wav")
                            if not p.stem.endswith("_ne")
                            and (WORK / (p.stem + "_ne.wav")).exists())
-        head(False)
+        head("make test の wav・1 音目は実機")
         for name in names:
             row(name, compare(WORK / ("%s.wav" % name),
                               WORK / ("%s_ne.wav" % name)))
@@ -165,13 +175,13 @@ def main():
     shutil.rmtree(home / "S-MU2000" / "voicecal", ignore_errors=True)
     out.mkdir(parents=True, exist_ok=True)
     home.mkdir(parents=True, exist_ok=True)
-    head(True)
+    head("写し取り無し・式だけ" if a.nocal else "写し取り済み・1 音目から native")
     for name in names:
         if name not in cases:
             print("%-10s その名前の試験は無い" % name)
             continue
         midi, seconds = cases[name]
-        bad = warm_pair(roms, name, midi, seconds, out, home)
+        bad = warm_pair(roms, name, midi, seconds, out, home, a.nocal)
         if bad:
             print("%-10s %s" % (name, bad))
             continue
@@ -180,9 +190,7 @@ def main():
 
 
 def head(warm):
-    print("%s（%s）" % ("引き算で見る",
-                       "写し取り済み・1 音目から native" if warm
-                       else "make test の wav・1 音目は実機"))
+    print("%s（%s）" % ("引き算で見る", warm))
     print("%-10s %-6s %8s %8s %8s" % ("試験", "同一", "残差", "最悪の窓", "その時刻"))
 
 
