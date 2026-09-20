@@ -517,7 +517,8 @@ public:
 						v = lfo_reg(v, *s.cal, s.part);
 					} else if (re[s.rpos].reg == 0x00) {
 						s.cut = v;
-						v = cutoff_reg(v, *s.cal, s.part, s.elem, s.keynote);
+						v = cutoff_reg(v, *s.cal, s.part, s.elem, s.keynote,
+						                   s.lcut + assign_cut(s.part, s.keynote));
 					} else if (re[s.rpos].reg == 0x04) {
 						v = reso_reg(v, *s.cal, s.part);
 					}
@@ -647,7 +648,8 @@ public:
 					v = lfo_reg(v, *s.cal, s.part);
 				} else if (fe[s.tpos].reg == 0x00) {   // 切る高さに明るさを足す
 					s.cut = v;
-					v = cutoff_reg(v, *s.cal, s.part, s.elem, s.keynote);
+					v = cutoff_reg(v, *s.cal, s.part, s.elem, s.keynote,
+						                   s.lcut + assign_cut(s.part, s.keynote));
 				} else if (fe[s.tpos].reg == 0x04) {
 					v = reso_reg(v, *s.cal, s.part);
 				}
@@ -984,6 +986,39 @@ public:
 		return sum;
 	}
 
+	// **つまみの割り当て「切る高さ」**（6.196。実機 0x1281BA）。
+	//
+	//   足すぶん = ((深さ - 64) × 値) >> 2
+	//
+	// ベンドだけは中央からの離れを使って `(深さ - 64) × 離れ >> 8`。
+	// **PAT だけは鍵ごと**
+	int assign_cut(int part, int note) const
+	{
+		if (!m_ram || part < 0 || part >= PARTS)
+			return 0;
+		const u8 *b = m_ram + ram::part_base(part);
+		const part_cc &c = m_cc[part];
+		auto term = [](int d, int v) {
+			return (d == 64 || !v) ? 0 : ((d - 64) * v) >> 2;
+		};
+		int sum = 0;
+		sum += term(asn_byte(part, 0x1e),
+		            c.mod >= 0 ? c.mod : int(b[ram::PART_MOD]));
+		sum += term(asn_byte(part, 0x47), c.chpress);
+		sum += term(asn_byte(part, 0x54), c.ac1);
+		sum += term(asn_byte(part, 0x5b), c.ac2);
+		if (note >= 36 && note < 98)
+			sum += term(asn_byte(part, 0x4d),
+			            int(m_pat[size_t(part)][size_t(note)]));
+		const int pb = asn_byte(part, 0x24);
+		if (pb != 64) {
+			const int v = c.bend - 0x2000;
+			if (v)
+				sum += ((pb - 64) * v) >> 8;
+		}
+		return sum;
+	}
+
 	int vol_gain_of(int part, int vol, int expr) const
 	{
 		int g = nv::vol_gain(vol, expr);
@@ -1101,13 +1136,16 @@ public:
 	// **5 番目（LFO のフィルタ変調の深さ）だけはこちらで鳴らせる**
 	//（6.192）。そこは 6.191 で式が分かったので、それだけが
 	// 既定から外れているなら firmware に渡さなくてよい
-	bool assign_idle(int part, u32 off, bool allow_fmod = false) const
+	bool assign_idle(int part, u32 off, bool mine = false) const
 	{
 		if (!m_ram || part < 0 || part >= PARTS)
 			return false;                  // 分からないときは任せる側に倒す
 		const u8 *b = m_ram + ram::part_base(part) + off;
-		return b[0] == 64 && b[1] == 64 && b[2] == 64 && !b[3]
-		    && (allow_fmod || !b[4]) && !b[5];
+		// **こちらで鳴らせるのは 0・1・2・4**（6.191・6.195・6.196）。
+		// 残りは LFO の音程（3）と LFO の音量（5）で、そこだけはまだ任せる
+		if (mine)
+			return !b[3] && !b[5];
+		return b[0] == 64 && b[1] == 64 && b[2] == 64 && !b[3] && !b[4] && !b[5];
 	}
 
 	// モジュレーションの割り当ては既定が 64,64,64,**10**,0,0（LFO の音程が 10）。
@@ -1118,7 +1156,9 @@ public:
 		if (!m_ram || part < 0 || part >= PARTS)
 			return false;
 		const u8 *b = m_ram + ram::part_base(part) + MW_BLOCK;
-		return b[0] == 64 && b[1] == 64 && b[2] == 64 && b[3] == 10 && !b[5];
+		// 音程・切る高さ・音量・LFO のフィルタはこちらで鳴らせるので、
+		// **LFO の音程が既定（10）で、LFO の音量が 0** なら任せない（6.196）
+		return b[3] == 10 && !b[5];
 	}
 
 	// ベンドは +0x23 が幅（RPN で普通に動く。こちらも読んでいる）なので、
@@ -1558,10 +1598,10 @@ private:
 		// **鍵の追従が二重に掛かる**。Rain の第 2 要素は鍵 60・84 で
 		// 0x100 ぶん明るくなっていた（鍵 36 で写し取るので、そこだけ合う）。
 		// 明るさ（CC71）は写し取りとの差ではなく、そのまま足す
+		const int add = s.lcut + assign_cut(s.part, s.keynote);
 		if (s.cal && !nv::cut_exact())
-			return cutoff_reg(base, *s.cal, s.part, s.elem, s.keynote,
-			                  s.lcut);
-		return cut_plain(base, s.part, s.elem, s.fvel, s.lcut);
+			return cutoff_reg(base, *s.cal, s.part, s.elem, s.keynote, add);
+		return cut_plain(base, s.part, s.elem, s.fvel, add);
 	}
 
 	// 式で出した `0x00` に、明るさ（CC71）だけを足す
@@ -2530,8 +2570,10 @@ public:
 				             ? cut_plain(nv::cutoff_keyon(m_rom, el, note, pvel, false,
 				                                          m_cc[part].atk,
 				                                          nv::soft_vel(pvel, pc.soft)),
-				                         part, el, pvel)
-				             : cutoff_reg(su.cut, *c, part, el, note));
+				                         part, el, pvel,
+				                         assign_cut(part, note))
+				             : cutoff_reg(su.cut, *c, part, el, note,
+				                          assign_cut(part, note)));
 				// **共振は式で出した値に CC71 の差ぶんを乗せる**（写し取った
 				// 値ではない。強さで変わるので写し取りは使えない。6.69）
 				// **共振はパートのつまみを式の中に入れる**（6.169）。
