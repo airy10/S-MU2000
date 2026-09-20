@@ -125,6 +125,8 @@ public:
 		int vstep = 1;         // 1 歩
 		int vdly = 0;          // 遅れの残り（20ms の目盛り）
 		u16 vhi = 0;           // `0x0a` の上位（型と刻み）
+		u16 ahi = 0;           // `0x05` の上位
+		int vamp = 0;          // 遅れが明けたあとの、音量側の揺れ
 		int vfull = 0;         // つまみまで入れた、せり上がり切った深さ
 		u64 vnext = ~u64(0);   // つぎに進める時刻
 		// **音程の包絡線の段**（0 が押した直後の段。3 で終わり）。
@@ -536,27 +538,29 @@ public:
 			}
 			// **遅れて掛かるビブラート**（6.175）。20ms ごとに
 			// 遅れを 1 づつ削って、無くなったら深さを 1 歩ずつ上げる
-			if (s.vtgt > 0 && s.vcnt < s.vtgt) {
-				bool moved = false;
-				while (clock >= s.vnext) {
+			if (s.vdly > 0 || s.vcnt < s.vtgt) {
+				bool movp = false, mova = false;
+				while (clock >= s.vnext && (s.vdly > 0 || s.vcnt < s.vtgt)) {
 					if (s.vdly > 0) {
 						s.vdly--;
+						if (!s.vdly && s.vamp > 0)
+							mova = true;     // 遅れが明けた
 					} else {
 						s.vcnt += s.vstep;
 						if (s.vcnt > s.vtgt)
 							s.vcnt = s.vtgt;
-						moved = true;
+						movp = true;
 					}
 					s.vnext += nv::VIB_TICK;
-					if (s.vcnt >= s.vtgt)
-						break;
 				}
-				if (moved) {
+				if (mova)
+					m_poke(u32(i) * 64 + 0x05, u16(s.ahi | u16(s.vamp)));
+				if (movp) {
 					const int d = nv::vib_ramp_reg(m_rom, s.vcnt) & 0x7f;
 					m_poke(u32(i) * 64 + 0x0a,
 					       u16(s.vhi | u16(d < s.vfull ? d : s.vfull)));
 				}
-				if (s.vcnt < s.vtgt && s.vnext < next)
+				if ((s.vdly > 0 || s.vcnt < s.vtgt) && s.vnext < next)
 					next = s.vnext;
 			}
 			// ポルタメント: 10ms ごとに残りのずれを step だけ 0 へ寄せて、
@@ -2032,11 +2036,14 @@ public:
 			// 押した瞬間のまま使い回す
 			su.vcnt = su.vtgt = su.vdly = 0;
 			su.vnext = ~u64(0);
+			su.vamp = 0;
 			if (nv::vib_ramps(el)) {
 				su.vtgt  = nv::vib_ramp_target(el);
 				su.vstep = nv::vib_ramp_step(el);
 				su.vdly  = nv::vib_delay_ticks(el);
 				su.vhi   = u16(sr.v[0x0a] & 0xff00);
+				su.ahi   = u16(sr.v[0x05] & 0xff00);
+				su.vamp  = nv::vib_amp_depth(el);
 				su.vfull = nv::vib_depth(nv::vib_ramp_reg(m_rom, su.vtgt) & 0x7f,
 				                         pc.vdep);
 				su.vnext = su.fnext;     // 包絡線と同じ格子に乗せる

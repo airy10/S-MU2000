@@ -186,14 +186,23 @@ inline int key_follow(const u8 *rom, const u8 *elem)
 // 支点が 60 でないと、追従が 100 でない音色では鍵 60 でも値がずれる（6.96）
 inline int key_pivot(const u8 *elem) { return elem[20]; }
 
-// 要素を**遅らせて鳴らす**段（byte72）。実測（段 0,1,2,3 → 0,311,752,1634 サンプル）は
-// 441 * 2^(n-1) - 130 でぴったり。MusicBox は 2 つ目の要素を 37ms 遅らせている
+// 要素を**遅らせて鳴らす**段（byte72）。
+//
+//   遅れ = 441 * 2^(n-1) - 82   サンプル
+//
+// **実機の 1 つ目の押鍵から 2 つ目の押鍵まで**を測り直した（6.176）。
+// MusicBox（n=3）が 1682、SynStrings 1/2 と FrenchHorn（n=2）が 800 で、
+// 鍵 48・60・72 のどれでも同じ。前の `- 130` は 48 サンプル短かった。
+//
+// **48 サンプルでも聞こえる**。FrenchHorn は 2 つの要素が 9 目盛りだけ
+// ずれていて、そのうなりで音ができている。片方が 48 サンプルずれると
+// うなりの位相が 0.2 秒ずれて、波形が丸ごと合わなくなる
 inline u32 elem_delay(const u8 *elem)
 {
 	const int n = elem[72] & 0x7f;
 	if (n <= 0)
 		return 0;
-	return u32(441 * (1 << (n < 8 ? n - 1 : 7)) - 130);
+	return u32(441 * (1 << (n < 8 ? n - 1 : 7)) - 82);
 }
 
 // **波形を選ぶときの鍵**。実機は「その要素が実際に出す高さ」で選ぶので、
@@ -721,10 +730,16 @@ inline int vib_ramp_step(const u8 *elem)
 	return v > 1 ? v : 1;
 }
 
+// **音量側の揺れ**（`0x05` の下位）も同じ遅れで待つ。
+// GM で遅れを持つ音色は byte16 がどれも 1（深さ 2）なので、
+// せり上がるのか一っ飛びなのかは分からない。測れた範囲では
+// 遅れが明けた瞬間に 0 から byte16 × 2 へ一つ飛ぶ
+inline int vib_amp_depth(const u8 *elem) { return (int(elem[16]) * 2) & 0x7f; }
+
 // その音がせり上がりを持つか（持たないものは押した瞬間の値のまま）
 inline bool vib_ramps(const u8 *elem)
 {
-	return elem[9] < 2 && elem[14] && (elem[12] || elem[13]);
+	return elem[9] < 2 && (elem[14] || elem[16]) && (elem[12] || elem[13]);
 }
 
 // `SMU2000_NO_PEG` を立てると音程の包絡線をやめる（比べるための逃げ道）
