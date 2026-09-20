@@ -218,6 +218,8 @@ def main():
             "lvl": setup(n, 0x02), "pan": setup(n, 0x04),
             "rev": setup(n, 0x05), "cho": setup(n, 0x06),
             "r09": regs.get(0x09, -1), "r32": regs.get(0x32, -1),
+            "r10": regs.get(0x10, -1), "r0b": regs.get(0x0b, -1),
+            "r05": regs.get(0x05, -1), "r03": regs.get(0x03, -1),
             "r33": regs.get(0x33, -1), "r34": regs.get(0x34, -1),
             "wlvl": rec[26] if rec else -1,
             "fwlvl": fwlvl.get(n, -1),
@@ -225,12 +227,11 @@ def main():
         })
 
     print("%-4s %4s %4s %4s | %6s %6s %6s | %5s %6s %6s" %
-          ("鍵", "音量", "パン", "送り", "0x09", "0x32", "0x33", "波形段", "実機目盛", "差"))
+          ("鍵", "音量", "パン", "送り", "0x09", "0x32", "0x10", "0x0b", "0x05", "0x03"))
     for r in rows:
-        print("%-4d %4d %4d %4d |   %04x   %04x   %04x | %5d %6d %6d"
+        print("%-4d %4d %4d %4d |   %04x   %04x |  %04x   %04x   %04x   %04x"
               % (r["note"], r["lvl"], r["pan"], r["rev"],
-                 r["r09"], r["r32"], r["r33"], r["wlvl"], r["fwlvl"],
-                 r["fwlvl"] - r["lvl"] if r["fwlvl"] >= 0 else 0))
+                 r["r09"], r["r32"], r["r10"], r["r0b"], r["r05"], r["r03"]))
     if a.csv:
         import csv
         with open(a.csv, "w", newline="") as f:

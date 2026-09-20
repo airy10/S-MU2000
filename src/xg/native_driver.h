@@ -2183,7 +2183,8 @@ public:
 
 	u16 release_of(const slot_use &s, int part, int note) const
 	{
-		const u16 v = nv::release_reg(m_rom, s.elem, note, note_att(s, part));
+		const u16 v = nv::release_reg(m_rom, s.elem, note, note_att(s, part),
+		                              m_cc[part].rel);
 		if (s.hard)
 			return u16(0xf000 | (v & 0xff));
 		return s.single_cut ? u16(SINGLE_CUT_RATE | (v & 0xff)) : v;

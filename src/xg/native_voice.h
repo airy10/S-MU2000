@@ -1012,9 +1012,27 @@ inline int reso_level(const u8 *elem, int vel, int part_res = 64)
 // 上位のビット 15 が「離せ」の印で、残りが離しの速さ（swp30.cpp の release_glo_w）。
 // 速さは減衰と同じ表を **byte76** で引き、鍵の補正も同じだけ乗る
 // （実機が離すときに書く値と、GrandPno の鍵 60 で一致する: 0xBE1E）
-inline u16 release_reg(const u8 *rom, const u8 *elem, int note, int att)
+// **離しのつまみ（CC72 / 08 pp 1C）**（6.170）。`tools/native/reltab.py` で
+// 128 段測った。**下げる側（64 未満）は音色によらない足し算**で、
+// 2 段ごとに 1 目盛り遅くなる:
+//
+//   目盛り = 素の目盛り + (65 - つまみ) / 2
+//
+// 上げる側（64 より大きい）は音色ごとに変わり方が違うので、まだ入れていない
+// （Strings1 は つまみ 90 から、GrandPno は 86 から動きはじめる）
+inline int rel_rate_cc(int base, int cc)
 {
-	const int r = rom[DECAY_TAB + rate_scale(elem[76], rate_key_corr(elem, note))];
+	if (cc < 0 || cc >= 64)
+		return base;
+	const int v = base + (65 - cc) / 2;
+	return v > 63 ? 63 : v;
+}
+
+inline u16 release_reg(const u8 *rom, const u8 *elem, int note, int att,
+                       int cc_rel = 64)
+{
+	const int r = rom[DECAY_TAB + rate_scale(
+	                  rel_rate_cc(int(elem[76]), cc_rel), rate_key_corr(elem, note))];
 	return u16(((0x80 | (r & 0x7f)) << 8) | (att & 0xff));
 }
 
