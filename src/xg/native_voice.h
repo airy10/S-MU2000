@@ -1114,16 +1114,20 @@ inline int reso_vel_drop(const u8 *elem, int vel)
 	return int((u32(x * m) & 0xffff) >> 8);
 }
 
-inline int reso_level(const u8 *elem, int vel, int part_res = 64)
+// **1 ビット落とす前の値**。切る高さの頭打ちはこちらで見る（6.183）
+inline int reso_raw(const u8 *elem, int vel, int part_res = 64)
 {
 	int v = int(elem[35]) - reso_vel_drop(elem, vel);
 	if (v < 0)
 		v = 0;
 	const int p = part_res - 64;
 	int r = p >= 0 ? (p >= v ? p : v) : p + v;
-	if (r < 0)
-		r = 0;
-	return (r >> 1) & 31;
+	return r < 0 ? 0 : r;
+}
+
+inline int reso_level(const u8 *elem, int vel, int part_res = 64)
+{
+	return (reso_raw(elem, vel, part_res) >> 1) & 31;
 }
 
 // 鍵を離すときに 0x09 へ入れる値。
@@ -1444,10 +1448,13 @@ inline u16 cutoff_keyon(const u8 *rom, const u8 *elem, int note, int vel,
 }
 
 // 共振が浅ければ頭打ちを掛ける（つまみを効かせたあとに使う）
-inline u16 cutoff_cap(u16 v, const u8 *elem, int vel)
+// **頭打ちの判定にはつまみを入れた共振を使う**（6.183）。
+// CC71 を上げると実機は頭打ちを外すのに、素の値で見ていたので
+// SquareLead の CC71 = 96 だけ 7 だけ暗かった
+inline u16 cutoff_cap(u16 v, const u8 *elem, int vel, int part_res = 64)
 {
 	int cut = int(v & 0xfff);
-	if (reso_level(elem, vel) < 4 && cut > CUTOFF_MAX)
+	if (reso_level(elem, vel, part_res) < 4 && cut > CUTOFF_MAX)
 		cut = CUTOFF_MAX;
 	return u16((v & 0xf000) | u16(cut));
 }
@@ -1513,6 +1520,19 @@ inline u16 pan_rnd_reg(const u8 *rom, int r)
 	if (l > 255) l = 255;
 	if (rr > 255) rr = 255;
 	return u16((l << 8) | rr);
+}
+
+// **インサーションを通るときの `0x32`**（6.184）。
+// パートのパン（CC10）は**まったく見ない**で、
+// 音色（打）自身のパンだけを左に入れ、右は 0
+inline u16 ins_pan_reg(const u8 *rom, int pan_pos)
+{
+	if (!rom)
+		return 0;
+	const int p = pan_pos < 0 ? 0 : (pan_pos > 127 ? 127 : pan_pos);
+	int l = int(rom[PAN_CURVE_TAB + u32(p)]);
+	if (l > 255) l = 255;
+	return u16(l << 8);
 }
 
 inline u16 voice_pan_reg(const u8 *rom, const u8 *elem, int note,

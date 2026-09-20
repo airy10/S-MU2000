@@ -1413,7 +1413,8 @@ private:
 		if (now >= 0 && now != 64)
 			v += nv::bright_shift(now);
 		v = v < 0 ? 0 : (v > 0xfff ? 0xfff : v);
-		return nv::cutoff_cap(u16((base & 0xf000) | u16(v)), elem, vel);
+		return nv::cutoff_cap(u16((base & 0xf000) | u16(v)), elem, vel,
+		                      res_knob(part));
 	}
 
 	u16 fenv_cut(const slot_use &s) const
@@ -1723,9 +1724,11 @@ private:
 
 	// インサーションを通るときのミキサ。**実機の値をそのまま置く**
 	// （lofi・ins2 のどちらでも同じ値だった。6.161）
-	void ins_mixer(nv::slot_regs &r) const
+	void ins_mixer(nv::slot_regs &r, int pan_pos = 64) const
 	{
-		r.set(0x32, 0x0000);
+		// **パンは音色（打）自身の分だけ残る**（6.184）。
+		// 真ん中の音色なら 0 なので、lofi・ins2 では見えていなかった
+		r.set(0x32, nv::ins_pan_reg(m_rom, pan_pos));
 		r.set(0x34, u16((r.v[0x34] & 0xff00) | 0x10));
 		r.set(0x35, 0x4000);
 		r.set(0x36, 0x4000);
@@ -2136,7 +2139,7 @@ public:
 					sr.set(0x34, exact_send(su, part, true, su.base34));
 					// **インサーションを通るパートはミキサが丸ごと別**（6.161）
 					if (ins_routed(part))
-						ins_mixer(sr);
+						ins_mixer(sr, nv::voice_pan_pos(m_rom, el, pnote));
 				} else {
 					sr.set(0x33, send_reg(*c, 0x33, false, pc.rev, c->cal_rev,
 					                      su.rnd_drop, su.base33));
@@ -2411,8 +2414,10 @@ public:
 				                             : exact_pan(su, part));
 				dr.set(0x33, exact_send(su, part, false, dr.v[0x33]));
 				dr.set(0x34, exact_send(su, part, true, dr.v[0x34]));
-				if (ins_routed(part))
-					ins_mixer(dr);
+				if (ins_routed(part)) {
+					const int dp = drum_setup_of(part, su.keynote, 0x04);
+					ins_mixer(dr, dp < 0 ? 64 : dp);
+				}
 			}
 			// **つまみの差を乗せる元**。写しがあればその値、
 			// 無ければドラムセットアップから組んだ値
