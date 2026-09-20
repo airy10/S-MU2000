@@ -161,6 +161,8 @@ class Song:
         self.notes = defaultdict(list)      # ch -> [(t_on, t_off, note, vel, voice)]
         self.bend = defaultdict(list)       # ch -> [(t, value)]
         self.untrusted = defaultdict(list)  # ch -> [(t, reason)]
+        self.master = []                    # [(t, value)] master volume from SysEx (universal 7F 04 01, XG 00 00 04)
+        self.level = defaultdict(list)      # ch -> [(t, cc, value)] CC7 / CC11 changes
         self.drum_ch = {9}
         bank = {ch: [0, 0] for ch in range(16)}
         prog = {ch: 0 for ch in range(16)}
@@ -175,6 +177,10 @@ class Song:
                 else:
                     self.drum_ch.discard(b[5])
                 continue
+            if s == 0xF0 and len(b) >= 7 and b[1] == 0x7F and b[3:5] == b"\x04\x01":
+                self.master.append((t, b[6]))                          # universal real-time master volume (MSB)
+            elif s == 0xF0 and b[1:4] == b"\x43\x10\x4c" and len(b) >= 8 and b[4:7] == b"\x00\x00\x04":
+                self.master.append((t, b[7]))                          # XG master volume
             if s >= 0xF0:
                 continue
             ch, kind = s & 0x0F, s & 0xF0
@@ -183,6 +189,7 @@ class Song:
                 c, v = b[1], b[2]
                 if c == 0: bank[ch][0] = v
                 elif c == 32: bank[ch][1] = v
+                elif c in (7, 11): self.level[ch].append((t, c, v))
                 elif c == 101: rpn[ch][0] = v
                 elif c == 100: rpn[ch][1] = v
                 elif c == 6 and rpn[ch] in ([0, 1], [0, 2]) and v != 64:
@@ -226,6 +233,21 @@ class Song:
 
     def is_untrusted(self, ch, t):
         return any(tt <= t for tt, _ in self.untrusted.get(ch, []))
+
+    def master_at(self, t):
+        v = 127
+        for tt, val in self.master:
+            if tt <= t:
+                v = val
+        return v
+
+    def faded(self, ch, t0, t1):
+        """True if master volume, CC7 or CC11 moved while [t0, t1] was sounding, or was already low at t0."""
+        if self.master_at(t0) < 16:
+            return True
+        if any(t0 <= tt <= t1 for tt, _ in self.master):
+            return True
+        return any(t0 <= tt <= t1 for tt, _, _ in self.level.get(ch, []))
 
     def write_solo(self, ch, out):
         """Write a format-0 file with every event kept except notes on other channels."""
@@ -427,7 +449,7 @@ def analyse_channel(song, ch, x, boot):
 
     # 1. silent voice: loud notes that produce nothing
     for voice, vn in by_voice.items():
-        loud = [n for n in vn if n[3] >= 40]
+        loud = [n for n in vn if n[3] >= 40 and song.master_at(n[0]) >= 16]
         if not loud:
             continue
         levels = [rms(seg(x, boot + n[0], boot + min(n[1], n[0] + 0.5) + 0.05)) for n in loud]
@@ -504,7 +526,7 @@ def analyse_channel(song, ch, x, boot):
         if voice[0] in (64, 126, 127) or voice[2] not in SUSTAIN_FAMILIES:   # drums and the SFX bank are one-shots
             continue
         for t0, t1, note, vel, _ in vn:
-            if t1 - t0 < 1.5 or vel < 40:
+            if t1 - t0 < 1.5 or vel < 40 or song.faded(ch, t0, t1):    # a written fade is not an envelope fault
                 continue
             peak = rms(seg(x, boot + t0 + 0.05, boot + t0 + 0.55))
             tail = rms(seg(x, boot + t1 - 0.3, boot + t1))
@@ -660,7 +682,9 @@ def selftest():
     class S:
         pass
     s = S(); s.notes = {0: [(0.0, 0.8, 60, 100, (0, 0, 0))]}; s.drum_ch = set(); s.bend = {}; s.untrusted = {}
+    s.master = []; s.level = {}
     s.bend_active = lambda ch, a, b: False; s.is_untrusted = lambda ch, t: False
+    s.master_at = lambda t: Song.master_at(s, t); s.faded = lambda ch, a, b: Song.faded(s, ch, a, b)
     boot = 0.5
     x = np.zeros(int((boot + 0.8 + TAIL + 1) * RATE))
     seg_t = np.arange(int(0.8 * RATE)) / RATE
@@ -684,6 +708,13 @@ def selftest():
     w[a:b] = 6000 * np.sin(2 * np.pi * 261.63 * np.arange(b - a) / RATE)
     fs = analyse_channel(s, 0, w, boot)
     expect("dies-early" in [f["kind"] for f in fs], f"strings dying while held flagged: {[f['kind'] for f in fs]}")
+    s.master = [(0.5, 60), (0.6, 30), (0.7, 0)]                      # the song fades the master volume: not a fault
+    fs = analyse_channel(s, 0, w, boot)
+    expect("dies-early" not in [f["kind"] for f in fs], f"master-volume fade suppresses dies-early: {[f['kind'] for f in fs]}")
+    s.master = []; s.level = {0: [(0.5, 11, 40), (0.6, 11, 0)]}     # or an expression fade
+    fs = analyse_channel(s, 0, w, boot)
+    expect("dies-early" not in [f["kind"] for f in fs], f"expression fade suppresses dies-early: {[f['kind'] for f in fs]}")
+    s.level = {}
     c = x.copy(); c[int(boot * RATE) + 1000:int(boot * RATE) + 1010] = 32767
     fs = analyse_channel(s, 0, c, boot)
     expect("clipping" in [f["kind"] for f in fs], f"full-scale samples flagged as clipping: {[f['kind'] for f in fs]}")

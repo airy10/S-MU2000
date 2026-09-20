@@ -49,7 +49,10 @@ SFX bank (MSB 64), GM programs 113 to 128 (percussion and effects) and 9 to
 16 (bars and bells, whose partials are not harmonic), stretches with pitch
 bend, channels that used the tuning RPNs or portamento. Detune also needs
 at least 70 cycles in the window, so a semitone is resolvable. `dies-early`
-ignores the SFX bank and drum kits, which are one-shots. A silent SFX-bank
+ignores the SFX bank and drum kits, which are one-shots, and any note during
+which the song itself fades: a Master Volume SysEx ramp (universal or XG), or
+a CC7 or CC11 change. `silent` ignores notes that start with the master
+volume already near zero. A silent SFX-bank
 slot is reported but marked, since many slots are empty on the hardware
 too. Clicks are judged against the note's own period, so a raw saw wave is
 not a click train.
