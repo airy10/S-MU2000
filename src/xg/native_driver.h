@@ -119,6 +119,14 @@ public:
 		// あとはチップに任せる（doc/native-engine.md の 6.68）。
 		// 0xffff は「書くものが無い」の印
 		u16 peg_tgt = 0xffff;
+		// **遅れて掛かるビブラート**（6.175）
+		int vcnt = 0;          // いまのカウンタ
+		int vtgt = 0;          // 止まる所
+		int vstep = 1;         // 1 歩
+		int vdly = 0;          // 遅れの残り（20ms の目盛り）
+		u16 vhi = 0;           // `0x0a` の上位（型と刻み）
+		int vfull = 0;         // つまみまで入れた、せり上がり切った深さ
+		u64 vnext = ~u64(0);   // つぎに進める時刻
 		// **音程の包絡線の段**（0 が押した直後の段。3 で終わり）。
 		// チップが行き先に着いたら次の段を張る（doc の 6.80）
 		int pstage = 3;
@@ -525,6 +533,31 @@ public:
 				}
 				if (s.fnext < next)
 					next = s.fnext;
+			}
+			// **遅れて掛かるビブラート**（6.175）。20ms ごとに
+			// 遅れを 1 づつ削って、無くなったら深さを 1 歩ずつ上げる
+			if (s.vtgt > 0 && s.vcnt < s.vtgt) {
+				bool moved = false;
+				while (clock >= s.vnext) {
+					if (s.vdly > 0) {
+						s.vdly--;
+					} else {
+						s.vcnt += s.vstep;
+						if (s.vcnt > s.vtgt)
+							s.vcnt = s.vtgt;
+						moved = true;
+					}
+					s.vnext += nv::VIB_TICK;
+					if (s.vcnt >= s.vtgt)
+						break;
+				}
+				if (moved) {
+					const int d = nv::vib_ramp_reg(m_rom, s.vcnt) & 0x7f;
+					m_poke(u32(i) * 64 + 0x0a,
+					       u16(s.vhi | u16(d < s.vfull ? d : s.vfull)));
+				}
+				if (s.vcnt < s.vtgt && s.vnext < next)
+					next = s.vnext;
 			}
 			// ポルタメント: 10ms ごとに残りのずれを step だけ 0 へ寄せて、
 			// 音程のレジスタを書き直す（6.41）
@@ -1994,6 +2027,22 @@ public:
 				const u16 tgt = nv::peg_reg(m_rom, nv::peg_cents(el, el[31], pvel), el);
 				su.peg_tgt = tgt == sr.v[0x10] ? 0xffff : tgt;
 			}
+			// **遅れて掛かるビブラート**（6.175）。遅れのあと
+			// 20ms ごとに深さをせり上げる。`0x0a` の上位（型と刻み）は
+			// 押した瞬間のまま使い回す
+			su.vcnt = su.vtgt = su.vdly = 0;
+			su.vnext = ~u64(0);
+			if (nv::vib_ramps(el)) {
+				su.vtgt  = nv::vib_ramp_target(el);
+				su.vstep = nv::vib_ramp_step(el);
+				su.vdly  = nv::vib_delay_ticks(el);
+				su.vhi   = u16(sr.v[0x0a] & 0xff00);
+				su.vfull = nv::vib_depth(nv::vib_ramp_reg(m_rom, su.vtgt) & 0x7f,
+				                         pc.vdep);
+				su.vnext = su.fnext;     // 包絡線と同じ格子に乗せる
+				m_traj = true;
+				m_traj_next = 0;
+			}
 			// **段 0 から始める**。実機は 10ms ごとに「着いたか」を見て次の段へ
 			su.pvel = pvel;
 			su.vel = vel;                    // 液晶のメーター用（6.148）
@@ -2409,6 +2458,14 @@ private:
 	// dense（16 パート・60 音）でもこちらが使うのは 36 までなので足りる
 	static constexpr int FW_SLOTS = 8;
 
+	// **写し取りをやめた口（段 4）では 1 つも空けない**（6.174）。
+	// firmware は 1 音も鳴らさないので、下 8 を遠慮する理由が無い。
+	// dense（16 パート × 3 音 = 60 声）では 56 しか使えず、
+	// 実機が 1 回も奪わないところをこちらは 4 回奪っていた。
+	// 固定の果てにもう鳴らない音が出るので、聴いて分かる違いになる。
+	// firmware が鳴らす場合でも `fw_recent` が動的に遠ざける
+	int fw_slots() const { return nocal_mode() ? 0 : FW_SLOTS; }
+
 	// 空きスロットを取る。無ければ一番古い声を止めて使う。
 	// **上から**取る（firmware は下から使うため）
 	int take_slot(int part, int note)
@@ -2429,7 +2486,8 @@ private:
 			const bool avoid = pass == 0;
 			int oldest = -1, oldest_rel = -1;
 			u64 oldest_age = ~u64(0), oldest_rel_age = ~u64(0);
-			for (int n2 = 0; n2 < SLOTS - FW_SLOTS; n2++) {
+			const int keep = fw_slots();
+			for (int n2 = 0; n2 < SLOTS - keep; n2++) {
 				const int i = SLOTS - 1 - n2;
 				if (avoid && fw_recent(i))
 					continue;

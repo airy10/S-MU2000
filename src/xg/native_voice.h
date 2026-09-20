@@ -676,6 +676,57 @@ inline int peg_rate_reg_stage(const u8 *rom, const u8 *elem, int stage, int note
 	return rd16s(rom, PEG_RATE_TAB + u32(i) * 2);
 }
 
+// ---- **遅れて掛かるビブラート**（6.175）
+//
+// 弦・木管・金管は、鍵を押してすぐには揺れない。実機は 20ms ごとに回る
+// 仕事の中で、音ごとのカウンタを「遅れのぶん待ってから、1 歩ずつ」
+// 上げていき、その値を表で引いて `0x0a` の下位に書き直す。
+//
+//   遅れ（20ms の目盛り） = byte12 ? 3 × byte12 / 4 + 3 : 0
+//   止まる所              = byte14
+//   1 歩                  = byte13 ? max(1, byte14 / byte13 - 1) : max(1, byte14)
+//   レジスタ              = 表C[ 表B[カウンタ] ]
+//
+// 実機の `0x127CBC`（遅れの式）・`0x129940`（1 歩進める）・`0x129E04`
+// （表引き）から起こして、GM の揺れを持つ 41 音色で確かめた
+// （遅れ 21/23・止まる所 20/23・1 歩 18/18 が一致。外れるのは
+// AltoSax・Oboe・Piccolo の 3 つだけで、そこはまだ分からない）。
+//
+// **`byte14 × 3` は近道だった**。実機は表引きで、byte14 が 5 以上だと
+// 1 ずれる（6 のとき 18 ではなく 17）。Violin がそれ
+constexpr u32 VIB_CAP_TAB = 0x1E6370;   // パートの深さ → 頭打ち
+constexpr u32 VIB_CNT_TAB = 0x1E63F0;   // カウンタ → 目盛り（＝カウンタ × 2）
+constexpr u32 VIB_REG_TAB = 0x1E6596;   // 目盛り → レジスタ
+constexpr u32 VIB_TICK    = 882;        // 20ms
+
+inline int vib_ramp_reg(const u8 *rom, int counter)
+{
+	const int c = counter < 0 ? 0 : (counter > 63 ? 63 : counter);
+	return int(rom[VIB_REG_TAB + u32(rom[VIB_CNT_TAB + u32(c)])]);
+}
+
+inline int vib_delay_ticks(const u8 *elem)
+{
+	return elem[12] ? (3 * int(elem[12])) / 4 + 3 : 0;
+}
+
+inline int vib_ramp_target(const u8 *elem) { return int(elem[14]); }
+
+inline int vib_ramp_step(const u8 *elem)
+{
+	const int t = int(elem[14]);
+	if (!elem[13])
+		return t > 1 ? t : 1;
+	const int v = t / int(elem[13]) - 1;
+	return v > 1 ? v : 1;
+}
+
+// その音がせり上がりを持つか（持たないものは押した瞬間の値のまま）
+inline bool vib_ramps(const u8 *elem)
+{
+	return elem[9] < 2 && elem[14] && (elem[12] || elem[13]);
+}
+
 // `SMU2000_NO_PEG` を立てると音程の包絡線をやめる（比べるための逃げ道）
 inline bool peg_on()
 {
@@ -1650,8 +1701,10 @@ inline slot_regs build_note(const u8 *rom, const u8 *elem, int note, int att,
 	// 止まっている音色（遅れ byte12・byte13 があるもの、byte9 が 2）は
 	// つまみを回しても動かない。**素の深さが 0 でも、つまみでは動く**
 	// （SquareLd は素が 0 で、つまみ 96 のとき実機は 0xa0）
+	// **遅れを持つ音色は 0 から始めて、20ms ごとにせり上げる**（6.175）。
+	// byte9 が 2 以上の音色はそもそも揺れない
 	const bool vgate = (elem[12] || elem[13] || elem[9] >= 2);
-	const int plfo0 = vgate ? 0 : ((elem[14] * 3) & 0x7f);
+	const int plfo0 = vgate ? 0 : (vib_ramp_reg(rom, elem[14]) & 0x7f);
 	const int lrate = vib_rate(int(elem[11] & 0x3f), cc_vrate);
 	const int plfo  = vgate ? 0 : vib_depth(plfo0, cc_vdep);
 	r.set(0x0a, u16(((((elem[9] ? 0x40 : 0) | (lrate & 0x3f)) << 8))
