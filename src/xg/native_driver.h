@@ -1157,8 +1157,9 @@ private:
 			m_poke(u32(i) * 64 + 9, u16(note_att(s, part)));
 			if (s.cal->has(0x32))
 				m_poke(u32(i) * 64 + 0x32,
-				       s.rnd_pan < 0 && s.cal->synth ? exact_pan(s, part)
-				                                     : pan_reg(*s.cal, part, s.rnd_pan, s.base32));
+				       s.cal->synth && ins_routed(part) ? u16(0)
+				       : (s.rnd_pan < 0 && s.cal->synth ? exact_pan(s, part)
+				                                        : pan_reg(*s.cal, part, s.rnd_pan, s.base32)));
 			if (s.lfo)
 				m_poke(u32(i) * 64 + 0x0a, lfo_reg(s.lfo, *s.cal, part));
 			if (s.cal->has(0x33))
@@ -1170,7 +1171,9 @@ private:
 			if (s.cal->has(0x34))
 				m_poke(u32(i) * 64 + 0x34,
 				       s.cal->synth
-				       ? exact_send(s, part, true, s.base34)
+				       ? (ins_routed(part)
+				          ? u16((exact_send(s, part, true, s.base34) & 0xff00) | 0x10)
+				          : exact_send(s, part, true, s.base34))
 				       : send_reg(*s.cal, 0x34, true, m_cc[part].cho, s.cal->cal_cho,
 				                  s.rnd_drop, s.base34));
 			if (s.cut)
@@ -1602,6 +1605,33 @@ private:
 	}
 
 	// パンのレジスタ（写し取った値からの差ぶんで動かす）
+	// **そのパートはインサーションを通るか**（6.161）。バリエーションを
+	// インサーションとして使っている場合と、インサーション 1-4 の掛かり先。
+	// 通るパートは、スロットのミキサ（0x32・0x34-0x37）が丸ごと別の値になる
+	bool ins_routed(int part) const
+	{
+		if (!m_ram || part < 0 || part >= PARTS)
+			return false;
+		if (m_ram[ram::VAR_BLOCK + ram::VAR_CONNECT] == 0
+		    && int(m_ram[ram::VAR_BLOCK + ram::VAR_PART]) == part)
+			return true;
+		for (int n = 0; n < 4; n++)
+			if (int(m_ram[ram::INS_BLOCK[n] + ram::INS_PART]) == part)
+				return true;
+		return false;
+	}
+
+	// インサーションを通るときのミキサ。**実機の値をそのまま置く**
+	// （lofi・ins2 のどちらでも同じ値だった。6.161）
+	void ins_mixer(nv::slot_regs &r) const
+	{
+		r.set(0x32, 0x0000);
+		r.set(0x34, u16((r.v[0x34] & 0xff00) | 0x10));
+		r.set(0x35, 0x4000);
+		r.set(0x36, 0x4000);
+		r.set(0x37, 0x4000);
+	}
+
 	// **合成の写しのときは、つまみを織り込んだ値をその場で組み直す**（6.154）。
 	// 写し取りが無いので「基準からの差」ではなく絶対値で出す。
 	// パンは `PAN_BASE[CC10] + PAN_CURVE[音色（打）のパン]`（6.155）
@@ -1962,6 +1992,9 @@ public:
 				if (c->synth) {
 					sr.set(0x33, exact_send(su, part, false, su.base33));
 					sr.set(0x34, exact_send(su, part, true, su.base34));
+					// **インサーションを通るパートはミキサが丸ごと別**（6.161）
+					if (ins_routed(part))
+						ins_mixer(sr);
 				} else {
 					sr.set(0x33, send_reg(*c, 0x33, false, pc.rev, c->cal_rev,
 					                      su.rnd_drop, su.base33));
@@ -2206,6 +2239,8 @@ public:
 				                             : exact_pan(su, part));
 				dr.set(0x33, exact_send(su, part, false, dr.v[0x33]));
 				dr.set(0x34, exact_send(su, part, true, dr.v[0x34]));
+				if (ins_routed(part))
+					ins_mixer(dr);
 			}
 			// **つまみの差を乗せる元**。写しがあればその値、
 			// 無ければドラムセットアップから組んだ値
