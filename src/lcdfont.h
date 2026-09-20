@@ -32,6 +32,8 @@
 
 #pragma once
 
+#include "compat/paths.h"
+
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -130,16 +132,26 @@ inline int overlay(std::vector<unsigned char> &rom, const std::string &path)
 	return int(gs.size());
 }
 
-// 探す順: SMU2000_LCDFONT → art/lcdfont.txt → ../art/lcdfont.txt
+// 探す順: `SMU2000_LCDFONT` → **実行ファイルの隣**（とその親を 3 つ上まで）
+// → いまいるディレクトリ。
+//
+// gui は build/ から起動することも、ショートカットから起動することもあるので、
+// いまいるディレクトリだけを見ていると見つからない（利用者の報告）。
 inline int overlay_default(std::vector<unsigned char> &rom)
 {
 	if (const char *e = std::getenv("SMU2000_LCDFONT"))
 		return overlay(rom, e);
-	static const char *const TRY[] = {
-		"art/lcdfont.txt", "../art/lcdfont.txt", "../../art/lcdfont.txt",
+	static const char *const REL[] = {
+		"art/lcdfont.txt", "../art/lcdfont.txt",
+		"../../art/lcdfont.txt", "../../../art/lcdfont.txt",
 	};
-	for (const char *p : TRY)
-		if (const int n = overlay(rom, p))
+	const std::string base = smu2000::exe_dir();
+	if (!base.empty())
+		for (const char *r : REL)
+			if (const int n = overlay(rom, smu2000::join(base, r)))
+				return n;
+	for (const char *r : REL)
+		if (const int n = overlay(rom, r))
 			return n;
 	return 0;
 }
