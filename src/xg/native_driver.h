@@ -84,6 +84,9 @@ public:
 		int  vel = 0;                   // 押した強さ（液晶のメーター用）
 		// **キーアサインがシングルで切られた音**。離しの速さが 0xD9 になる
 		bool single_cut = false;
+		// **オルタネートグループで切った打の、止めを刺す時刻**（0 は無し）。
+		// 実機は 0xD9 で離したあと 1010 サンプル（23ms）で 0xF0 を書く
+		u64  alt_kill = 0;
 		int part = -1, note = -1, att = 0;
 		// **MIDI で押された鍵**。note のほうは XG のノートシフト（08 pp 08）を
 		// 足した「鳴らす鍵」なので、離すときの照合はこちらで見る
@@ -128,6 +131,9 @@ public:
 	// 内部レジスタ 4 の bit14 で同じものを見ている
 	using peek_fn = std::function<bool(int)>;
 	void set_peg_peek(peek_fn f) { m_peg_peek = std::move(f); }
+	// **そのスロットがまだ鳴っているか**をチップに聞く（6.151）。
+	// オルタネートグループで切る相手を選ぶのに使う
+	void set_slot_peek(peek_fn f) { m_slot_peek = std::move(f); }
 	void set_rom(const u8 *rom) { m_rom = rom; }
 	// ワーク RAM（firmware が音色を選んだ結果を読む）
 	void set_ram(u8 *ram) { m_ram = ram; m_ramw = ram; }
@@ -149,6 +155,7 @@ public:
 		for (auto &d : m_recsel_drum)
 			d = -1;
 		m_clock = 0;
+		m_alt_kill_next = ~u64(0);
 		m_traj = false;
 		m_rec = false;
 		m_traj_next = 0;
@@ -376,6 +383,25 @@ public:
 			if (now)
 				key_on(now);
 		}
+		// **オルタネートグループで切った打に止めを刺す**（6.151）
+		if (clock >= m_alt_kill_next) {
+			u64 next3 = ~u64(0);
+			for (int i = 0; i < SLOTS; i++) {
+				slot_use &s = m_slot[i];
+				if (!s.alt_kill)
+					continue;
+				if (s.alt_kill <= clock) {
+					s.alt_kill = 0;
+					m_poke(u32(i) * 64 + 9,
+					       u16(0xf000 | u16(note_att(s, s.part) & 0xff)));
+					s.on = false;
+					s.rel = false;     // 音は消えたのでスロットを空ける
+				} else if (s.alt_kill < next3) {
+					next3 = s.alt_kill;
+				}
+			}
+			m_alt_kill_next = next3;
+		}
 		// **格子に乗せたベンド**（6.125）
 		if (clock >= m_bend_next) {
 			u64 next2 = ~u64(0);
@@ -560,7 +586,10 @@ public:
 			return 0;
 		u32 h = 2166136261u;
 		for (int s = 0; s < ram::DRUM_SETUP_SETS; s++)
-			for (int p = 0; p < 11; p++) {     // 0-10（高さから受け取りの入切まで）
+			// **23 個ぜんぶ混ぜる**。前は 0-10 までしか見ていなかったので、
+			// 打ごとのフィルタ（0B・0C）や EG（0D-0F）を動かしても
+			// 取り直しが走らず、古い音のままだった
+			for (int p = 0; p < int(ram::DRUM_SETUP_PARAM); p++) {
 				h ^= m_ram[ram::drum_setup(s, note, p)];
 				h *= 16777619u;
 			}
@@ -1320,6 +1349,63 @@ private:
 			note_off(part, keys[k], true);
 	}
 
+	// 実機は 0xD9 で離してから **1010 サンプル**（23ms）後に 0xF0 を書く。
+	// 4 回の開閉でどれも同じ間隔だった
+	static constexpr u64 ALT_KILL_DELAY = 1010;
+
+	// 同じオルタネートグループで鳴っている打を止める（6.151）
+	int alt_cut(int part, int except, int grp)
+	{
+		int wrote = 0;
+		int keys[SLOTS];
+		int n = 0;
+		for (int i = 0; i < SLOTS; i++) {
+			const slot_use &s = m_slot[i];
+			if (s.part != part || s.keynote == except)
+				continue;
+			if (!s.on && !s.rel)
+				continue;
+			if (s.alt_kill)
+				continue;
+			// **鳴り終わった打は切らない**。実機もそうで、切ると書き込みの
+			// ぶん打鍵が 1 サンプル遅れてしまう（6.151）
+			if (m_slot_peek && !m_slot_peek(i))
+				continue;
+			if (drum_alt_group(part, s.keynote) != grp)
+				continue;
+			bool seen = false;
+			for (int k = 0; k < n; k++)
+				if (keys[k] == s.keynote)
+					seen = true;
+			if (!seen)
+				keys[n++] = s.keynote;
+		}
+		for (int k = 0; k < n; k++)
+			for (int i = 0; i < SLOTS; i++) {
+				slot_use &s = m_slot[i];
+				if (s.part != part || s.keynote != keys[k] || (!s.on && !s.rel))
+					continue;
+				if (s.alt_kill)        // もう切ってある打は二度切らない
+					continue;
+				if (m_slot_peek && !m_slot_peek(i))
+					continue;
+				s.alt_kill = m_clock + ALT_KILL_DELAY;
+				if (s.alt_kill < m_alt_kill_next)
+					m_alt_kill_next = s.alt_kill;
+				s.single_cut = true;
+				s.on = false;
+				s.rel = true;
+				s.rel_at = m_clock;
+				// **ドラムは要素を持たない**ので、普通の離しの式は使えない。
+				// 速さだけ与えて、音量はそのときの値にする
+				m_poke(u32(i) * 64 + 9,
+				       s.elem ? release_of(s, part, s.note)
+				              : u16(SINGLE_CUT_RATE | u16(note_att(s, part) & 0xff)));
+				wrote++;
+			}
+		return wrote;
+	}
+
 	// ダンパーを離したとき、待たせていた音を切る
 	void release_held(int part)
 	{
@@ -1533,6 +1619,71 @@ public:
 	{
 		return m_ram && part >= 0 && part < PARTS
 		    && m_ram[ram::part_base(part) + 0x06] == 0;
+	}
+
+	// **ドラムセットアップの値**（3n rr pp）。組はパートモードから決まる
+	int drum_setup_of(int part, int note, int param) const
+	{
+		if (!m_ram || note < ram::DRUM_SETUP_NOTE0
+		    || note >= ram::DRUM_SETUP_NOTE0 + int(ram::DRUM_SETUP_NOTES))
+			return -1;
+		const int mode = int(m_ram[ram::part_base(part) + 0x07]);
+		const int set = mode >= 2 ? mode - 2 : 0;
+		if (set >= int(ram::DRUM_SETUP_SETS))
+			return -1;
+		return int(m_ram[ram::drum_setup(set, note, u32(param))]);
+	}
+
+	// **その打が離しを受けるか**（3n rr 09）。既定は 0 ＝ 受けない
+	// （打ったら鳴りきる）。1 なら離しで止める。実機の離しの速さは
+	// 音色によらず 0xCF（鍵 49・38・46・51 で確かめた。6.151）
+	bool drum_rcv_note_off(int part, int note) const
+	{ return drum_setup_of(part, note, 0x09) > 0; }
+
+	// **その打が押しを受けるか**（3n rr 0A）。既定は 1。0 なら鳴らさない
+	bool drum_rcv_note_on(int part, int note) const
+	{ return drum_setup_of(part, note, 0x0a) != 0; }
+
+	static constexpr u16 DRUM_OFF_RATE = 0xcf00;
+
+	// **その打のオルタネートグループ**（ドラムセットアップの 3n rr 03）。
+	// 0 は「組なし」。同じ組の打は互いを止める（ハイハットの開閉など）
+	int drum_alt_group(int part, int note) const
+	{
+		if (!m_ram || note < ram::DRUM_SETUP_NOTE0
+		    || note >= ram::DRUM_SETUP_NOTE0 + int(ram::DRUM_SETUP_NOTES))
+			return 0;
+		// **組はパートモードから**（08 pp 07）。2-5 が DRUMS1-4 で、
+		// それぞれドラムセットアップの組 0-3 にあたる。
+		// PART_KIT（+0x110）は音色の記録番号で、組ではない（ここで間違えた）
+		const int v = drum_setup_of(part, note, 0x03);
+		return v < 0 ? 0 : v;
+	}
+
+	// **その口・チャンネルを聞いているパート**（XG の 08 pp 04）。
+	// ワーク RAM には**口 x 16 + チャンネル**（0-63 で A01-D16）が入っていて、
+	// 127 は OFF。既定はパート n が n。
+	//
+	//   >= 0 … そのパート 1 つだけが聞いている（既定でも、付け替えでも）
+	//   -1   … どのパートも聞いていない（実機は黙る）
+	//   -2   … 2 つ以上が聞いている（実機は**重ねて鳴らす**）
+	//
+	// 2 つ以上のときは firmware に任せる。native は 1 つのノートオンから
+	// 複数パートを鳴らす作りになっていないので、無理に鳴らすと薄くなる
+	int rcv_part(int port, int ch) const
+	{
+		const int want = port * 16 + ch;
+		if (!m_ram)
+			return want;
+		int found = -1;
+		for (int p = 0; p < PARTS; p++) {
+			if (int(m_ram[ram::part_base(p) + 0x04]) != want)
+				continue;
+			if (found >= 0)
+				return -2;
+			found = p;
+		}
+		return found;
 	}
 
 	// **鍵の範囲の中か**（XG の 08 pp 0F 下限・10 上限）。実機は範囲の外の
@@ -1796,6 +1947,11 @@ public:
 			// 途中で音量を絞られた音を離すと、絞る前の大きさで鳴り終わってしまう
 			if (s.elem)
 				m_poke(u32(i) * 64 + 9, release_of(s, part, note));
+			// **離しを受けるドラム**（3n rr 09）。要素を持たないので
+			// 速さだけ与えて、音量はそのときの値にする（6.151）
+			else if (drum_rcv_note_off(part, note))
+				m_poke(u32(i) * 64 + 9,
+				       u16(DRUM_OFF_RATE | u16(note_att(s, part) & 0xff)));
 			// ドラムは離しでも音を切らない（実機も打ったら鳴りきる）
 			s.on = false;
 			// **ドラムも「鳴っている」ことにする**。離しの段は無いが、
@@ -1885,6 +2041,11 @@ public:
 			return false;
 		u64 keymask = 0;
 		int nwrote = 0;
+		// **同じオルタネートグループの打を止める**（6.151）。ハイハットの
+		// 開いた音は、閉じた音を打った瞬間に止まる。見ていないと刻みが濁る
+		const int grp = drum_alt_group(part, note);
+		const int cutn = grp ? alt_cut(part, note, grp) : 0;
+		wrote_regs(cutn);
 		++m_inst;                        // この打の番号（6.138）
 		for (const nv::voice_cal &c : it->second) {
 			const int slot = take_slot(part, note);
@@ -1947,7 +2108,16 @@ public:
 		// **ドラムも要素を書き終えてから押す**（6.117）。そのうえで、実機は
 		// ドラムの 1 打を引くのに旋律より少し手間が掛かる（キットの表 →
 		// 鍵ごとのずれ → 記録の 3 段引き）。実測で 2 サンプルぶん遅い（6.139）
-		const s64 at0 = s64(write_done(nwrote)) + drum_proc();
+		s64 at0 = s64(write_done(nwrote)) + drum_proc();
+		// **切った打があると打鍵が 1 サンプル遅れる**（6.151）。実機は
+		// 切る書き込み（0xD9）を先に済ませてから鍵を押すので、そのぶん
+		// 後ろへずれる。打ちっぱなしのときは at0 が m_clock に張り付くので、
+		// ここははっきり足す（実測で 4 回とも 1 サンプルだった）。
+		// **+2 なのは、ここに来るときの m_clock が 1 つ古いから**
+		// （mu2000 は m_ne_clock を進めてから native_pump → tick と呼ぶので、
+		// +1 だと同じサンプルの tick で発火してしまう）
+		if (cutn && at0 <= s64(m_clock) + 1)
+			at0 = s64(m_clock) + 2;
 		const u64 at = at0 < 0 ? 0 : u64(at0);
 		if (at > m_clock)
 			m_pend.push_back({ keymask, at });
@@ -2092,6 +2262,24 @@ private:
 	// **要素を全部書き終える時刻**を返す（サンプル）。実機は 1 つの
 	// CPU で順番に書くので、前の音がまだ書き終わっていなければその
 	// あとに並ぶ。和音や密な曲では、あとの音ほど遅れて鳴る
+	// **レジスタ 1 本ぶんの時間**（要素 1 つが 34 本ぶん）。要素の外で
+	// 書いたぶんも、実機では同じだけ CPU を食う
+	static u64 reg_cost64() { return elem_cost64() / 34; }
+
+	// 要素の外で n 本書いたぶん、つぎの書き込みを後ろへずらす。
+	// オルタネートグループで打を切ると、実機は**そのぶん打鍵が 1 サンプル
+	// 遅れる**（入れないと閉じたハイハットだけ 1 サンプル早く鳴る。6.151）
+	void wrote_regs(int n)
+	{
+		if (n <= 0)
+			return;
+		const u64 cost = elem_cost64();
+		const u64 now = m_clock * 64;
+		const u64 t0 = now > cost ? now - cost : 0;
+		const u64 start = t0 > m_busy ? t0 : m_busy;
+		m_busy = start + u64(n) * reg_cost64();
+	}
+
 	u64 write_done(int nwrote)
 	{
 		const u64 cost = elem_cost64();
@@ -2106,6 +2294,8 @@ private:
 
 	void key_on(u64 mask)
 	{
+		if (debug_on())
+			std::fprintf(stderr, "keyon clock=%llu\n", (unsigned long long)m_clock);
 		static const u32 MASK_REG[4] = { 0x1cf, 0x1ce, 0x18f, 0x18e };
 		for (int i = 0; i < 4; i++)
 			m_poke(MASK_REG[i], u16((mask >> (i * 16)) & 0xffff));
@@ -2124,6 +2314,7 @@ private:
 
 	poke_fn m_poke;
 	peek_fn m_peg_peek;
+	peek_fn m_slot_peek;
 	const u8 *m_rom = nullptr;
 	const u8 *m_ram = nullptr;
 	u8 *m_ramw = nullptr;           // 同じワーク RAM（Rnd の種を書き戻す用）
@@ -2151,6 +2342,7 @@ private:
 	std::array<u32, PARTS> m_recsel{};
 	std::array<s8, PARTS> m_recsel_drum{};
 	u64 m_clock = 0;
+	u64 m_alt_kill_next = ~u64(0);  // つぎに止めを刺す時刻（6.151）
 	int m_peak = 0;
 	bool m_traj = false;
 	bool m_rec = false;            // 写し取りの最中（段が後から増える）

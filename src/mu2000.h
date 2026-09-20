@@ -407,6 +407,19 @@ private:
 	// 実機の遅れは 72 と 73 を行き来する ＝ 端数がある。整数で足していた
 	// ころは必ず 73 になり、1 サンプルずれる音が出ていた（doc の 6.92）。
 	// `SMU2000_NATIVE_PROC` で振れる（1/64 サンプル単位）
+	// **離しの処理にかかる時間**（1/64 サンプル）。押しとは別に持つ。
+	//
+	// 押しは 32 サンプル（音色を引いて要素を組み立てる）かかるが、
+	// **離しは 2 サンプル**だった。実機は最後のバイトを受けてすぐ 0x09 を
+	// 書いている。押しと同じ 32 にしていたので、**すべての離しが
+	// 30 サンプル遅れていた**（旋律もドラムも同じだけ遅れる。
+	// doc/native-engine.md の 6.152）。`SMU2000_OFF_PROC` で振れる
+	static u32 off_proc64()
+	{
+		static const u32 v = std::getenv("SMU2000_OFF_PROC")
+		                   ? u32(std::atoi(std::getenv("SMU2000_OFF_PROC"))) : 2 * 64;
+		return v;
+	}
 	static u32 native_proc64()
 	{
 		static const u32 v = std::getenv("SMU2000_NATIVE_PROC")
@@ -527,6 +540,7 @@ private:
 		const u64 extra = (usb && port > 0) ? usb_sub64() : 0;
 		return (at + extra + native_proc64()) / 64;
 	}
+
 	bool nown(int part, int note) const { return m_nown[part][note & 0x7f] != 0; }
 	void nown_set(int part, int note, bool on)
 	{
