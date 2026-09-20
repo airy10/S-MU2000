@@ -1169,7 +1169,7 @@ private:
 				// 追わずにそのまま鳴らしきらせる（6.139）
 				if (!s.rel || !s.elem || m_clock - s.rel_at > REL_FOLLOW)
 					continue;
-				m_poke(u32(i) * 64 + 9, release_of(s, part, s.note));
+				m_poke(u32(i) * 64 + 9, release_of(s, part, s.keynote));
 				continue;
 			}
 			m_poke(u32(i) * 64 + 9, u16(note_att(s, part)));
@@ -1253,13 +1253,16 @@ private:
 		s.ftgt = nv::fenv_target(m_rom, s.elem, s.elem[55], s.fvel);
 		// **立ち上がりの段**。byte50 が 63（即到達）なら段 0 の行き先から
 		// 始まり、そうでなければ byte54 から byte50 の速さで登る（6.71）
-		s.facc = nv::cut_exact() ? nv::fenv_init(m_rom, s.elem, s.fvel) : s.ftgt;
+		// **立ち上がりのつまみでこの速さも動く**（6.171）
+		const int a50 = nv::fenv_atk_rate(m_rom, s.elem, m_cc[s.part].atk);
+		s.facc = nv::cut_exact()
+		       ? nv::fenv_init(m_rom, s.elem, s.fvel, m_cc[s.part].atk) : s.ftgt;
 		s.finc = 0;
 		s.fstage = 0;
 		if (s.facc == s.ftgt) {
 			fenv_next(s);
 		} else {
-			int rate = int(s.elem[50]) + s.fadj;
+			int rate = a50 + s.fadj;
 			rate = rate < 0 ? 0 : (rate > 63 ? 63 : rate);
 			s.finc = nv::fenv_inc(m_rom, rate);
 			if (s.facc > s.ftgt && s.finc != nv::FENV_NEXT)
@@ -1448,7 +1451,7 @@ private:
 				// **ドラムは要素を持たない**ので、普通の離しの式は使えない。
 				// 速さだけ与えて、音量はそのときの値にする
 				m_poke(u32(i) * 64 + 9,
-				       s.elem ? release_of(s, part, s.note)
+				       s.elem ? release_of(s, part, s.keynote)
 				              : u16(SINGLE_CUT_RATE | u16(note_att(s, part) & 0xff)));
 				wrote++;
 			}
@@ -1466,7 +1469,7 @@ private:
 			} else if (s.caught && s.part == part && !s.on && s.rel && s.elem) {
 				// **ペダルで拾っていた音を離し直す**（6.164）
 				s.caught = false;
-				m_poke(u32(i) * 64 + 9, release_of(s, part, s.note));
+				m_poke(u32(i) * 64 + 9, release_of(s, part, s.keynote));
 			}
 		}
 	}
@@ -1938,7 +1941,9 @@ public:
 				m_traj = true;
 				m_traj_next = 0;       // つぎの tick で見直す
 			}
-			su.lvl0  = nv::volume_level(m_rom, rec, el, pnote, c ? c->base_level : 0);
+			// **鍵の曲線は押した鍵で引く**（6.172）。波形の段の分
+			// （volume_rest の wave_level）だけがずらした鍵に付いていく
+			su.lvl0  = nv::volume_level(m_rom, rec, el, note, c ? c->base_level : 0);
 			su.arest = nv::volume_rest(m_rom, el, pnote, pvel);
 			su.att   = nv::clamp_att(nv::volume_att_from(
 			    m_rom, su.lvl0, su.arest,
@@ -1978,7 +1983,7 @@ public:
 			                                  + part_fine_cents(part)
 		                                  + part_scale_cents(part, pnote) + su.glide / 256,
 			                                  pvel, pc.atk, pc.dec,
-			                                  pc.vrate, pc.vdep, wnote);
+			                                  pc.vrate, pc.vdep, wnote, note);
 			// 音程の包絡線の行き先（byte31）。初めの高さと同じなら書かない
 			{
 				const u16 tgt = nv::peg_reg(m_rom, nv::peg_cents(el, el[31], pvel), el);
@@ -2021,7 +2026,8 @@ public:
 				// 式で出した値なら鍵の追従はもう入っている（6.123）。
 				// 明るさ（CC71）だけを、写し取りとの差ではなくそのまま足す
 				sr.set(0x00, nv::cut_exact()
-				             ? cut_plain(nv::cutoff_keyon(m_rom, el, pnote, pvel, false),
+				             ? cut_plain(nv::cutoff_keyon(m_rom, el, pnote, pvel, false,
+				                                          m_cc[part].atk),
 				                         part, el, pvel)
 				             : cutoff_reg(su.cut, *c, part, el, note));
 				// **共振は式で出した値に CC71 の差ぶんを乗せる**（写し取った
@@ -2122,7 +2128,7 @@ public:
 			// 減衰は**いまのつまみで**出す。s.att は鳴らし始めたときの値なので、
 			// 途中で音量を絞られた音を離すと、絞る前の大きさで鳴り終わってしまう
 			if (s.elem)
-				m_poke(u32(i) * 64 + 9, release_of(s, part, note));
+				m_poke(u32(i) * 64 + 9, release_of(s, part, s.keynote));
 			// **離しを受けるドラム**（3n rr 09）。要素を持たないので
 			// 速さだけ与えて、音量はそのときの値にする（6.151）
 			else if (drum_rcv_note_off(part, note))
@@ -2222,7 +2228,7 @@ public:
 				s.held = false;
 				s.sost = false;
 				if (!s.on && s.elem)       // もう離している音も切り直す
-					m_poke(u32(i) * 64 + 9, release_of(s, part, s.note));
+					m_poke(u32(i) * 64 + 9, release_of(s, part, s.keynote));
 			}
 			if (s.on)
 				note_off(part, s.keynote, true);
@@ -2472,6 +2478,8 @@ private:
 			s.pstage = 3;
 			return;
 		}
+		// **立ち上がりのつまみは段 0（立ち上がり）だけ**。
+		// 段 1・2 にも掛けてみたら rpn の残差が 14% → 18% に悪くなった
 		const int rate = nv::peg_rate_reg_stage(m_rom, s.elem, s.pstage, s.note, s.pvel);
 		const int lvl  = nv::peg_level_of(s.elem, s.pstage);
 		m_poke(u32(i) * 64 + 0x0b, u16(rate << 8));
