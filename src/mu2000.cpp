@@ -2332,6 +2332,24 @@ bool mu2000::native_midi(u8 byte, int port)
 		m_native_engine = save2;
 		return true;
 	}
+	// **アフタータッチの値もこちらで覚える**（6.191）。
+	// フィルタ側 LFO の深さに乗るので、**鳴っている音に効かせる**
+	// 必要がある。バイトは今までどおり firmware へも流す
+	if (kind == 0xa0 || kind == 0xd0) {
+		const int part4 = m_ndrv.rcv_part(port, n.status & 0x0f);
+		if (kind == 0xd0) {
+			if (part4 >= 0)
+				m_ndrv.chan_press(part4, byte & 0x7f);
+		} else if (n.have == 0) {
+			n.d0 = byte;
+			n.have = 1;
+		} else {
+			n.have = 0;
+			if (part4 >= 0)
+				m_ndrv.poly_at(part4, n.d0 & 0x7f, byte & 0x7f);
+		}
+		return false;
+	}
 	if (kind != 0x80 && kind != 0x90 && kind != 0xb0 && kind != 0xe0)
 		return false;
 	if (n.have == 0) {

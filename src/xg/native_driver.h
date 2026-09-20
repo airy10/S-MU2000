@@ -136,6 +136,7 @@ public:
 		int lfull = 0;         // 遅れが明けたあとの深さ
 		int lcut = 0;          // 切る高さへ足すぶん
 		bool ltri = true;      // 三角波か（byte9 が 0 でなければ）
+		bool lrun = false;     // 遅れが明けて、位相を進める段階に入ったか
 		int vfull = 0;         // つまみまで入れた、せり上がり切った深さ
 		u64 vnext = ~u64(0);   // つぎに進める時刻
 		// **音程の包絡線の段**（0 が押した直後の段。3 で終わり）。
@@ -168,6 +169,8 @@ public:
 		m_cal.clear();
 		m_drum.clear();
 		for (auto &a : m_drum_touch)
+			a.fill(0);
+		for (auto &a : m_pat)
 			a.fill(0);
 		for (auto &s : m_slot)
 			s = slot_use();
@@ -544,6 +547,10 @@ public:
 					if (s.lstep) {
 						s.lcut = nv::lfo_fcut(
 						    nv::lfo_fwave(s.lph, s.ltri), s.lfdep);
+						// **位相が進むのは深さが 0 でないあいだだけ**。
+						// 実機（0x1298D0）は深さが 0 なら位相を進める
+						// 係（0x12A0FC）を呼ばない。だからつまみで深さが
+						// 乗ったとき、位相は打鍵のところから始まる
 						if (s.lfdep)
 							s.lph = nv::lfo_next(s.lph, s.lstep);
 					}
@@ -570,6 +577,7 @@ public:
 						// **フィルタ側の LFO が掛かり出すのは、
 						// せり上げの 1 歩目と同じ刻み**（6.189）。
 						// 遅れが 0 になった刻みではまだ掛からない
+						s.lrun = true;
 						s.lfdep = s.lfull;
 						s.vcnt += s.vstep;
 						if (s.vcnt > s.vtgt)
@@ -795,6 +803,10 @@ public:
 		// 「触った」かどうかを知るためだけに見ている
 		int nrpn_msb = -1, nrpn_lsb = -1;
 		bool rpn_last = false;         // 最後に書いたのが RPN なら true
+		// **フィルタ側 LFO の深さに乗るつまみ**（6.191）。
+		// 値はこちらで覚える（ワーク RAM を見ると 100ms 遅れる）
+		int chpress = 0;               // チャンネルアフタータッチ
+		int ac1 = 0, ac2 = 0;          // AC1・AC2 の値
 	};
 
 	// firmware を回したあとに、パートの音量・表現・パンをワーク RAM から取り直す。
@@ -1069,6 +1081,9 @@ public:
 		for (int k = 0; k < 2; k++) {
 			if (cc != int(pb[num[k]]))
 				continue;
+			// **値も覚える**（6.191）。フィルタ側 LFO の深さに乗る
+			(k ? m_cc[part].ac2 : m_cc[part].ac1) = value & 0x7f;
+			refresh_lfo_depth(part);
 			const u32 bit = k ? 28u : 29u;
 			if (value && !assign_idle(part, blk[k]))
 				m_cc[part].unknown |= 1u << bit;
@@ -1727,6 +1742,83 @@ public:
 	// 見回りで拾えるように）
 	static constexpr u64 METER_TAIL = 44100 / 4;
 
+	// **フィルタ側 LFO の深さに乗るつまみの合計**（6.191）。
+	// 実機は 0x129E30（パートごとの控え）と 0x129C00（鍵ごとの PAT）。
+	// どれも **深さ × 値 / 1024**。ベンドだけは中央からの離れを
+	// 256 で割ってから乗せる（向きは見ない）。
+	//
+	// **深さはワーク RAM から読む**（割り当ては曲の途中では稀なので
+	// 100ms 遅れても痛くない）が、**値はこちらの控え**を使う
+	int lfo_fdep_extra(int part, int note) const
+	{
+		if (!m_ram || part < 0 || part >= PARTS)
+			return 0;
+		const u8 *b = m_ram + ram::part_base(part);
+		const part_cc &c = m_cc[part];
+		auto term = [](int d, int v) { return (d && v) ? (d * v) / 1024 : 0; };
+		int sum = 0;
+		sum += term(s8(b[0x21]), c.mod >= 0 ? c.mod : int(b[ram::PART_MOD]));
+		sum += term(s8(b[0x4a]), c.chpress);
+		sum += term(s8(b[0x57]), c.ac1);
+		sum += term(s8(b[0x5e]), c.ac2);
+		// **鍵ごとの PAT**。実機はパートの塊の +0x82 から 62 鍵分
+		//（鍵 36-97）を持っていて、+0x50 の深さと掛ける
+		if (note >= 36 && note < 98)
+			sum += term(s8(b[0x50]), int(m_pat[size_t(part)][size_t(note)]));
+		const int pb = s8(b[0x27]);
+		if (pb) {
+			int v = c.bend - 0x2000;
+			if (v < 0)
+				v += 0xff;
+			v >>= 8;
+			if (v < 0)
+				v = -v;
+			sum += (pb * v) / 256;
+		}
+		return sum;
+	}
+
+	// つまみが動いたら、鳴っている音の深さを作り直す
+	void refresh_lfo_depth(int part)
+	{
+		if (!m_rom || part < 0 || part >= PARTS)
+			return;
+		for (slot_use &s : m_slot) {
+			if (s.part != part || !s.elem || !s.lstep)
+				continue;
+			if (!s.on && !s.rel)
+				continue;
+			s.lfull = nv::lfo_fdepth(m_rom, s.elem,
+			                         lfo_fdep_extra(part, s.note));
+			if (s.lrun)
+				s.lfdep = s.lfull;
+		}
+	}
+
+	// **鍵ごとのアフタータッチ**（6.191）。値を覚えて、
+	// 鳴っている音のフィルタ側 LFO の深さを作り直す
+	void poly_at(int part, int note, int value)
+	{
+		if (part < 0 || part >= PARTS || note < 0 || note > 127)
+			return;
+		m_pat[size_t(part)][size_t(note)] = u8(value & 0x7f);
+		refresh_lfo_depth(part);
+		// **調べ用**（`SMU2000_PAT_DBG=1`）。索引に乗るぶんと深さを出す
+		if (std::getenv("SMU2000_PAT_DBG"))
+			std::fprintf(stderr, "PAT part=%d note=%d v=%d extra=%d depth=%02x\n",
+			             part, note, value, lfo_fdep_extra(part, note),
+			             m_ram ? int(m_ram[ram::part_base(part) + 0x50]) : -1);
+	}
+
+	// **チャンネルアフタータッチ**（6.191）
+	void chan_press(int part, int value)
+	{
+		if (part < 0 || part >= PARTS)
+			return;
+		m_cc[part].chpress = value & 0x7f;
+		refresh_lfo_depth(part);
+	}
+
 	// **そのパートをその強さで鳴らしたときの目盛り**（6.188）。
 	// firmware が持っている音（写し取りの 1 音目）にも使う
 	int part_meter(int part, int vel) const { return meter_of(part, vel); }
@@ -2217,15 +2309,20 @@ public:
 			         : u16(0);
 			su.ltri  = el[9] != 0;
 			su.lph   = su.lstep;
-			su.lfull = su.lstep ? nv::lfo_fdepth(m_rom, el) : 0;
+			su.lfull = su.lstep
+			         ? nv::lfo_fdepth(m_rom, el, lfo_fdep_extra(part, pnote))
+			         : 0;
+			su.lrun  = true;             // 遅れが無ければすぐ回り出す
 			su.lfdep = su.lfull;
 			su.lcut  = 0;
 			if (nv::vib_ramps(el)) {
 				su.vtgt  = nv::vib_ramp_target(el);
 				su.vstep = nv::vib_ramp_step(el);
 				su.vdly  = nv::vib_delay_ticks(el);
-				if (su.vdly > 0)
+				if (su.vdly > 0) {
 					su.lfdep = 0;        // 遅れのあいだは掛からない
+					su.lrun  = false;    // 位相も止めておく
+				}
 				su.vhi   = u16(sr.v[0x0a] & 0xff00);
 				su.ahi   = u16(sr.v[0x05] & 0xff00);
 				su.vamp  = nv::vib_amp_depth(el);
@@ -2851,6 +2948,9 @@ private:
 	// **実機の `0x43E96E`**。旋律の音を鳴らすたびに byte10 で書き換わり、
 	// ドラムはその値を拾うだけ（6.179）
 	u16 m_peg_flag = 0;
+	// **鍵ごとのアフタータッチの値**（6.191）。実機はパートの塊の
+	// +0x82 から 62 鍵分を持っている。こちらは 128 鍵分持っておく
+	std::array<std::array<u8, 128>, PARTS> m_pat{};
 	// **ドラムのセットアップを触った印**（6.180）。組 × 鍵 ごとに
 	// 項目 0-7 のビット。実機は触られた項目だけ計算し直すので、
 	// 値だけ見ても既定のままなのか書き直されたのか分からない

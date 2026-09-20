@@ -733,8 +733,23 @@ inline u16 lfo_step(const u8 *rom, int rate)
 // Violin(2)→4・Viola(1)→2・TubulBel(2)→4 が実機と一致。
 // byte13 ではないことは AltoSax（byte13=3・byte15=0）で確かめた
 // （揺れがまったく無かった）
-inline int lfo_fdepth(const u8 *rom, const u8 *elem)
-{ return int(rom[LFO_FDEP_TAB + u32(elem[15] & 0x7f)]); }
+// **つまみのぶんが索引に乗る**（6.191。実機 0x129C56）。
+// つまみの合計を 22 で頭打ちしてから
+//
+//   0 → 0、1 → 4、それ以上 → ((n + 1) >> 1) + 4
+//
+// に折りたたみ、**byte15 を下駄にする**。つまみが全部既定なら
+// 索引は byte15 そのものになる
+inline int lfo_fdep_index(const u8 *elem, int extra)
+{
+	int n = extra < 0 ? 0 : (extra > 22 ? 22 : extra);
+	n = n == 0 ? 0 : (n == 1 ? 4 : ((n + 1) >> 1) + 4);
+	const int b15 = int(elem[15] & 0x7f);
+	return n < b15 ? b15 : n;
+}
+
+inline int lfo_fdepth(const u8 *rom, const u8 *elem, int extra = 0)
+{ return int(rom[LFO_FDEP_TAB + u32(lfo_fdep_index(elem, extra) & 0x7f)]); }
 
 // 位相（15bit）→ 波（-0x2000 〜 +0x2000）。実機 0x12A10C。
 // 型 0（byte9 が 0）はのこぎりを半分にしたもの
