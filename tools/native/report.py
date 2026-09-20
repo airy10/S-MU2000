@@ -71,17 +71,30 @@ def resid(wa, wb):
     if r0 < 1.0:
         return None, None
     d = rms([p - q for p, q in zip(x, y)])
-    # いちばん合うずれ（±3 サンプル）でどこまで下がるか ＝ 時刻のぶん
-    best = None
-    for lag in range(-3, 4):
-        if lag >= 0:
-            xa, ya = x[:len(x) - lag * ch], y[lag * ch:]
-        else:
-            xa, ya = x[-lag * ch:], y[:len(y) + lag * ch]
-        v = rms([p - q for p, q in zip(xa, ya)]) / max(1e-9, rms(xa))
-        if best is None or v < best:
-            best = v
-    return 100.0 * d / r0, 100.0 * best
+    # **窓ごとに ±3 サンプルまで合わせる**。1 サンプルずれただけでも
+    # 打楽器のような雑音は残差が 130% になるので、それを除いた「音そのもの
+    # の違い」を見る。実機の打鍵は主ループの位置で揺れる（6.159）ので、
+    # そこまで真似るのは筋が悪い
+    step = int(0.2 * sr) * ch
+    num = den = 0.0
+    for s0 in range(0, len(x) - step - 3 * ch, step):
+        xa = x[s0:s0 + step]
+        r1 = rms(xa)
+        if r1 < 5.0:
+            continue
+        bv = None
+        for lag in range(-3, 4):
+            ya = y[s0 + lag * ch: s0 + lag * ch + step]
+            if len(ya) != len(xa):
+                continue
+            v = rms([p - q for p, q in zip(xa, ya)])
+            if bv is None or v < bv:
+                bv = v
+        if bv is not None:
+            num += bv * bv * len(xa)
+            den += r1 * r1 * len(xa)
+    aligned = math.sqrt(num / den) if den > 0 else 0.0
+    return 100.0 * d / r0, 100.0 * aligned
 
 
 def regs(tf, tn):
@@ -136,7 +149,7 @@ def main():
     WORK.mkdir(parents=True, exist_ok=True)
 
     print("%-10s %8s %8s %6s %-22s %s"
-          % ("試験", "残差", "ずらすと", "打鍵", "違ったレジスタ", "打鍵のずれ"))
+          % ("試験", "残差", "合わせると", "打鍵", "違ったレジスタ", "打鍵のずれ"))
     rows = []
     for name in names:
         if name not in cases:
@@ -159,7 +172,7 @@ def main():
     clean = [r for r in rows if r[3] == 0]
     print("押鍵のレジスタが 1 本も違わない試験: %d / %d" % (len(clean), len(rows)))
     if rows:
-        print("残差の平均 %.2f%%（ずらすと %.2f%%）"
+        print("残差の平均 %.2f%%（窓ごとに合わせると %.2f%%）"
               % (sum(r[1] or 0 for r in rows) / len(rows),
                  sum(r[2] or 0 for r in rows) / len(rows)))
     return 0
