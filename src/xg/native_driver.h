@@ -1682,7 +1682,7 @@ private:
 		return nv::pitch_reg(nv::read_wave(s.wave), s.note, nv::key_follow(m_rom, s.elem),
 		                     nv::bend_cents(pc.bend, pc.range) + nv::elem_tune(s.elem)
 		                     + part_fine_cents(s.part)
-		                     + part_scale_cents(s.part, s.note) + s.glide / 256
+		                     + part_scale_cents(s.part, s.note) + nv::glide_cents(s.glide)
 		                     + assign_cents(s.part, s.keynote),
 		                     nv::key_pivot(s.elem));
 	}
@@ -2480,7 +2480,7 @@ public:
 			                                  nv::defaults(),
 			                                  nv::bend_cents(pc.bend, pc.range)
 			                                  + part_fine_cents(part)
-		                                  + part_scale_cents(part, pnote) + su.glide / 256
+		                                  + part_scale_cents(part, pnote) + nv::glide_cents(su.glide)
 			                                  + assign_cents(part, note),
 			                                  pvel, pc.atk, pc.dec,
 			                                  pc.vrate, pc.vdep, wnote, note,

@@ -257,6 +257,15 @@ inline int porta_step(const u8 *rom, int cc5)
 	return cc5 < 24 ? raw * 512 : raw * 2;
 }
 
+// **滑りの残りをセントに直す**（6.197）。`glide` はセント × 256 で、
+// 上へ滑るときは負。C++ の `/` は 0 の側へ切り捨てるので、
+// そのままだと**上へ滑るときだけ 1 セント高め**になる。
+// 実機は下へ落とす（CC5=32 の滑りで、レジスタが 1 だけ高かった）
+inline int glide_cents(int glide)
+{
+	return glide >= 0 ? glide / 256 : -((-glide + 255) / 256);
+}
+
 inline u16 pitch_reg(const wave_info &w, int note, int follow = 100,
                      int cents_extra = 0, int pivot = 60)
 {
