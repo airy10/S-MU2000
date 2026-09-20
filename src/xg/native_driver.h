@@ -1677,6 +1677,10 @@ public:
 	// 見回りで拾えるように）
 	static constexpr u64 METER_TAIL = 44100 / 4;
 
+	// **そのパートをその強さで鳴らしたときの目盛り**（6.188）。
+	// firmware が持っている音（写し取りの 1 音目）にも使う
+	int part_meter(int part, int vel) const { return meter_of(part, vel); }
+
 	void fill_meter(u8 *dst, int n) const
 	{
 		for (int i = 0; i < n; i++)
