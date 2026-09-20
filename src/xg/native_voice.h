@@ -88,6 +88,11 @@ inline int eg_dec1_cc(int base, int cc)
 }
 constexpr u32 DECAY_TAB  = 0x1F4E38;   // 減衰の速さ（128 バイト）
 constexpr u32 VEL_CURVE  = 0x1E5E5E;   // 強さの曲線（128 バイトの行が並ぶ。行 0 はそのまま）
+// **つまみの割り当て「音量」の表**（6.195。実機 0x12A782）。
+// |深さ - 64| を索引に引いて、値と掛けて 8 びったものを
+// パートの目盛り（0-128）に足す。中身は 3 × 索引
+constexpr u32 AMP_ASSIGN_TAB = 0x1E6899;
+
 constexpr u32 LEVEL_TAB  = 0x1E6798;   // 0-127 → 減衰（128 バイトの行が並ぶ。行 1 が 0x1E6818）
 constexpr u32 SLOT_TABLE = 0x1F4F58;   // スロット番号 → レジスタの先頭（4 バイト × 64）
 constexpr u32 CUTOFF_TAB = 0x1E5B58;   // フィルタの切る高さ（16bit。索引は記録の byte37）
@@ -329,6 +334,17 @@ inline int level_without_gain(int l, int gain)
 }
 
 // その線形の値（0-128）を減衰に直す
+// つまみ 1 つぶんの、目盛りへの足し分（6.195）
+inline int amp_assign(const u8 *rom, int depth, int value)
+{
+	const int d = depth - 64;
+	if (!d || !value)
+		return 0;
+	const int t = int(rom[AMP_ASSIGN_TAB + u32(d < 0 ? -d : d)]);
+	const int v = int(u16(t * value) >> 8);
+	return d < 0 ? -v : v;
+}
+
 inline int gain_att(const u8 *rom, int gain)
 {
 	if (gain <= 0)
