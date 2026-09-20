@@ -945,6 +945,17 @@ public:
 		return v;
 	}
 	int part_cho(int part) const  { return m_ram ? int(m_ram[ram::part_base(part) + 0x12]) : 0; }
+
+	// **パートの EQ**を式で入れる（6.181）。写し取りのときは
+	// 写した値（`d.iir`）のままで、こちらは使わない
+	void apply_part_eq(nv::slot_regs &r, int part) const
+	{
+		if (!m_ram || !m_rom || part < 0 || part >= PARTS)
+			return;
+		const u8 *b = m_ram + ram::part_base(part);
+		nv::eq_set(m_rom, r, int(b[ram::PART_EQ_LGAIN]), int(b[ram::PART_EQ_HGAIN]),
+		           int(b[ram::PART_EQ_LFREQ]), int(b[ram::PART_EQ_HFREQ]));
+	}
 	int part_bri(int part) const  { return m_ram ? int(m_ram[ram::part_base(part) + 0x18]) : 64; }
 	int part_res(int part) const  { return m_ram ? int(m_ram[ram::part_base(part) + 0x19]) : 64; }
 
@@ -2034,6 +2045,8 @@ public:
 		                                  + part_scale_cents(part, pnote) + su.glide / 256,
 			                                  pvel, pc.atk, pc.dec,
 			                                  pc.vrate, pc.vdep, wnote, note);
+			if (c->synth)
+				apply_part_eq(sr, part);
 			// 音程の包絡線の行き先（byte31）。初めの高さと同じなら書かない
 			{
 				const u16 tgt = nv::peg_reg(m_rom, nv::peg_cents(el, el[31], pvel), el);
@@ -2378,6 +2391,7 @@ public:
 				// 前の値をそのまま使う。チップはこのビットを見ていない（`& 0x3fff`）ので
 				// 音は変わらないが、合わせておくと物差しが濁らない
 				dr.set(0x10, m_peg_flag);
+				apply_part_eq(dr, part);
 			}
 			if (synth) {
 				// パン・送りもドラムセットアップから（6.155）。

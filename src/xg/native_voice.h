@@ -736,6 +736,41 @@ inline int vib_ramp_step(const u8 *elem)
 // 遅れが明けた瞬間に 0 から byte16 × 2 へ一つ飛ぶ
 inline int vib_amp_depth(const u8 *elem) { return (int(elem[16]) * 2) & 0x7f; }
 
+// ---- **パートの EQ**（レジスタ `0x20`-`0x2a` の偶数番。6.181）
+//
+// 実機（`0x12C10E`）は表を 2 つ引くだけ。低域・高域それぞれ
+// 3 ワード連続で取って、`0x20`/`0x22`/`0x24` と `0x26`/`0x28`/`0x2a` へ入れる。
+//
+//   低域の索引 = 96 × (周波数 - 4)  + 3 × (ゲイン >> 2)
+//   高域の索引 = 96 × (周波数 - 28) + 3 × (ゲイン >> 2)
+//
+// XG の番地は 08 pp 72 が低域のゲイン、73 が高域のゲイン、
+// **76 が低域の周波数、77 が高域の周波数**（74、75 は効かない）。
+// 既定はゲイン 64・低域 12・高域 54 で、XG の仕様と合う
+constexpr u32 EQ_LOW_TAB  = 0x1EDD98;
+constexpr u32 EQ_HIGH_TAB = 0x1F0298;
+
+inline u32 eq_index(int freq, int gain, int lo, int hi)
+{
+	const int f = freq < lo ? lo : (freq > hi ? hi : freq);
+	const int g = gain < 0 ? 0 : (gain > 127 ? 127 : gain);
+	return u32(96 * (f - lo) + 3 * (g >> 2));
+}
+
+// 6 つの係数を入れる。レジスタは `0x20` から 1 つ飛ばし
+inline void eq_set(const u8 *rom, slot_regs &r, int lo_gain, int hi_gain,
+                   int lo_freq, int hi_freq)
+{
+	if (!rom)
+		return;
+	const u32 li = eq_index(lo_freq, lo_gain, 4, 40);
+	const u32 hi = eq_index(hi_freq, hi_gain, 28, 58);
+	for (u32 i = 0; i < 3; i++) {
+		r.set(0x20 + i * 2, rd16(rom, EQ_LOW_TAB  + (li + i) * 2));
+		r.set(0x26 + i * 2, rd16(rom, EQ_HIGH_TAB + (hi + i) * 2));
+	}
+}
+
 // その音がせり上がりを持つか（持たないものは押した瞬間の値のまま）
 inline bool vib_ramps(const u8 *elem)
 {
