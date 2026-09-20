@@ -159,6 +159,8 @@ public:
 	{
 		m_cal.clear();
 		m_drum.clear();
+		for (auto &a : m_drum_touch)
+			a.fill(0);
 		for (auto &s : m_slot)
 			s = slot_use();
 		for (auto &c : m_cc)
@@ -759,6 +761,10 @@ public:
 		bool damper = false;
 		bool sost_on = false;          // CC66（ソステヌート）                   // CC64
 		bool soft = false;             // CC67（ソフトペダル。6.182）
+		// **NRPN の控え**（6.180）。ドラムのセットアップを
+		// 「触った」かどうかを知るためだけに見ている
+		int nrpn_msb = -1, nrpn_lsb = -1;
+		bool rpn_last = false;         // 最後に書いたのが RPN なら true
 	};
 
 	// firmware を回したあとに、パートの音量・表現・パンをワーク RAM から取り直す。
@@ -1133,6 +1139,20 @@ public:
 		// 鳴っている音はそのまま（実機も書き直さない）
 		case 0x43:
 			p.soft = value >= 64;
+			return false;
+		// **NRPN を控える**（6.180）。ドラムのセットアップを
+		// 「触った」かどうかがワーク RAM から見えないので、
+		// こちらで MIDI を見て印を立てる
+		case 0x63: p.nrpn_msb = value; p.rpn_last = false; return false;
+		case 0x62: p.nrpn_lsb = value; p.rpn_last = false; return false;
+		case 0x65:
+		case 0x64: p.rpn_last = true; return false;
+		case 0x06:
+			if (!p.rpn_last && p.nrpn_lsb >= 0) {
+				const int a = drum_nrpn_addr(p.nrpn_msb);
+				if (a >= 0)
+					mark_drum_setup(drum_set_of(part), p.nrpn_lsb, a, value);
+			}
 			return false;
 		case 0x78:                             // CC120 オールサウンドオフ
 			all_off(part, true);
@@ -1813,6 +1833,70 @@ public:
 		    && m_ram[ram::part_base(part) + 0x06] == 0;
 	}
 
+	// そのパートが使うドラムの組（0-3）。パートモードから決まる
+	int drum_set_of(int part) const
+	{
+		if (!m_ram || part < 0 || part >= PARTS)
+			return -1;
+		const int mode = int(m_ram[ram::part_base(part) + 0x07]);
+		const int set = mode >= 2 ? mode - 2 : 0;
+		return set < ram::DRUM_SETUP_SETS ? set : -1;
+	}
+
+	// **立ち上がりに使う「音量」**（6.180）。触っていなければ 64
+	// （＝記録の rec[13] そのもの）。**ワーク RAM ではなく
+	// こちらの控えを見る**。native の口では firmware を 100ms につき
+	// 5ms しか回さないので、打つ時点では RAM がまだ古い。
+	// **`0x09`（音量）のほうは今までどおり RAM を見る**
+	int drum_nrpn_of(int part, int note, int addr) const
+	{
+		const int set = drum_set_of(part);
+		if (set < 0 || note < 0 || note > 127 || addr < 0 || addr > 15)
+			return 64;
+		return ((m_drum_touch[size_t(set)][size_t(note)] >> addr) & 1)
+		     ? int(m_drum_val[size_t(set)][size_t(note)][size_t(addr)]) : 64;
+	}
+
+	// **その打の項目を触ったか**（6.180）
+	bool drum_touched(int part, int note, int param) const
+	{
+		const int set = drum_set_of(part);
+		if (set < 0 || note < 0 || note > 127 || param < 0 || param > 7)
+			return false;
+		return (m_drum_touch[size_t(set)][size_t(note)] >> param) & 1;
+	}
+
+	// **ドラムのセットアップを触った**（3n rr pp の SysEx と、
+	// NRPN 14-1A）。`set` は 3n の n
+	void mark_drum_setup(int set, int note, int addr, int value)
+	{
+		if (set < 0 || set >= ram::DRUM_SETUP_SETS
+		    || note < 0 || note > 127 || addr < 0 || addr > 15)
+			return;
+		m_drum_touch[size_t(set)][size_t(note)] |= u16(1u << addr);
+		m_drum_val[size_t(set)][size_t(note)][size_t(addr)] = u8(value & 0x7f);
+	}
+
+	// **NRPN の番号 → セットアップの番地**（6.180）。
+	// 並びが SysEx（`3n rr pp`）と違う。無いものは -1
+	static int drum_nrpn_addr(int msb)
+	{
+		switch (msb) {
+		case 0x14: return 0x0b;    // 切る高さ
+		case 0x15: return 0x0c;    // 共振
+		case 0x16: return 0x0d;    // 包絡線の立ち上がり
+		case 0x17: return 0x0e;    // 包絡線の減衰 1
+		case 0x18: return 0x00;    // 高さ（粗）
+		case 0x19: return 0x01;    // 高さ（細）
+		case 0x1a: return 0x02;    // 音量
+		case 0x1c: return 0x04;    // パン
+		case 0x1d: return 0x05;    // リバーブ送り
+		case 0x1e: return 0x06;    // コーラス送り
+		case 0x1f: return 0x07;    // バリエーション送り
+		default:   return -1;
+		}
+	}
+
 	// **ドラムセットアップの値**（3n rr pp）。組はパートモードから決まる
 	int drum_setup_of(int part, int note, int param) const
 	{
@@ -2395,11 +2479,16 @@ public:
 				// 渡していなかったので、曲が打の高さを変えても効かなかった
 				const int co = drum_setup_of(part, note, 0x00);
 				const int fi = drum_setup_of(part, note, 0x01);
-				// **セットアップの「音量」は立ち上がりを動かす**が、
-				// 触ったかどうかがワーク RAM から見えない（6.180）。
-				// 触っていないあいだは 64（＝記録の rec[13] そのもの）
+				// **包絡線の立ち上がり（NRPN 16）と切る高さ（NRPN 14）**は
+				// 表の索引をずらす（6.180）。**ワーク RAM ではなく
+				// MIDI を見て決める**：SysEx（`3n rr pp`）で書いても
+				// 実機は計算し直さないので、RAM だけでは見分けられない
 				dr = nv::drum_note(m_rom, drec, att, nv::defaults(),
-				                   co < 0 ? 64 : co, fi < 0 ? 64 : fi, 64);
+				                   co < 0 ? 64 : co, fi < 0 ? 64 : fi,
+				                   drum_nrpn_of(part, note, 0x0d),
+				                   drum_nrpn_of(part, note, 0x0b),
+				                   drum_nrpn_of(part, note, 0x0c),
+				                   drum_nrpn_of(part, note, 0x0e));
 				// **`0x10` のビット 14 は、直前に鳴らした旋律の音の
 				// 印を拾う**（6.179）。実機は旋律の段で `0x43E96E` に
 				// byte10 の印を置くが、ドラムの段はそこを書き直さず
@@ -2695,6 +2784,14 @@ private:
 	// **実機の `0x43E96E`**。旋律の音を鳴らすたびに byte10 で書き換わり、
 	// ドラムはその値を拾うだけ（6.179）
 	u16 m_peg_flag = 0;
+	// **ドラムのセットアップを触った印**（6.180）。組 × 鍵 ごとに
+	// 項目 0-7 のビット。実機は触られた項目だけ計算し直すので、
+	// 値だけ見ても既定のままなのか書き直されたのか分からない
+	std::array<std::array<u16, 128>, ram::DRUM_SETUP_SETS> m_drum_touch{};
+	// **触ったときの値も覚えておく**。native の口では firmware を
+	// 100ms につき 5ms しか回さないので、打つ時点ではまだ
+	// ワーク RAM が書き換わっていない（6.180）
+	std::array<std::array<std::array<u8, 16>, 128>, ram::DRUM_SETUP_SETS> m_drum_val{};
 	static constexpr u64 FW_KEEP = 44100 * 2;   // 2 秒は firmware のものとみなす
 	// 離したあと、つまみの動きを追い続ける長さ。いちばん遅い離しでも
 	// これだけあれば鳴り終わる（それ以上はスロットを取り直しているはず）

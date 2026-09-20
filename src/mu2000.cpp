@@ -1960,6 +1960,9 @@ void mu2000::native_sysex(u64 fire)
 		m_nq.push_back({ fire, 6, 0, 0, 0 });
 		return;
 	}
+	// **ドラムのセットアップは SysEx（3n rr pp）では渡さない**（6.180）。
+	// 実機は SysEx で書いても立ち上がりを計算し直さない。
+	// NRPN 16 で書いたときだけ変わる（native_driver の control で見ている）
 	if (hh != 0x08 || mm >= 32)
 		return;
 	// **1 回の SysEx で続けて何バイトも書ける**（ll から順に並ぶ）

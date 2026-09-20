@@ -1621,22 +1621,30 @@ inline u16 drum_pitch_reg(const u8 *rom, const u8 *rec, int cents)
 // Standard Kit の鍵 36（rec[13] = 122）・鍵 38・42（127）を
 // 音量 0-127 の全段で確かめた（`tools/native/drumlvl.py`）。
 // `0x07`・`0x08`・`0x09` は音量で動かない
-inline int drum_atk_idx(const u8 *rec, int level)
+// **ドラムの NRPN は記録のバイトをずらすだけ**（6.180）。
+// rec[11] 切る高さ・[12] 共振・[13] 立ち上がり・[14][15] 減衰で、
+// どれも `記録 + 値 - 64` を 0-127 に収めてからいつもの道を通る
+inline int drum_rec_idx(const u8 *rec, int i, int v)
 {
-	const int v = int(rec[13] & 0x7f) + (level < 0 ? 64 : level) - 64;
-	return v < 0 ? 0 : (v > 127 ? 127 : v);
+	const int x = int(rec[i] & 0x7f) + (v < 0 ? 64 : v) - 64;
+	return x < 0 ? 0 : (x > 127 ? 127 : x);
 }
+
+inline int drum_atk_idx(const u8 *rec, int atk) { return drum_rec_idx(rec, 13, atk); }
+
+inline int drum_cut_idx(const u8 *rec, int cut) { return drum_rec_idx(rec, 11, cut); }
 
 inline slot_regs drum_note(const u8 *rom, const u8 *rec, int att,
                            const defaults &d = defaults(),
-                           int coarse = 64, int fine = 64, int level = 64)
+                           int coarse = 64, int fine = 64, int atk = 64,
+                           int cut = 64, int reso = 64, int dec = 64)
 {
 	slot_regs r;
 	if (!rom || !rec)
 		return r;
 	{
 		// **共振が浅いと切る高さは 0x7C0 で頭打ち**（旋律と同じ。6.167）
-		int c0 = int(rd16(rom, CUTOFF_TAB + u32(rec[11]) * 2) & 0x7ff);
+		int c0 = int(rd16(rom, CUTOFF_TAB + u32(drum_cut_idx(rec, cut)) * 2) & 0x7ff);
 		if ((rec[12] >> 2) < 4 && c0 > CUTOFF_MAX)
 			c0 = CUTOFF_MAX;
 		r.set(0x00, u16(0x1000 | u16(c0)));
@@ -1644,16 +1652,16 @@ inline slot_regs drum_note(const u8 *rom, const u8 *rec, int att,
 	r.set(0x01, 0xffff);
 	r.set(0x02, u16(0x8000 | u16(std::min(0x7ff, int(rec[20]) * 16))));
 	r.set(0x03, d.post);
-	r.set(0x04, u16((rec[12] >> 2) << 11));
+	r.set(0x04, u16(u16(drum_rec_idx(rec, 12, reso) >> 2) << 11));
 	r.set(0x05, d.lfo_amp);
 	// **速さの表は 2 倍しない**（旋律は rate_scale で 2 倍する）
 	{
-		const int ai = drum_atk_idx(rec, level);
+		const int ai = drum_atk_idx(rec, atk);
 		r.set(0x06, u16(u16(rom[ATTACK_TAB + u32(ai)]) << 8
 		                | (ai >= 126 ? 0x00 : 0x7e)));
 	}
-	r.set(0x07, u16(u16(rom[DECAY_TAB + u32(rec[14] & 0x7f)]) << 8 | 0x04));
-	r.set(0x08, u16(u16(rom[DECAY_TAB + u32(rec[15] & 0x7f)]) << 8
+	r.set(0x07, u16(u16(rom[DECAY_TAB + u32(drum_rec_idx(rec, 14, dec))]) << 8 | 0x04));
+	r.set(0x08, u16(u16(rom[DECAY_TAB + u32(drum_rec_idx(rec, 15, dec))]) << 8
 	                | u16(((0x7f - int(rec[10])) * 2) & 0xff)));
 	r.set(0x09, u16(att & 0xff));
 	r.set(0x0a, 0x7000);
