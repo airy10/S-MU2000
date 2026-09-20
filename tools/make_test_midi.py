@@ -918,6 +918,30 @@ def case_dialloop():
     return [track(seq(ev))], t + 1.0
 
 
+def case_panrnd():
+    """**パンの Rnd**（パートのパン = 0）と、その手前の値。
+
+    実機はパンが 0 のとき、**要素を 1 つ鳴らすたびに 8bit の乱数を進めて**
+    その上位 7bit をパンの位置にする（種はワーク RAM の 0x43E94C、
+    `x = (0xB3 * x + 0x11) & 0xFF`）。音色が持つパンの寄りは無視され、
+    送り（リバーブ・コーラス）は位置 0 で引かれるぶんだけ目減りする。
+    doc/native-engine.md の 6.147。
+
+    要素が 2 つある音色（Warm Pad）で、1 音に 2 回進むことも見る"""
+    ev = head()
+    ev += [(0.9, bytes([0xc0, 89]))]                  # Warm Pad（要素 2 つ）
+    ev += [(0.95, bytes([0xb0, 0x5b, 64])), (0.96, bytes([0xb0, 0x5d, 64]))]
+    ev += note(0, 60, 100, 1.2, 0.6)                  # 1 音目。ここで写し取る
+    t = 2.2
+    # 左端 → 中央 → 右端 → Rnd
+    for val in (1, 64, 127, 0):
+        ev += [(t, xg([0x08, 0x00, 0x0e, val]))]
+        for i in range(4):
+            ev += note(0, 60 + i * 3, 100, t + 0.25 + i * 0.45, 0.35)
+        t += 2.2
+    return [track(seq(ev))], t + 1.0
+
+
 CASES = {
     "piano":   case_piano,
     "chord":   case_chord,
@@ -953,6 +977,7 @@ CASES = {
     "edges":   case_edges,
     "fxchange": case_fxchange,
     "dialloop": case_dialloop,
+    "panrnd": case_panrnd,
 }
 
 

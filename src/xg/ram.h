@@ -28,6 +28,12 @@ constexpr u32 SYSTEM   = 0x226c1;   // 00 00 00-06
 // 動くので、写し取りが無いときでも 10ms 格子の位相をここから学べる。
 // 隣の +0x3E941 は 10ms ごとに 1 増える数、0x408008 は 16bit の数
 constexpr u32 TICK_MARK     = 0x3e948;
+// **パンの Rnd（乱数）の種**（doc/native-engine.md の 6.147）。
+// パートのパンが 0（画面では Rnd）のとき、実機は要素を 1 つ鳴らすたびに
+//   x = (0xB3 * x + 0x11) & 0xFF
+// と進めて、`x >> 1` をパンの位置（0-127）に使う。native もここを読んで
+// 進めて書き戻すので、実機モードと行き来しても列が途切れない
+constexpr u32 PAN_RND       = 0x3e94c;
 constexpr u32 SYS_TUNE      = SYSTEM + 0;
 constexpr u32 SYS_VOLUME    = SYSTEM + 4;   // 00 00 04（マスター音量）
 // **パートの音量の目盛り**（0-128）。実機はここを音量の目盛りに掛ける

@@ -267,7 +267,7 @@ SHAPE_MIN = {
     "ins2": 0.95, "progchg": 0.98, "running": 0.95, "pat": 0.95,
     "ccramp": 0.95, "midreset": 0.98, "partmode": 0.95,
     "drumnrpn": 0.95, "retrig": 0.95, "pedretrig": 0.98, "edges": 0.95,
-    "fxchange": 0.95, "dialloop": 0.95,
+    "fxchange": 0.95, "dialloop": 0.95, "panrnd": 0.95,
     # keylevel は鍵と強さで音量が大きく動く音色ばかりなので、鍵を押す時刻の
     # ばらつき（6.90）が相関に出やすい。**音量のほうは `native の口` が見る**。
     # 音 1 つずつは tools/native/notelevel.py で見られる

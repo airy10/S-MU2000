@@ -26,6 +26,13 @@
 
 namespace {
 
+// 環境変数を読む（無ければ既定値）
+const char *getenv_or(const char *name, const char *def)
+{
+	const char *v = std::getenv(name);
+	return v && *v ? v : def;
+}
+
 void write_wav(const std::string &path, const std::vector<s16> &pcm, u32 rate)
 {
 	std::FILE *f = std::fopen(path.c_str(), "wb");
@@ -413,6 +420,27 @@ int main(int argc, char **argv)
 			}
 			if (i >= tail_start + size_t(3.0 * rate))
 				break;
+		}
+		// SMU2000_RAMSNAP=<dir>: ワーク RAM を丸ごと何度も書き出す（調べもの用）。
+		// SMU2000_RAMSNAP_T0 秒から SMU2000_RAMSNAP_DT 秒おきに
+		// SMU2000_RAMSNAP_N 回。firmware の中で**打鍵ごとに動く場所**を
+		// 差分で探すのに使う
+		if (const char *snapdir = std::getenv("SMU2000_RAMSNAP")) {
+			static const double st0 = std::atof(getenv_or("SMU2000_RAMSNAP_T0", "0"));
+			static const double sdt = std::atof(getenv_or("SMU2000_RAMSNAP_DT", "0.1"));
+			static const int    sn  = std::atoi(getenv_or("SMU2000_RAMSNAP_N", "32"));
+			static int sdone = 0;
+			const long long rel = (long long)i - (long long)(boot * rate);
+			if (sdone < sn && rel >= (long long)((st0 + sdt * sdone) * rate)) {
+				char path[512];
+				std::snprintf(path, sizeof path, "%s/ram%03d.bin", snapdir, sdone);
+				if (std::FILE *sf = std::fopen(path, "wb")) {
+					const std::vector<u8> &rr = mu.nvram();
+					std::fwrite(rr.data(), 1, rr.size(), sf);
+					std::fclose(sf);
+				}
+				sdone++;
+			}
 		}
 		// SMU2000_RAMWATCH=1: パートのつまみが**いつ**変わるかを 0.5 秒ごとに見る。
 		// firmware は native の口では細切れにしか回らないので、曲が送った値を
