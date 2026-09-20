@@ -1181,7 +1181,11 @@ inline bool cut_exact()
 	return on;
 }
 
-inline u16 cutoff_of(const u8 *rom, const u8 *elem, int note, int vel, int facc)
+// `cap` を false にすると、**共振が浅いときの頭打ち（0x7C0）を掛けない**
+// 値を返す。明るさのつまみ（CC74）は**頭打ちの前**に効くので、
+// つまみを下げる曲では素の値から引かないと 7 ずれる（6.167）
+inline u16 cutoff_of(const u8 *rom, const u8 *elem, int note, int vel, int facc,
+                     bool cap = true)
 {
 	int cut = int(rd16(rom, CUTOFF_TAB + u32(elem[37]) * 2))
 	        + cutoff_key_curve(rom, elem, note);
@@ -1195,14 +1199,24 @@ inline u16 cutoff_of(const u8 *rom, const u8 *elem, int note, int vel, int facc)
 	cut &= 0x7ff;
 	// そのうえで `0x12E79C` が「**共振が 4 未満なら 0x7C0 で頭打ち**」を掛ける
 	// （EPiano1 は強さ 100 で共振 0 → 0x7C0、強さ 127 で共振 4 → 0x7FF）
-	if (reso_level(elem, vel) < 4 && cut > CUTOFF_MAX)
+	if (cap && reso_level(elem, vel) < 4 && cut > CUTOFF_MAX)
 		cut = CUTOFF_MAX;
 	return u16(0x1000 | u16(cut));
 }
 
-inline u16 cutoff_keyon(const u8 *rom, const u8 *elem, int note, int vel)
+inline u16 cutoff_keyon(const u8 *rom, const u8 *elem, int note, int vel,
+                        bool cap = true)
 {
-	return cutoff_of(rom, elem, note, vel, fenv_init(rom, elem, vel));
+	return cutoff_of(rom, elem, note, vel, fenv_init(rom, elem, vel), cap);
+}
+
+// 共振が浅ければ頭打ちを掛ける（つまみを効かせたあとに使う）
+inline u16 cutoff_cap(u16 v, const u8 *elem, int vel)
+{
+	int cut = int(v & 0xfff);
+	if (reso_level(elem, vel) < 4 && cut > CUTOFF_MAX)
+		cut = CUTOFF_MAX;
+	return u16((v & 0xf000) | u16(cut));
 }
 
 // ---- **音色そのものが持つパン**（レジスタ `0x32`）。実機の `0x12AF40` と `0x12B794`
@@ -1344,7 +1358,13 @@ inline slot_regs drum_note(const u8 *rom, const u8 *rec, int att,
 	slot_regs r;
 	if (!rom || !rec)
 		return r;
-	r.set(0x00, u16(0x1000 | (rd16(rom, CUTOFF_TAB + u32(rec[11]) * 2) & 0x7ff)));
+	{
+		// **共振が浅いと切る高さは 0x7C0 で頭打ち**（旋律と同じ。6.167）
+		int c0 = int(rd16(rom, CUTOFF_TAB + u32(rec[11]) * 2) & 0x7ff);
+		if ((rec[12] >> 2) < 4 && c0 > CUTOFF_MAX)
+			c0 = CUTOFF_MAX;
+		r.set(0x00, u16(0x1000 | u16(c0)));
+	}
 	r.set(0x01, 0xffff);
 	r.set(0x02, u16(0x8000 | u16(std::min(0x7ff, int(rec[20]) * 16))));
 	r.set(0x03, d.post);

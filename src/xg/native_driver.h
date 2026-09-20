@@ -1321,25 +1321,28 @@ private:
 		// 明るさ（CC71）は写し取りとの差ではなく、そのまま足す
 		if (s.cal && !nv::cut_exact())
 			return cutoff_reg(base, *s.cal, s.part, s.elem, s.note);
-		return cut_plain(base, s.part);
+		return cut_plain(base, s.part, s.elem, s.fvel);
 	}
 
 	// 式で出した `0x00` に、明るさ（CC71）だけを足す
-	u16 cut_plain(u16 base, int part) const
+	// **明るさのつまみは頭打ちの前に効く**（6.167）。`base` は頭打ちを
+	// 掛けていない値を渡すこと
+	u16 cut_plain(u16 base, int part, const u8 *elem, int vel) const
 	{
 		const int now = m_cc[part].bri;
-		if (now < 0 || now == 64)
-			return base;
-		int v = int(base & 0xfff) + nv::bright_shift(now);
-		v = v < 0 ? 0 : (v > nv::CUTOFF_MAX ? nv::CUTOFF_MAX : v);
-		return u16((base & 0xf000) | u16(v));
+		int v = int(base & 0xfff);
+		if (now >= 0 && now != 64)
+			v += nv::bright_shift(now);
+		v = v < 0 ? 0 : (v > 0xfff ? 0xfff : v);
+		return nv::cutoff_cap(u16((base & 0xf000) | u16(v)), elem, vel);
 	}
 
 	u16 fenv_cut(const slot_use &s) const
 	{
-		// 式だけで出す道（写し取りが無いときは必ずこちら）
+		// 式だけで出す道（写し取りが無いときは必ずこちら）。
+		// **頭打ちは掛けずに返す**（明るさのつまみのあとで掛ける。6.167）
 		if (!s.cal || nv::cut_exact())
-			return nv::cutoff_of(m_rom, s.elem, s.note, s.fvel, s.facc);
+			return nv::cutoff_of(m_rom, s.elem, s.note, s.fvel, s.facc, false);
 		const u16 base = s.cal->reg[0x00];
 		const int init = nv::fenv_target(m_rom, s.elem, s.elem[55], s.fvel) >> 2;
 		int v = int(base & 0xfff) - init + (s.facc >> 2);
@@ -2003,7 +2006,8 @@ public:
 				// 式で出した値なら鍵の追従はもう入っている（6.123）。
 				// 明るさ（CC71）だけを、写し取りとの差ではなくそのまま足す
 				sr.set(0x00, nv::cut_exact()
-				             ? cut_plain(su.cut, part)
+				             ? cut_plain(nv::cutoff_keyon(m_rom, el, pnote, pvel, false),
+				                         part, el, pvel)
 				             : cutoff_reg(su.cut, *c, part, el, note));
 				// **共振は式で出した値に CC71 の差ぶんを乗せる**（写し取った
 				// 値ではない。強さで変わるので写し取りは使えない。6.69）
