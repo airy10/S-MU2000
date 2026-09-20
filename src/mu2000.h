@@ -433,7 +433,10 @@ private:
 	struct nev { u64 at; u8 kind, part, d0, d1; };
 	std::deque<nev> m_nq;
 	u64  m_ne_clock = 0;
-	u32  m_nown[64][4] = {};       // native で鳴らしている鍵（パートごとに 128 ビット）
+	// **native で鳴らしている鍵の数**（パート x 鍵）。ビット 1 つだと、
+	// 同じ鍵を重ねて押されたとき（キーアサインがマルチの曲）2 回目以降の
+	// 離しを取りこぼし、その音だけ鳴り残る（doc/native-engine.md の 6.149）
+	u8   m_nown[64][128] = {};
 
 	void native_pump();
 	// 写し取った音の、フィルタの動きを録る（doc/native-engine.md の 6.17）
@@ -524,12 +527,12 @@ private:
 		const u64 extra = (usb && port > 0) ? usb_sub64() : 0;
 		return (at + extra + native_proc64()) / 64;
 	}
-	bool nown(int part, int note) const
-	{ return (m_nown[part][(note >> 5) & 3] & (u32(1) << (note & 31))) != 0; }
+	bool nown(int part, int note) const { return m_nown[part][note & 0x7f] != 0; }
 	void nown_set(int part, int note, bool on)
 	{
-		if (on) m_nown[part][(note >> 5) & 3] |= u32(1) << (note & 31);
-		else    m_nown[part][(note >> 5) & 3] &= ~(u32(1) << (note & 31));
+		u8 &n = m_nown[part][note & 0x7f];
+		if (on) { if (n < 255) n++; }
+		else    { if (n) n--; }
 	}
 
 	// **音色を自分で引く**（firmware の RAM を待たずに済む）。

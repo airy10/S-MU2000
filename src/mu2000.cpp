@@ -2177,6 +2177,13 @@ bool mu2000::native_midi(u8 byte, int port)
 		replay_note(n.status, u8(note), u8(vel), port);
 		return true;
 	}
+	// **鍵の範囲の外は鳴らさない**（08 pp 0F/10）。実機も鳴らさないので、
+	// firmware には渡すだけにして、こちらでは 1 音も出さない
+	if (!m_ndrv.note_in_range(part, note)) {
+		m_ne_stats.other++;
+		replay_note(n.status, u8(note), u8(vel), port);
+		return true;
+	}
 	if (m_ndrv.can_play(part, note)) {
 		nown_set(part, note, true);
 		// **ドラムは実機のほうが 3 サンプル早い**（6.139）。旋律は +1 で

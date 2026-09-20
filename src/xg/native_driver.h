@@ -82,6 +82,8 @@ public:
 		int  rnd_pan = -1;
 		int  rnd_drop = 0;              // Rnd のときの送りの目減り
 		int  vel = 0;                   // 押した強さ（液晶のメーター用）
+		// **キーアサインがシングルで切られた音**。離しの速さが 0xD9 になる
+		bool single_cut = false;
 		int part = -1, note = -1, att = 0;
 		// **MIDI で押された鍵**。note のほうは XG のノートシフト（08 pp 08）を
 		// 足した「鳴らす鍵」なので、離すときの照合はこちらで見る
@@ -1526,6 +1528,25 @@ public:
 	bool delegated(int part) const
 	{ return part >= 0 && part < PARTS && m_cc[part].unknown != 0; }
 
+	// **キーアサインがシングルか**（XG の 08 pp 06。0 がシングル、1 がマルチ）
+	bool key_assign_single(int part) const
+	{
+		return m_ram && part >= 0 && part < PARTS
+		    && m_ram[ram::part_base(part) + 0x06] == 0;
+	}
+
+	// **鍵の範囲の中か**（XG の 08 pp 0F 下限・10 上限）。実機は範囲の外の
+	// 鍵を鳴らさない。ここを見ていないと、**実機が黙っている所で音が出る**。
+	// 下限 > 上限のときは「外側」が鳴る（XG の決まり）
+	bool note_in_range(int part, int note) const
+	{
+		if (!m_ram || part < 0 || part >= PARTS)
+			return true;
+		const u32 b = ram::part_base(part);
+		const int lo = int(m_ram[b + 0x0f]), hi = int(m_ram[b + 0x10]);
+		return lo <= hi ? (note >= lo && note <= hi) : (note <= hi || note >= lo);
+	}
+
 	// その音を native で鳴らせるか（実際に鳴らす前に決める必要がある。
 	// 鳴らせないなら firmware に回すので、遅らせてはいけない）
 	bool can_play(int part, int note) const
@@ -1556,6 +1577,14 @@ public:
 		// **モノなら前の音を離す**（6.125）
 		if (m_cc[part].mono)
 			mono_cut(part, note);
+		// **キーアサインがシングルなら、同じ鍵の前の音を離す**（08 pp 06）。
+		// マルチ（既定）は重ねる。余韻の長い音色で同じ鍵を続けて押すと差が出る
+		else if (key_assign_single(part)) {
+			for (slot_use &s : m_slot)
+				if (s.on && s.part == part && s.keynote == note)
+					s.single_cut = true;
+			note_off(part, note, true);
+		}
 		++m_inst;                        // この押しの番号（6.138）
 		const int nelem = nv::element_count(m_rom, rec);
 		// **ノートシフト**（08 pp 08）。実機は鍵を移してから音色を選ぶので、
@@ -1815,10 +1844,17 @@ public:
 
 	// 離しの `0x09`。**オールサウンドオフ（CC120）は速さを最大にする**
 	// （実機は上位に `0xf0` を書く。6.126）。ふつうの離しは音色の速さ
+	// **キーアサインがシングルで切るときの離しの速さ**（doc/native-engine.md
+	// の 6.149）。実機は音色によらず 0xD9 を書く（Strings・GrandPno・
+	// Square Lead・Music Box の 4 つで確かめた）。音量はそのときの値のまま
+	static constexpr u16 SINGLE_CUT_RATE = 0xd900;
+
 	u16 release_of(const slot_use &s, int part, int note) const
 	{
 		const u16 v = nv::release_reg(m_rom, s.elem, note, note_att(s, part));
-		return s.hard ? u16(0xf000 | (v & 0xff)) : v;
+		if (s.hard)
+			return u16(0xf000 | (v & 0xff));
+		return s.single_cut ? u16(SINGLE_CUT_RATE | (v & 0xff)) : v;
 	}
 
 	// CC123（オールノートオフ）は離す。CC120（オールサウンドオフ）は
