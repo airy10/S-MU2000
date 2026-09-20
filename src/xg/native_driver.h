@@ -2121,7 +2121,8 @@ public:
 				// 式で出した値なら鍵の追従はもう入っている（6.123）。
 				// 明るさ（CC71）だけを、写し取りとの差ではなくそのまま足す
 				sr.set(0x00, nv::cut_exact()
-				             ? cut_plain(nv::cutoff_keyon(m_rom, el, pnote, pvel, false,
+				             // **鍵の曲線は押した鍵で**（6.172）
+				             ? cut_plain(nv::cutoff_keyon(m_rom, el, note, pvel, false,
 				                                          m_cc[part].atk,
 				                                          nv::soft_vel(pvel, pc.soft)),
 				                         part, el, pvel)

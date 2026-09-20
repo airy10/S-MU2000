@@ -559,13 +559,20 @@ constexpr u32 CENT_PITCH_TAB = 0x1E6D14;  // セント → 音程の目盛り（
 inline int s16v(int v) { return int(s16(u16(v))); }
 
 // セント → 音程の目盛り（1 オクターブ = 256）。実機の `0x12B860`
+// **表は 0-4800 セントしか無い**。それを超えるぶんは
+// オクターブ（1200 セント = 256）で数えて、余りだけ表を引く（6.185）。
+// 頭打ちにしていたので、Rain の強さ 127 だけ `0x10` が 32 低かった
 inline int cents_to_pitch(const u8 *rom, int cents)
 {
 	if (!rom || !cents)
 		return 0;
-	if (cents > 0)
-		return cents < 4801 ? rd16s(rom, CENT_PITCH_TAB + u32(cents) * 2) : 1024;
-	return cents > -4801 ? -rd16s(rom, CENT_PITCH_TAB + u32(-cents) * 2) : -1024;
+	const bool neg = cents < 0;
+	const int c = neg ? -cents : cents;
+	const int v = c <= 4800
+	            ? int(rd16s(rom, CENT_PITCH_TAB + u32(c) * 2))
+	            : (c / 1200) * 256
+	              + int(rd16s(rom, CENT_PITCH_TAB + u32(c % 1200) * 2));
+	return neg ? -v : v;
 }
 
 // 高さに掛かる**強さの効き**（実機の `0x12BD40`）。byte22 が 64 なら 0
