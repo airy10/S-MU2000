@@ -2444,6 +2444,15 @@ public:
 			return;
 		m_cc[part].last = note;
 		m_cc[part].porta_src = -1;
+		// **firmware が鳴らす打でも、同じオルタネートグループの
+		// 打は止める**（6.194）。写し取りの 1 打目は firmware が鳴らすので、
+		// その打がこちらの鳴らしている打を止められず、
+		// **ペダルハイハット（44）を打っても開いた音（46）が鳴り残っていた**
+		if (!is_drum(part))
+			return;
+		const int grp = drum_alt_group(part, note);
+		if (grp)
+			wrote_regs(alt_cut(part, note, grp));
 	}
 
 	// 鍵を離す。鳴っていなければ false
