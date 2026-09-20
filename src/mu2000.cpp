@@ -415,8 +415,9 @@ void mu2000::fill_missing_glyphs(std::vector<u8> &rom)
 	//     11 30 30 30  10 30 30 31      ＝  ▶000 ▷001
 	//
 	// で、`0x11` がバンクの前、`0x10` がプログラムの前。**黒塗りが「ダイヤル
-	// で動く側」、白抜きが「固定されている側」**で、SELECT のボタンで入れ替わる
-	// （電源投入直後は同じカテゴリー内で両方動くモード）。
+	// で動く側」、白抜きが「固定されている側」**で、SELECT のボタンで入れ替わる。
+	// この画面は `0x11` が白抜き（バンクは固定）、`0x10` が黒塗り
+	// （プログラムが動く）＝ 利用者に GUI で見てもらって向きを確かめた。
 	//
 	// `mulcd.zip` の字形 ROM は MU2000 自身のものではないので、ここは
 	// **`0x10` が黒塗りの右向き・`0x11` が黒塗りの左向き**になっていた。
@@ -434,8 +435,8 @@ void mu2000::fill_missing_glyphs(std::vector<u8> &rom)
 	static const u8 TRI_FILLED[8] = { 0x08, 0x0c, 0x0e, 0x0f, 0x0e, 0x0c, 0x08, 0x00 };
 	static const u8 TRI_HOLLOW[8] = { 0x08, 0x0c, 0x0a, 0x09, 0x0a, 0x0c, 0x08, 0x00 };
 	for (int y = 0; y < 8; y++) {
-		rom[0x11 * 16 + y] = TRI_FILLED[y];
-		rom[0x10 * 16 + y] = TRI_HOLLOW[y];
+		rom[0x10 * 16 + y] = TRI_FILLED[y];
+		rom[0x11 * 16 + y] = TRI_HOLLOW[y];
 	}
 }
 

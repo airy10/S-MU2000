@@ -125,13 +125,31 @@ def main():
     miss = collections.Counter()
     ncmp = 0
     for i in range(min(len(fw), len(nv))):
-        sf, af = fw[i]
-        sn, an = nv[i]
-        # 押鍵ごとに、実機のスロットと native のスロットを順に並べて比べる
+        at_f, af = fw[i]
+        at_n, an = nv[i]
+        # **スロットは波形の番地で結び付ける**。実機は 0 から、native は 63 から
+        # 取るので、番号の順に並べると要素が逆になる（多要素の音色で全部
+        # 食い違って見えていた）。番地が引けないものは残りを順に当てる
         fs, ns = sorted(af), sorted(an)
+        def wave(d):
+            return (d.get(0x16, -1) << 16) | d.get(0x17, -1)
+        left = list(ns)
+        pair = []
+        for slot_f in fs:
+            hit = None
+            for slot_n in left:
+                if wave(af[slot_f]) >= 0 and wave(af[slot_f]) == wave(an[slot_n]):
+                    hit = slot_n
+                    break
+            if hit is None and left:
+                hit = left[0]
+            if hit is None:
+                break
+            left.remove(hit)
+            pair.append((slot_f, hit))
         rows = []
-        for j in range(min(len(fs), len(ns))):
-            f, n = af[fs[j]], an[ns[j]]
+        for sf, sn in pair:
+            f, n = af[sf], an[sn]
             diff = [r for r in sorted(f) if r in n and f[r] != n[r]]
             for r in diff:
                 bad[r] += 1
@@ -139,10 +157,10 @@ def main():
                 if r not in n:
                     miss[r] += 1
             ncmp += 1
-            rows.append((fs[j], ns[j], f, n, diff))
+            rows.append((sf, sn, f, n, diff))
         if a.pairs:
             print("  %4d 打目  実機 s=%-8d native s=%-8d (%+d)%s"
-                  % (i + 1, sf, sn, sn - sf,
+                  % (i + 1, at_f, at_n, at_n - at_f,
                      "  スロット数が違う" if len(fs) != len(ns) else ""))
             for slot_f, slot_n, f, n, diff in rows:
                 if diff:
