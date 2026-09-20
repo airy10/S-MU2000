@@ -121,6 +121,27 @@ public:
 		return m_mu ? m_mu->midi_pending() : 0;
 	}
 
+	// firmware のワーク RAM から XG の値を直接写す。echo も直列も使わないので
+	// どの糸でもその場で 1 枚取れる。状態を戻した直後の Automation の種に使う
+	// （automation_host.h の seed_values）
+	bool copy_xg_now(ui::xg_snapshot &ram)
+	{
+		std::lock_guard<std::mutex> guard(m_machine);
+		if (state() != status::ready || !m_mu)
+			return false;
+		ui::driver::copy_xg(*m_mu, ram);
+		return true;
+	}
+
+	// bridge に載っている XG の写しを今の RAM から作り直す。状態を戻した直後に
+	// 呼ぶと、音声の糸が read_xg で古い写しを引いて種を潰す事故が消える
+	void publish_xg_now()
+	{
+		std::lock_guard<std::mutex> guard(m_machine);
+		if (state() == status::ready && m_mu)
+			m_drv.publish_xg(*m_mu, m_bridge);
+	}
+
 	// 記録（%LOCALAPPDATA%\S-MU2000\log.txt）へ 1 行書く
 	void log_line(const char *text);
 

@@ -292,6 +292,10 @@ private:
 	void params_flush(const clap_input_events_t *in, const clap_output_events_t *out)
 	{
 		if (in) {
+			// process の前にもパラメータは来る。種がまだならここで仕込む
+			// （機械が ready でなければ seed_values は何もしないで、次の機会に）
+			if (!m_xg.seeded())
+				m_xg.seed_values();
 			m_xg.begin_block();
 			const uint32_t n = in->size(in);
 			for (uint32_t i = 0; i < n; i++) {
@@ -314,6 +318,7 @@ private:
 			return false;
 		const autom::entry &en = autom::entries()[size_t(i)];
 		m_xg.host_value(i, autom::clamp_value(en, e->value), [&](int port, const uint8_t *bytes, int n) {
+			m_cnt.emit++;                    // 音源へ実際に載った数（dedup を抜けた数）
 			m_engine.midi(bytes, size_t(n), port);
 		});
 		return true;
@@ -494,6 +499,9 @@ private:
 		if (!blob.empty() || !setup.empty())
 			m_engine.load_state(blob.empty() ? nullptr : blob.data(), blob.size(),
 			                    setup.empty() ? nullptr : setup.data(), setup.size());
+		// 戻したばかりの値を bridge にも載せ直す。载せないと音声の糸が read_xg で
+		// 戻す前の古い写しを引いて、ホストの照合値と食い違う（flood の温床）
+		m_engine.publish_xg_now();
 
 		if (!card.empty()) {
 			std::string err;
@@ -522,6 +530,10 @@ private:
 	{
 		if (!api || std::strcmp(api, kWindowApi) || floating)
 			return false;
+		// GUI が出たときに機械が ready だったか。foo_midi は init の前に
+		// GUI を作る事があるので、順目を確かめる（調査記録）
+		trace("gui create", 0,
+		      m_engine.wait_ready(0) ? "ready" : "LOADING");
 		if (!m_view)
 			m_view = new plug_view(m_engine);
 		return true;
@@ -563,6 +575,16 @@ private:
 	std::atomic<uint16_t>  m_sounded[mu2000::MIDI_PORTS] = {};
 	// 調査記録用。start_processing で zero クリア
 	uint64_t m_blk = 0, m_blk_evt = 0;
+	// 調査記録: 1 ブロックぶんの内訳。foo_midi が再生頭に何を詰めてくるか
+	// （1,300 個の正体）を log で確定させるための数え上げ
+	struct burst_count {
+		uint32_t par = 0, pmod = 0, cc = 0, note = 0, pb = 0, midi = 0, other = 0;
+		uint32_t syx = 0, syx_bytes = 0, emit = 0;
+		void reset() { *this = burst_count{}; }
+	};
+	burst_count m_cnt;
+	bool m_seed_logged = false;
+	int m_flood_logged = 0;
 
 	// 音を作る途中の入れ物。process の間だけ有効
 	float       *m_left = nullptr, *m_right = nullptr;
@@ -778,6 +800,17 @@ clap_process_status mu_plugin::process(const clap_process_t *pr)
 			m_engine.all_notes_off(mask, mu2000::MIDI_PORTS);
 	}
 
+	// 最初の区間（と状態を戻した直後）の頭で、RAM から「音源の今の値」を
+	// 種に仕込む。ホストが再生頭で流す 1,300 個近いパラメータの再送は
+	// ほとんどがこの値と一致するので、直列に載る前に弾ける（seed_values）
+	if (!m_xg.seeded()) {
+		const bool ok = m_xg.seed_values();
+		if (!m_seed_logged) {
+			m_seed_logged = true;
+			trace("seed", 0, ok ? "ok ram=1" : "NO-MACHINE");
+		}
+	}
+
 	// イベントは時刻順に来る。その時刻まで音を作ってから流す
 	m_xg.begin_block();
 	uint32_t nev = 0;
@@ -788,6 +821,29 @@ clap_process_status mu_plugin::process(const clap_process_t *pr)
 			if (!h || h->space_id != CLAP_CORE_EVENT_SPACE_ID)
 				continue;
 			nev++;
+			// 中訳を数える（bursto heartbeat の log に載せる）
+			switch (h->type) {
+			case CLAP_EVENT_PARAM_VALUE: m_cnt.par++; break;
+			case CLAP_EVENT_PARAM_MOD:   m_cnt.pmod++; break;
+			case CLAP_EVENT_MIDI: {
+				const auto *md = reinterpret_cast<const clap_event_midi_t *>(h);
+				const uint8_t st = uint8_t(md->data[0] & 0xf0);
+				if (st == 0xb0) m_cnt.cc++;
+				else if (st == 0x90 || st == 0x80) m_cnt.note++;
+				else if (st == 0xe0) m_cnt.pb++;
+				else m_cnt.midi++;
+				break;
+			}
+			case CLAP_EVENT_MIDI_SYSEX:
+				m_cnt.syx++;
+				m_cnt.syx_bytes += reinterpret_cast<const clap_event_midi_sysex_t *>(h)->size;
+				break;
+			case CLAP_EVENT_NOTE_ON:
+			case CLAP_EVENT_NOTE_OFF:
+			case CLAP_EVENT_NOTE_CHOKE:
+				m_cnt.note++; break;
+			default: m_cnt.other++; break;
+			}
 			fill_to(std::min(h->time, n));
 			event(h);
 		}
@@ -800,21 +856,44 @@ clap_process_status mu_plugin::process(const clap_process_t *pr)
 	m_blk_evt += nev;
 	if (++m_blk <= 3 || nev >= 24) {
 		const clap_event_transport_t *tr = pr->transport;
-		char ex[192];
-		std::snprintf(ex, sizeof(ex), "blk=%llu frames=%u nev=%u pos=%.2fs playing=%d pend=%zu",
+		char ex[320];
+		std::snprintf(ex, sizeof(ex),
+		              "blk=%llu frames=%u nev=%u pos=%.2fs playing=%d pend=%zu"
+		              " | par=%u pmod=%u cc=%u note=%u pb=%u midi=%u syx=%u/%uB other=%u emit=%u",
 		              (unsigned long long)m_blk, n, nev,
 		              tr ? tr->song_pos_seconds : -1.0,
 		              (tr && (tr->flags & CLAP_TRANSPORT_IS_PLAYING)) ? 1 : 0,
-		              m_engine.backlog());
+		              m_engine.backlog(),
+		              m_cnt.par, m_cnt.pmod, m_cnt.cc, m_cnt.note, m_cnt.pb,
+		              m_cnt.midi, m_cnt.syx, m_cnt.syx_bytes, m_cnt.other, m_cnt.emit);
 		trace(nev >= 24 ? "burst" : "first process", 0, ex);
+		// 違った値の抜き取り: i=一覧の番号 h=ホストの値 c=音源の値 k=知っていたか
+		if (m_xg.miss_total() && m_flood_logged < 3) {
+			m_flood_logged++;
+			char ms[192];
+			int at = std::snprintf(ms, sizeof(ms), "miss=%d:", m_xg.miss_total());
+			for (int k = 0; k < m_xg.miss_n() && at < 150; k++) {
+				const auto &s = m_xg.misses()[k];
+				at += std::snprintf(ms + at, sizeof(ms) - at, " i%d h%d c%d k%d",
+				                    s.i, s.host, s.cur, s.known ? 1 : 0);
+			}
+			trace("flood", 0, ms);
+			m_xg.miss_reset();
+		}
+		m_cnt.reset();
 	}
 	if ((m_blk & 1023) == 0) {
-		char ex[120];
-		std::snprintf(ex, sizeof(ex), "blk=%llu ev/1024blk=%llu pend=%zu",
+		char ex[320];
+		std::snprintf(ex, sizeof(ex),
+		              "blk=%llu ev/1024blk=%llu pend=%zu"
+		              " | par=%u pmod=%u cc=%u note=%u pb=%u midi=%u syx=%u/%uB other=%u emit=%u",
 		              (unsigned long long)m_blk, (unsigned long long)m_blk_evt,
-		              m_engine.backlog());
+		              m_engine.backlog(),
+		              m_cnt.par, m_cnt.pmod, m_cnt.cc, m_cnt.note, m_cnt.pb,
+		              m_cnt.midi, m_cnt.syx, m_cnt.syx_bytes, m_cnt.other, m_cnt.emit);
 		trace("heartbeat", 0, ex);
 		m_blk_evt = 0;
+		m_cnt.reset();
 	}
 
 	// 出力レベル。一気に変えると音が跳ねるので 1 サンプルずつ寄せる

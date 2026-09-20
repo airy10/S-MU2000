@@ -449,6 +449,7 @@ public:
 		if (!blob.empty() || !setup.empty())
 			m_engine.load_state(blob.empty() ? nullptr : blob.data(), blob.size(),
 			                    setup.empty() ? nullptr : setup.data(), setup.size());
+		m_engine.publish_xg_now();   // 戻した値を bridge にも。古い写しが flood を呼ぶ
 
 		if (!card.empty()) {
 			std::string err;
@@ -1021,6 +1022,11 @@ tresult PLUGIN_API mu_plugin::process(ProcessData &data)
 	// ---- まず、この区間に来た MIDI を全部集める
 
 	m_msgs.clear();
+
+	// 最初の区間の頭で RAM から種を仕込む（foo_midi らの再生頭のパラメータ
+	// 再送を直列に載せる前に弾く。automation_host.h の seed_values）
+	if (!m_xg.seeded())
+		m_xg.seed_values();
 
 	m_xg.begin_block();
 	if (IParameterChanges *changes = data.inputParameterChanges) {
