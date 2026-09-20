@@ -817,6 +817,10 @@ public:
 	int part_pan(int part) const  { return m_ram ? int(m_ram[ram::part_base(part) + 0x0e]) : 64; }
 	int part_mod(int part) const  { return m_ram ? int(m_ram[ram::part_base(part) + ram::PART_MOD]) : 0; }
 	int part_rev(int part) const  { return m_ram ? int(m_ram[ram::part_base(part) + 0x13]) : 40; }
+	// パートの共振つまみ（CC71 / 08 pp 19）。こちらが握っていればその値
+	int res_knob(int part) const
+	{ return m_cc[part].res >= 0 ? m_cc[part].res
+	       : (m_ram ? int(m_ram[ram::part_base(part) + 0x19]) : 64); }
 	// **そのパートの音量の目盛り**（0-128）。実機はパートの塊 +0x12F に持ち、
 	// 音量の目盛りに掛ける（`0x12A4AA`）。中身は
 	//
@@ -1194,7 +1198,10 @@ private:
 				m_poke(u32(i) * 64 + 0x00,
 				       cutoff_reg(s.cut, *s.cal, part, s.elem, s.note));
 			if (s.cal->has(0x04))
-				m_poke(u32(i) * 64 + 0x04, reso_reg(s.cal->reg[0x04], *s.cal, part));
+				m_poke(u32(i) * 64 + 0x04,
+				       s.cal->synth && s.elem
+				       ? u16(u16(nv::reso_level(s.elem, s.fvel, res_knob(part))) << 11)
+				       : reso_reg(s.cal->reg[0x04], *s.cal, part));
 		}
 	}
 
@@ -1890,12 +1897,20 @@ public:
 		int used = 0;
 		int nwrote = 0;                  // レジスタを書いた要素の数
 		std::vector<std::pair<u64, u32>> pend;   // スロット → byte72 の遅れ
+		// **滑る音は、押した鍵と滑り出す鍵の「高いほう」で波形を選ぶ**（6.168）。
+		// 多段サンプルは鍵の上限で選ぶので、滑る範囲のいちばん高い所を
+		// 通せる記録でないと足りない。CC84 で 48 から 72 へ滑るときは 72、
+		// 84 から 60 へ滑るときは 84 の波形を実機が使っていた
+		const int gsrc = m_cc[part].porta_src;
+		const int gs = gsrc < 0 ? -1
+		             : std::min(127, std::max(0, gsrc + part_shift(part)));
+		const int wnote = gs > pnote ? gs : pnote;
 		for (int k = 0; k < nelem; k++) {
 			const u8 *el = nv::element(m_rom, rec, k);
 			if (!nv::element_active(el, pnote, pvel))
 				continue;
 			// 波形の番地で、写し取ったスロットと結び付ける
-			const u8 *we = nv::wave_entry(m_rom, nv::wave_set(el), nv::wave_note(m_rom, el, pnote));
+			const u8 *we = nv::wave_entry(m_rom, nv::wave_set(el), nv::wave_note(m_rom, el, wnote));
 			const nv::voice_cal *c =
 			    we ? nv::match_cal(cals, nv::read_wave(we).format_addr, &taken) : nullptr;
 			if (!c && size_t(used) < cals.size()) {
@@ -1963,7 +1978,7 @@ public:
 			                                  + part_fine_cents(part)
 		                                  + part_scale_cents(part, pnote) + su.glide / 256,
 			                                  pvel, pc.atk, pc.dec,
-			                                  pc.vrate, pc.vdep);
+			                                  pc.vrate, pc.vdep, wnote);
 			// 音程の包絡線の行き先（byte31）。初めの高さと同じなら書かない
 			{
 				const u16 tgt = nv::peg_reg(m_rom, nv::peg_cents(el, el[31], pvel), el);
@@ -2011,7 +2026,12 @@ public:
 				             : cutoff_reg(su.cut, *c, part, el, note));
 				// **共振は式で出した値に CC71 の差ぶんを乗せる**（写し取った
 				// 値ではない。強さで変わるので写し取りは使えない。6.69）
-				sr.set(0x04, reso_reg(sr.v[0x04], *c, part));
+				// **共振はパートのつまみを式の中に入れる**（6.169）。
+				// 差を足す形（reso_reg）だと、実機の
+				// 「つまみが 64 以上なら大きいほうを取る」が出ない
+				sr.set(0x04, c->synth
+				             ? u16(u16(nv::reso_level(el, pvel, res_knob(part))) << 11)
+				             : reso_reg(sr.v[0x04], *c, part));
 				if (c->synth) {
 					sr.set(0x33, exact_send(su, part, false, su.base33));
 					sr.set(0x34, exact_send(su, part, true, su.base34));

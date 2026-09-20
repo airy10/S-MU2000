@@ -1469,10 +1469,12 @@ inline slot_regs build_note(const u8 *rom, const u8 *elem, int note, int att,
                             const voice_cal *cal = nullptr,
                             const defaults &d = defaults(), int cents_extra = 0,
                             int vel = 100, int cc_atk = 64, int cc_dec = 64,
-                            int cc_vrate = 64, int cc_vdep = 64)
+                            int cc_vrate = 64, int cc_vdep = 64, int wnote = -1)
 {
 	slot_regs r;
-	const u8 *we = wave_entry(rom, wave_set(elem), wave_note(rom, elem, note));
+	// **CC84 で滑り出す音は、波形を「滑り出す鍵」で選ぶ**（6.168）
+	const u8 *we = wave_entry(rom, wave_set(elem),
+	                          wave_note(rom, elem, wnote < 0 ? note : wnote));
 	if (!we)
 		return r;
 	const wave_info w = read_wave(we);
