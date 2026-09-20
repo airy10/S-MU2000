@@ -285,9 +285,14 @@ public:
 
 	tresult PLUGIN_API initialize(FUnknown *) override
 	{
-		// ROM 読みと起動（音にして 4 秒ぶんの空回し）は時間がかかるので、
-		// ここでは走らせるだけ。終わるまでは無音を返す
-		return m_engine.start(true) ? kResultOk : kResultFalse;
+		// ROM 読みと起動（音にして 4 秒ぶんの空回し）をここでやり切る。
+		// initialize は本スレッド。UI が数秒止まるのは仕様どおりの我慢で、
+		// 音側の窓（setActive/setProcessing）に起動中を持ち越さないため。
+		// ROM が無くて失敗しても kResultOk — 断ると曲ごと開けず、何が
+		// 足りないのか分からないまま消える。パネルに理由を出す
+		if (!m_engine.start(true))
+			m_engine.log_line("起動に失敗。音は出ない");
+		return kResultOk;
 	}
 
 	tresult PLUGIN_API terminate() override { return kResultOk; }
@@ -355,7 +360,14 @@ public:
 
 	tresult PLUGIN_API setActive(TBool state) override
 	{
-		if (!state) {
+		if (state) {
+			// **ここで起動を待ちきる。**setActive は本スレッドで呼ばれ、時間がかかって
+			// よいところなので、ここで待たないとホストは起動中の機械へ MIDI を流し始める。
+			// initialize で待ち切るのが本道だが、ホストが initialize を飛ばして
+			// 再活性化した経路の錠として残す（issue #19）
+			if (!m_engine.wait_ready(30000))
+				m_engine.log_line("起動が終わらないまま演奏に入る");
+		} else {
 			m_hush.store(true);
 			m_engine.set_processing(false);
 			report();
@@ -520,10 +532,17 @@ public:
 
 	tresult PLUGIN_API setProcessing(TBool state) override
 	{
-		if (!state)
+		if (!state) {
+			// 止めるときは待たない。FL は保存の途中にもこれを呼ぶ
 			m_hush.store(true);
+		} else {
+			// 最後の錠: 機械が ready になるまで音を始めない。ここで音声スレッドが
+			// 止まるので、ホストは準備のできていない機械へ PCM も MIDI も
+			// 1 サンプルも流せない（流れてもmidi() が止めて落とさない）
+			if (!m_engine.wait_ready(120000))
+				m_engine.log_line("起動を待ちきれなかった。無音のまま");
+		}
 		// 動いているあいだ、機械に触れてよいのは音声スレッドだけ
-		m_engine.wait_ready(30000);
 		m_engine.set_processing(state != 0);
 		return kResultOk;
 	}

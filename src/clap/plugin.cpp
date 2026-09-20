@@ -32,6 +32,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -152,39 +153,80 @@ public:
 private:
 	static mu_plugin *self(const clap_plugin *p) { return static_cast<mu_plugin *>(p->plugin_data); }
 
+	// ---- 調査記録 (issue #19)
+	//
+	// ホストがプラグインを受け入れてから最初の音が鳴るまでの道を辿る。
+	// 誰がどれだけ待ったか、イベントがまとめて一気に入ってきたか、
+	// そのとき送り側は再生中だったか。thread はスレ ID の略ハッシュ
+	void trace(const char *what, long long ms, const char *extra = nullptr)
+	{
+		const size_t tid = std::hash<std::thread::id>{}(std::this_thread::get_id());
+		char buf[256];
+		std::snprintf(buf, sizeof(buf), "trace %s: %lldms thread=%zx%s%s",
+		              what, ms, tid, extra ? " " : "", extra ? extra : "");
+		m_engine.log_line(buf);
+	}
+	static long long ms_since(std::chrono::steady_clock::time_point t0)
+	{
+		return static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(
+		    std::chrono::steady_clock::now() - t0).count());
+	}
+
 	// ---- clap_plugin
 
 	bool init()
 	{
+		const auto t0 = std::chrono::steady_clock::now();
 		m_host_params = static_cast<const clap_host_params_t *>(
 			m_host->get_extension(m_host, CLAP_EXT_PARAMS));
-		// ROM 読みと起動（音にして 4 秒ぶんの空回し）は時間がかかるので、
-		// ここでは走らせるだけ。終わるまでは無音を返す
-		return m_engine.start(true);
+		// ROM 読みと起動（音にして 4 秒ぶんの空回し）をここでやり切る。
+		// init は [main-thread]。UI が数秒止まるのは仕様どおりの我慢で、
+		// 音側の窓（activate 以降）に起動中を持ち越さないため。
+		// ROM が無くて失敗しても true を返す — 断ると窓が出せず、
+		// 何が足りないのか分からないまま消える。パネルに理由を出す。
+		// 音の方: fill() は無音、midi() は停止 — 機械が立つまで音も
+		// バイトも素通りしない（落さない。届くのが後ろにずれるだけ）
+		const bool ok = m_engine.start(true);
+		trace("init", ms_since(t0), ok ? "ready" : "BOOT-FAILED");
+		if (!ok)
+			m_engine.log_line("起動に失敗。音は出ない");
+		return true;
 	}
 
 	bool activate(double rate)
 	{
+		const auto t0 = std::chrono::steady_clock::now();
 		m_rate = rate;
 		m_engine.set_output_rate(rate);
-		// **ここで起動を待ちきる。**activate は本スレッドで呼ばれ、時間がかかってよい
-		// ところなので、ここで待たないとホストは起動中の機械へ MIDI を流し始める。
-		// 流された分は溜めてあとでまとめて出すので、曲の頭が崩れる（issue #19）
-		if (!m_engine.wait_ready(30000))
-			m_engine.log_line("起動が終わらないまま演奏に入る");
+		// **ここで起動を待ちきる。**activate は [main-thread & !active]。
+		// 本スレッドを止めてもよい場所なので、ここで待たないとホストは
+		// 起動中の機械へ MIDI を流し始める。流された分は溜めてあとで
+		// まとめて出すので、曲の頭が崩れる（issue #19）
+		const bool ready = m_engine.wait_ready(30000);
+		trace("activate", ms_since(t0), ready ? "ready" : "TIMEOUT");
 		return true;
 	}
 
 	bool start_processing()
 	{
+		const auto t0 = std::chrono::steady_clock::now();
+		// CLAP は start_processing を [audio-thread] で呼ぶ。ここが最後の錠:
+		// 機械が ready になるまでこの呼び出しを戻さない。音声スレッドは
+		// ここで止まるので、ホストは process() を 1 ブロックも進められない＝
+		// PCM も MIDI も、安定するまでこのプラグインには 1 バイトも流れない。
+		// init/activate で大抵はもう ready なので、ふつうは即通る
+		const bool ready = m_engine.wait_ready(120000);
+		trace("start_processing", ms_since(t0), ready ? "ready" : "TIMEOUT");
+		m_blk = 0;
+		m_blk_evt = 0;
 		// 動いているあいだ、機械に触れてよいのは音声スレッドだけ
-		m_engine.wait_ready(30000);
 		m_engine.set_processing(true);
 		return true;
 	}
 
 	void stop_processing()
 	{
+		trace("stop_processing", static_cast<long long>(m_blk));
 		m_hush.store(true);
 		m_engine.set_processing(false);
 	}
@@ -519,6 +561,8 @@ private:
 	std::atomic<bool>      m_hush{false};
 	// 音を出したチャンネル（口ごとに 16 ビット）。止めるときに流す先を絞る
 	std::atomic<uint16_t>  m_sounded[mu2000::MIDI_PORTS] = {};
+	// 調査記録用。start_processing で zero クリア
+	uint64_t m_blk = 0, m_blk_evt = 0;
 
 	// 音を作る途中の入れ物。process の間だけ有効
 	float       *m_left = nullptr, *m_right = nullptr;
@@ -736,17 +780,42 @@ clap_process_status mu_plugin::process(const clap_process_t *pr)
 
 	// イベントは時刻順に来る。その時刻まで音を作ってから流す
 	m_xg.begin_block();
+	uint32_t nev = 0;
 	if (const clap_input_events_t *ev = pr->in_events) {
 		const uint32_t count = ev->size(ev);
 		for (uint32_t i = 0; i < count; i++) {
 			const clap_event_header_t *h = ev->get(ev, i);
 			if (!h || h->space_id != CLAP_CORE_EVENT_SPACE_ID)
 				continue;
+			nev++;
 			fill_to(std::min(h->time, n));
 			event(h);
 		}
 	}
 	fill_to(n);
+
+	// ---- 調査記録: 最初のブロックと、詰め込まれて来たブロックを log へ
+	// pend は firmware が読み終わるのを待っている MIDI バイト数。ここが
+	// 数 kB あると、その後のノートがそのぶん遅れて鳴る（直列の速さの壁）
+	m_blk_evt += nev;
+	if (++m_blk <= 3 || nev >= 24) {
+		const clap_event_transport_t *tr = pr->transport;
+		char ex[192];
+		std::snprintf(ex, sizeof(ex), "blk=%llu frames=%u nev=%u pos=%.2fs playing=%d pend=%zu",
+		              (unsigned long long)m_blk, n, nev,
+		              tr ? tr->song_pos_seconds : -1.0,
+		              (tr && (tr->flags & CLAP_TRANSPORT_IS_PLAYING)) ? 1 : 0,
+		              m_engine.backlog());
+		trace(nev >= 24 ? "burst" : "first process", 0, ex);
+	}
+	if ((m_blk & 1023) == 0) {
+		char ex[120];
+		std::snprintf(ex, sizeof(ex), "blk=%llu ev/1024blk=%llu pend=%zu",
+		              (unsigned long long)m_blk, (unsigned long long)m_blk_evt,
+		              m_engine.backlog());
+		trace("heartbeat", 0, ex);
+		m_blk_evt = 0;
+	}
 
 	// 出力レベル。一気に変えると音が跳ねるので 1 サンプルずつ寄せる
 	const float target = m_engine.panel().gain();
