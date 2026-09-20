@@ -482,7 +482,7 @@ public:
 						v = lfo_reg(v, *s.cal, s.part);
 					} else if (re[s.rpos].reg == 0x00) {
 						s.cut = v;
-						v = cutoff_reg(v, *s.cal, s.part, s.elem, s.note);
+						v = cutoff_reg(v, *s.cal, s.part, s.elem, s.keynote);
 					} else if (re[s.rpos].reg == 0x04) {
 						v = reso_reg(v, *s.cal, s.part);
 					}
@@ -562,7 +562,7 @@ public:
 					v = lfo_reg(v, *s.cal, s.part);
 				} else if (fe[s.tpos].reg == 0x00) {   // 切る高さに明るさを足す
 					s.cut = v;
-					v = cutoff_reg(v, *s.cal, s.part, s.elem, s.note);
+					v = cutoff_reg(v, *s.cal, s.part, s.elem, s.keynote);
 				} else if (fe[s.tpos].reg == 0x04) {
 					v = reso_reg(v, *s.cal, s.part);
 				}
@@ -1196,7 +1196,7 @@ private:
 				                  s.rnd_drop, s.base34));
 			if (s.cut)
 				m_poke(u32(i) * 64 + 0x00,
-				       cutoff_reg(s.cut, *s.cal, part, s.elem, s.note));
+				       cutoff_reg(s.cut, *s.cal, part, s.elem, s.keynote));
 			if (s.cal->has(0x04))
 				m_poke(u32(i) * 64 + 0x04,
 				       s.cal->synth && s.elem
@@ -1249,21 +1249,26 @@ private:
 		if (!s.elem || !m_rom)
 			return;
 		s.fvel = vel;
-		s.fadj = nv::fenv_key_adj(s.elem, s.note) + nv::fenv_vel_adj(s.elem, vel);
+		const int kadj = nv::fenv_key_adj(s.elem, s.keynote);
+		s.fadj = kadj + nv::fenv_vel_adj(s.elem, vel);
 		s.ftgt = nv::fenv_target(m_rom, s.elem, s.elem[55], s.fvel);
 		// **立ち上がりの段**。byte50 が 63（即到達）なら段 0 の行き先から
-		// 始まり、そうでなければ byte54 から byte50 の速さで登る（6.71）
-		// **立ち上がりのつまみでこの速さも動く**（6.171）
-		const int a50 = nv::fenv_atk_rate(m_rom, s.elem, m_cc[s.part].atk);
+		// 始まり、そうでなければ byte54 から byte50 の速さで登る（6.71）。
+		// **立ち上がりのつまみでこの速さも動く**（6.171）。実機は
+		// 「目盛り 63 以上」を**鍵の補正を足す前と足したあとの 2 回**見る
+		const int atk = m_cc[s.part].atk;
+		const int a50 = nv::fenv_atk_rate(m_rom, s.elem, atk);
 		s.facc = nv::cut_exact()
-		       ? nv::fenv_init(m_rom, s.elem, s.fvel, m_cc[s.part].atk) : s.ftgt;
+		       ? nv::fenv_init(m_rom, s.elem, s.fvel, atk, s.keynote) : s.ftgt;
 		s.finc = 0;
 		s.fstage = 0;
 		if (s.facc == s.ftgt) {
 			fenv_next(s);
+		} else if (nv::fenv_atk_instant(m_rom, s.elem, atk, s.keynote)) {
+			s.finc = nv::FENV_NEXT;
 		} else {
 			int rate = a50 + s.fadj;
-			rate = rate < 0 ? 0 : (rate > 63 ? 63 : rate);
+			rate = rate < 0 ? 0 : (rate > 62 ? 62 : rate);
 			s.finc = nv::fenv_inc(m_rom, rate);
 			if (s.facc > s.ftgt && s.finc != nv::FENV_NEXT)
 				s.finc = -s.finc;
@@ -1330,7 +1335,7 @@ private:
 		// 0x100 ぶん明るくなっていた（鍵 36 で写し取るので、そこだけ合う）。
 		// 明るさ（CC71）は写し取りとの差ではなく、そのまま足す
 		if (s.cal && !nv::cut_exact())
-			return cutoff_reg(base, *s.cal, s.part, s.elem, s.note);
+			return cutoff_reg(base, *s.cal, s.part, s.elem, s.keynote);
 		return cut_plain(base, s.part, s.elem, s.fvel);
 	}
 
@@ -1352,7 +1357,7 @@ private:
 		// 式だけで出す道（写し取りが無いときは必ずこちら）。
 		// **頭打ちは掛けずに返す**（明るさのつまみのあとで掛ける。6.167）
 		if (!s.cal || nv::cut_exact())
-			return nv::cutoff_of(m_rom, s.elem, s.note, s.fvel, s.facc, false);
+			return nv::cutoff_of(m_rom, s.elem, s.keynote, s.fvel, s.facc, false);
 		const u16 base = s.cal->reg[0x00];
 		const int init = nv::fenv_target(m_rom, s.elem, s.elem[55], s.fvel) >> 2;
 		int v = int(base & 0xfff) - init + (s.facc >> 2);
@@ -2167,7 +2172,7 @@ public:
 			if (!s.on)
 				continue;
 			if (s.elem && m_rom && m_poke)
-				m_poke(u32(i) * 64 + 9, nv::release_reg(m_rom, s.elem, s.note, s.att));
+				m_poke(u32(i) * 64 + 9, nv::release_reg(m_rom, s.elem, s.keynote, s.att));
 			s.on = false;
 			s.held = false;
 			s.sost = false;
@@ -2209,7 +2214,7 @@ public:
 				continue;
 			s.caught = true;
 			m_poke(u32(i) * 64 + 9,
-			       nv::damper_hold_reg(m_rom, s.elem, s.note, note_att(s, part),
+			       nv::damper_hold_reg(m_rom, s.elem, s.keynote, note_att(s, part),
 			                           m_cc[part].dec,
 			                           s.cal && s.cal->have ? s.cal->dec_adj[1] : 0));
 		}
@@ -2480,7 +2485,7 @@ private:
 		}
 		// **立ち上がりのつまみは段 0（立ち上がり）だけ**。
 		// 段 1・2 にも掛けてみたら rpn の残差が 14% → 18% に悪くなった
-		const int rate = nv::peg_rate_reg_stage(m_rom, s.elem, s.pstage, s.note, s.pvel);
+		const int rate = nv::peg_rate_reg_stage(m_rom, s.elem, s.pstage, s.keynote, s.pvel);
 		const int lvl  = nv::peg_level_of(s.elem, s.pstage);
 		m_poke(u32(i) * 64 + 0x0b, u16(rate << 8));
 		m_poke(u32(i) * 64 + 0x10,
