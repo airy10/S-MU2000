@@ -2060,7 +2060,9 @@ public:
 			slot_use &s = m_slot[i];
 			if (s.part != part || !s.elem || !s.wave)
 				continue;
-			// 離してから長い音は追わない（実機も書かない。6.199）
+			// **離した音も追う**（6.200）。押している音だけにすると
+			// 割り当てを戻すところの残差が 16.9% → 47.9% に悪くなった。
+			// 実機も離しの最中は音程を見直しているらしい
 			if (!s.on && (!s.rel || m_clock - s.rel_at > REL_FOLLOW))
 				continue;
 			s.pdirty = true;
