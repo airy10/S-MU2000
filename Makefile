@@ -618,6 +618,20 @@ install-clap: $(CLAP_BIN)
 	cp -r $(CLAP_DIR) "$(CLAP_INSTALL)/"
 	@echo "入れた: $(CLAP_INSTALL)/S-MU2000.clap"
 
+# The same small CLAP host as on Windows (src/clap/probe.cpp opens the module
+# with dlopen here, so it wants the executable inside the bundle, not the
+# bundle). `make clap-probe` runs its automation and state checks without a
+# DAW; to hear it, give it a song:
+#   build/clapprobe build/S-MU2000.clap/Contents/MacOS/S-MU2000 song.mid out.wav
+$(BUILD)/clapprobe$(EXE): $(BUILD)/clapobj/src/clap/probe.o $(BUILD)/src/smf.o $(BUILD)/src/compat/compat.o
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
+
+CLAP_MODULE := $(CLAP_DIR)/Contents/MacOS/S-MU2000
+
+clap-probe: $(BUILD)/clapprobe$(EXE) $(CLAP_BIN)
+	S_MU2000_ROMS=$(ROMS) $(BUILD)/clapprobe$(EXE) $(CLAP_MODULE) --automation
+
 # Small tool that pretends to be a host. Same as the Windows one, except that the
 # module is opened with CFBundle and the parent window is probe_host_mac.mm
 $(BUILD)/vst3probe$(EXE): $(BUILD)/vst3obj/src/vst3/probe.o \
