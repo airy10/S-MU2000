@@ -168,8 +168,9 @@ static int seg_hits(ImVec2 p, ImVec2 q, ImVec2 lo, ImVec2 hi)
 static void point_label(ImDrawList *dl, ImVec2 p, const char *text, bool above, ImVec2 a, ImVec2 b,
                         label_avoid *avoid = nullptr)
 {
-	const float fs = ImGui::GetFontSize();
-	const ImVec2 ts = ImGui::CalcTextSize(text);
+	const float fs = ImGui::GetFontSize() * 0.75f;      // 点の字は本文より小さく
+	ImFont *font = ImGui::GetFont();
+	const ImVec2 ts = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, text);
 	if (ts.x + 4.0f > b.x - a.x || ts.y + 2.0f > b.y - a.y) {
 		hidden_value(text);                       // 窓が狭くて入らない字は出さず、下の帯に出す
 		return;
@@ -201,7 +202,7 @@ static void point_label(ImDrawList *dl, ImVec2 p, const char *text, bool above, 
 				const bool up = (side == 0) == above;
 				const float cy = up ? p.y - off - ts.y : p.y + off;
 				for (float cx : xs) {
-					const int c = cost(cx, cy) + k;          // 近いほどよい
+					const int c = cost(cx, cy) + k + side * 8;   // 近いほどよい。頼まれた側（上か下）を先に
 					if (c < best) { best = c; bx = cx; by = cy; }
 				}
 			}
@@ -215,7 +216,7 @@ static void point_label(ImDrawList *dl, ImVec2 p, const char *text, bool above, 
 		avoid->boxes.push_back({ ImVec2(x - 2, y - 1), ImVec2(x + ts.x + 2, y + ts.y + 1) });
 	}
 	dl->AddRectFilled(ImVec2(x - 2, y - 1), ImVec2(x + ts.x + 2, y + ts.y + 1), IM_COL32(0, 0, 0, 150), 3.0f);
-	dl->AddText(ImVec2(x, y), IM_COL32(245, 245, 235, 255), text);
+	dl->AddText(font, fs, ImVec2(x, y), IM_COL32(245, 245, 235, 255), text);
 }
 
 // 今のパートの音色の中身。パートの塊（写し）に、層の値（触った直後の値）を重ねて渡す
@@ -770,7 +771,7 @@ void overview::peg_cell(int part, xg::model &m, bridge &br, float w, float h, bo
 				point_label(dl, pts[1], s, true, a, b, &boxes);
 				std::snprintf(s, sizeof(s), "Release : %s / %s (%.0f ms, %+.0f cent)", xg::format(pr, vr).c_str(),
 				              xg::format(pl, vl).c_str(), rel_ms, L.pts.back().cents);
-				if (ImGui::CalcTextSize(s).x > w - fs * 0.5f)      // 狭い窓では詰めて書く
+				if (ImGui::CalcTextSize(s).x * 0.75f > w - fs * 0.5f)   // 狭い窓では詰めて書く（点の字は 0.75 倍）
 					std::snprintf(s, sizeof(s), "Rel %s/%s (%.0fms %+.0fc)", xg::format(pr, vr).c_str(),
 					              xg::format(pl, vl).c_str(), rel_ms, L.pts.back().cents);
 				point_label(dl, pts[3], s, true, a, b, &boxes);     // 離しは点の上に

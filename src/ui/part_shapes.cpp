@@ -70,7 +70,11 @@ void panel(const char *id, const char *title, float w, float h, int part, xg::mo
            std::initializer_list<const char *> keys, int index, Draw draw)
 {
 	const float fs = ImGui::GetFontSize();
-	if (!ImGui::BeginChild(id, ImVec2(w, h), ImGuiChildFlags_Borders)) {
+	// 見出しを枠の上端に寄せる（上下の余白を詰める）
+	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(ImGui::GetStyle().WindowPadding.x, fs * 0.1f));
+	const bool open = ImGui::BeginChild(id, ImVec2(w, h), ImGuiChildFlags_Borders);
+	ImGui::PopStyleVar();
+	if (!open) {
 		ImGui::EndChild();
 		return;
 	}
