@@ -555,6 +555,20 @@ inline int velocity_att(const u8 *rom, int vel, int curve = 0)
 // その要素の強さの曲線の行（byte68）
 inline int vel_curve_of(const u8 *elem) { return int(elem[68]); }
 
+// **強さの利き幅**（6.204。実機 0x128E10）。
+// 曲線を引く**前に強さを上へ寄せる**。
+// byte36 が大きいほど弱い打鍵が持ち上げられて、利きが浅くなる。
+// （2230 要素中 269 が 0 以外。S.Strngs は 1 で、
+// 強さ 1 の減衰が 96 ではなく 48）
+inline int vel_shift(const u8 *elem, int vel)
+{
+	const int d = int(elem[36]);
+	if (!d)
+		return vel;
+	const int v = vel + (((127 - vel) * (d * 36)) >> 8);
+	return v > 127 ? 127 : v;
+}
+
 inline int rd16s(const u8 *rom, u32 a)
 {
 	const int v = int(rd16(rom, a));
@@ -717,6 +731,17 @@ inline int peg_rate_reg_stage(const u8 *rom, const u8 *elem, int stage, int note
 	                              part_rate, cc_atk);
 	return rd16s(rom, PEG_RATE_TAB + u32(i) * 2);
 }
+
+// 速さの素を直に渡す版（6.205。離しの段で使う）
+inline int peg_rate_reg_raw(const u8 *rom, const u8 *elem, int raw, int note, int vel,
+                            int part_rate = 64, int cc_atk = 64)
+{
+	const int i = peg_rate_idx_of(elem, raw, note, vel, part_rate, cc_atk);
+	return rd16s(rom, PEG_RATE_TAB + u32(i) * 2);
+}
+
+// 離しの速さの頭打ちの表（パートの塊 +0x65 が 64 より上のとき）
+constexpr u32 PEG_REL_TAB = 0x1E54E4;
 
 // ---- **遅れて掛かるビブラート**（6.175）
 //
@@ -1100,7 +1125,7 @@ inline int fw_voice_level(const u8 *ram, int slot)
 inline int calibrate_level(const u8 *rom, const u8 *elem, int att_ref, int note_ref,
                            int vel_ref, int gain_ref = VOL_GAIN_DEF)
 {
-	const int rest = att_ref / 2 - velocity_att(rom, vel_ref, vel_curve_of(elem))
+	const int rest = att_ref / 2 - velocity_att(rom, vel_shift(elem, vel_ref), vel_curve_of(elem))
 	               - wave_level(rom, elem, note_ref);
 	// **つまみのぶんを割り戻す**。base_level が持つのは「掛ける前の目盛り」で、
 	// 鳴らすときに `level_with_gain` でそのときの音量を掛け直す（6.101）。
@@ -1169,7 +1194,8 @@ inline int volume_level(const u8 *rom, u32 rec, const u8 *elem, int note, int ad
 // 段の変わり目で 1.5dB ほど動くので、これを入れないと段ごとにずれる
 inline int volume_rest(const u8 *rom, const u8 *elem, int note, int vel)
 {
-	return velocity_att(rom, vel, vel_curve_of(elem)) + wave_level(rom, elem, note);
+	return velocity_att(rom, vel_shift(elem, vel), vel_curve_of(elem))
+	     + wave_level(rom, elem, note);
 }
 
 // 目盛り・残り・そのときの音量から、0x09 に入れる減衰。
@@ -1468,6 +1494,20 @@ inline const voice_cal *match_cal(const std::vector<voice_cal> &cals, u32 want, 
 // 表と 1 つ残らず一致した（`tools/native/fenvrate.py`）
 constexpr u32 FENV_ATK_CC = 0x1E5CD8;   // つまみ → 立ち上がりの目盛り（128 バイト）
 
+// **速さにつまみを掛ける**（6.205。実機 `0x128A5A`）。
+// つまみが 64 なら素通し、64 より上なら表で頭打ち、
+// 下なら表で底上げする。**段 0・段 2・離しで同じ表**を使う
+inline int fenv_rate_cc(const u8 *rom, int base, int cc)
+{
+	if (!rom || cc < 0)
+		return base;
+	const int c = cc & 0x7f;
+	if (c == 64)
+		return base;
+	const int t = int(rom[FENV_ATK_CC + u32(c)]);
+	return c > 64 ? (t < base ? t : base) : (t > base ? t : base);
+}
+
 inline int fenv_atk_rate(const u8 *rom, const u8 *elem, int cc_atk = 64)
 {
 	const int base = int(elem[50]);
@@ -1476,10 +1516,7 @@ inline int fenv_atk_rate(const u8 *rom, const u8 *elem, int cc_atk = 64)
 	int cc = cc_atk & 0x7f;
 	if (cc < 64 && int(elem[55]) < int(elem[54]))
 		cc = 64;                        // 下がる包絡線には効かない
-	if (cc == 64)
-		return base;
-	const int t = int(rom[FENV_ATK_CC + u32(cc)]);
-	return cc > 64 ? (t < base ? t : base) : (t > base ? t : base);
+	return fenv_rate_cc(rom, base, cc);
 }
 
 // **すぐ段 0 の行き先まで行くか**。実機は目盛りが 63 以上なら増分に

@@ -1533,8 +1533,15 @@ private:
 			else                  s.fstage = 2;
 		}
 		if (rate < 0 && s.fstage == 2) {
-			if (e[56] != e[57]) { rate = int(e[52]) + adj; lvl = e[57]; }
-			else                  s.fstage = 3;
+			// **段 2 の速さには EG ディケイ（CC75）が掛かる**（6.205）。
+			// 実機は段 1 には 0x40 を渡していて、そこだけ掛からない
+			if (e[56] != e[57]) {
+				rate = nv::fenv_rate_cc(m_rom, int(e[52]), m_cc[s.part].dec)
+				     + adj;
+				lvl = e[57];
+			} else {
+				s.fstage = 3;
+			}
 		}
 		if (rate < 0) {              // もう段が無い
 			s.finc = 0;
@@ -1633,7 +1640,9 @@ private:
 		const u8 *e = s.elem;
 		if (!e || !m_rom || !fenv_on())
 			return;
-		int rate = int(e[53]) + s.fadj;
+		// **離しの速さには EG リリース（CC72）が掛かる**（6.205）
+		int rate = nv::fenv_rate_cc(m_rom, int(e[53]), m_cc[s.part].rel)
+		         + s.fadj;
 		if (rate < 0) rate = 0;
 		if (rate > 63) rate = 63;
 		s.fstage = 9;                    // もう段を進めない印
@@ -2904,6 +2913,7 @@ public:
 			s.rel_att = s.att;
 			s.rpos = 0;
 			fenv_release(s);
+			peg_release(i);              // 音程の包絡線も離す（6.205）
 			if ((s.cal && !s.cal->filter_env.empty())
 			    || (nv::cut_exact() && fenv_on() && s.elem)) {
 				m_traj = true;
@@ -3252,20 +3262,66 @@ private:
 
 	// **音程の包絡線の段を進める**。チップが行き先に着いていたら、
 	// 次の段の速さ（0x0b）と行き先（0x10）を張る
+	// **音程の包絡線の離しの段**（6.205。実機 0x12B98C-0x12BA06）。
+	// 速さは byte29（パートの塡 +0x65 で補正して、CC72 を掛ける）、
+	// 行き先は byte34。byte33 と byte34 が同じで、もう段 3 に居て、
+	// +0x64 が中央なら何も書かない
+	void peg_release(int i)
+	{
+		slot_use &s = m_slot[i];
+		if (!s.elem || !m_rom || !m_ram)
+			return;
+		const u8 *e = s.elem;
+		const u8 *b = m_ram + ram::part_base(s.part);
+		if (e[33] == e[34] && s.pstage >= 3 && b[0x64] == 64)
+			return;
+		s.pstage = 3;
+		int raw = int(e[29]);
+		const int d = int(b[0x65]) - 64;
+		if (d > 0) {
+			const int tb = int(m_rom[nv::PEG_REL_TAB + u32(d)]);
+			if (raw > tb)
+				raw = tb;
+		} else {
+			raw -= d >> 1;
+			if (raw > 63)
+				raw = 63;
+		}
+		const int rel = m_cc[s.part].rel;
+		const int rate = nv::peg_rate_reg_raw(m_rom, e, raw, s.keynote, s.pvel,
+		                                      64, rel < 0 ? 64 : rel);
+		m_poke(u32(i) * 64 + 0x0b, u16(rate << 8));
+		m_poke(u32(i) * 64 + 0x10,
+		       nv::peg_reg(m_rom, nv::peg_cents(e, int(e[34]), s.pvel), e));
+	}
+
 	void peg_advance(int i)
 	{
 		slot_use &s = m_slot[i];
 		if (!s.elem || !m_rom)
 			return;
+		const u8 *e = s.elem;
 		s.pstage++;
+		// **行き先が前の段と同じなら段を飛ばす**（6.205。実機 0x12B8D8-0x12B946）。
+		// フィルタの包絡線（`fenv_next`）とまったく同じ形。
+		// 飛ばして段が無くなったら**何も書かない**
+		if (s.pstage == 1 && nv::peg_level_of(e, 0) == nv::peg_level_of(e, 1))
+			s.pstage = 2;
+		if (s.pstage == 2 && nv::peg_level_of(e, 1) == nv::peg_level_of(e, 2))
+			s.pstage = 3;
 		if (s.pstage > 2) {
 			s.pstage = 3;
 			return;
 		}
-		// **立ち上がりのつまみは段 0（立ち上がり）だけ**。
-		// 段 1・2 にも掛けてみたら rpn の残差が 14% → 18% に悪くなった
-		const int rate = nv::peg_rate_reg_stage(m_rom, s.elem, s.pstage, s.keynote, s.pvel);
-		const int lvl  = nv::peg_level_of(s.elem, s.pstage);
+		// **段ごとに渡すつまみが違う**（6.205。実機 0x12B8DC-0x12BB00）。
+		// 段 0 は CC73、**段 1 は何も掛からず（0x40 固定）**、段 2 は CC75。
+		// 前に「段 1・2 にも掛けたら rpn が悪くなった」のは、
+		// 段 0 と同じ CC73 を掛けていたから
+		const int dec = m_cc[s.part].dec;
+		const int cc = s.pstage == 2 ? (dec < 0 ? 64 : dec) : 64;
+		const int rate = nv::peg_rate_reg_stage(m_rom, e, s.pstage, s.keynote, s.pvel,
+		                                        64, cc);
+		const int lvl  = nv::peg_level_of(e, s.pstage);
 		m_poke(u32(i) * 64 + 0x0b, u16(rate << 8));
 		m_poke(u32(i) * 64 + 0x10,
 		       nv::peg_reg(m_rom, nv::peg_cents(s.elem, lvl, s.pvel), s.elem));

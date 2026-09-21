@@ -421,6 +421,94 @@ def case_banklsb():
     return [track(seq(ev))], t + 0.6
 
 
+def case_velsens():
+    """**強さの利き幅**（要素の byte36）を持つ音色を弱く強く弾く（6.204）。
+
+    実機は強さの曲線を引く**前に強さを上へ寄せる**ので、byte36 が
+    0 でない要素は弱い打鍵が持ち上がる。バンク 0 だけでも JazzGtr・
+    MuteGtr・SlapBa1・SynBass1/2・BrssSec・Halo Pad の 7 音色が
+    これを持っていて、どれも曲でよく使う。
+
+    ここが抜けていると、弱く弾いたときだけ最大 18dB 小さくなる。
+    """
+    ev = head()
+    t = 1.0
+    for prog in (26, 28, 38, 39, 94):
+        ev += [(t, bytes([0xc0, prog]))]
+        t += 0.2
+        for vel in (8, 32, 64, 100, 127):
+            ev += note(0, 60, vel, t, 0.3)
+            t += 0.45
+        t += 0.2
+    return [track(seq(ev))], t + 0.6
+
+
+def case_fenvcc():
+    """**フィルタの包絡線の段 2 と離しに掛かるつまみ**（6.205）。
+
+    実機は速さを出すときに同じ表（0x1E5CD8）でつまみを掛けるが、
+    掛ける先が段ごとに違う。
+
+      段 0 … byte50 に CC73（EG アタック）
+      段 1 … byte51。**つまみは掛からない**
+      段 2 … byte52 に CC75（EG ディケイ）
+      離し … byte53 に CC72（EG リリース）
+
+    `egcc` は Strings1 を使っていて `byte56 == byte57` なので**段 2 に
+    入らない**。だからここが抜けていても見つからなかった。GrandPno は
+    高さが 78 → 70 → 64 と 2 段動くので、段 2 を通る。
+    """
+    ev = head()
+    ev += [(1.0, b'\xc0\x00')]                # GrandPno（段 1・2 とも動く）
+    ev += note(0, 60, 100, 1.2, 2.0)          # 既定。ここで写し取る
+    ev += [(3.6, b'\xb0\x4b\x14')]            # CC75 = 20
+    ev += note(0, 62, 100, 3.8, 2.0)
+    ev += [(6.2, b'\xb0\x4b\x64')]            # CC75 = 100
+    ev += note(0, 64, 100, 6.4, 2.0)
+    ev += [(8.8, b'\xb0\x4b\x40'), (8.81, b'\xb0\x48\x14')]   # CC72 = 20
+    ev += note(0, 65, 100, 9.0, 1.0)
+    ev += [(11.2, b'\xb0\x48\x64')]           # CC72 = 100
+    ev += note(0, 67, 100, 11.4, 1.0)
+    return [track(seq(ev))], 13.5
+
+
+def case_pegcc():
+    """**音程の包絡線の段 2 に掛かるつまみ**（6.205）。
+
+    実機はフィルタと同じ形で、段ごとに違うつまみを速さへ掛ける。
+    段 0 が CC73、**段 1 は何も掛からず**、段 2 が CC75。
+
+    音程の包絡線が段 2 まで動く音色はバンク 0 に 3 つしかない
+    （80 SquareLd・96 Rain・123 Tweet）。ふだんの試験はどれも使って
+    いないので、ここが抜けていても見つからなかった。
+    """
+    ev = head()
+    t = 1.0
+    for prog in (96, 123, 80):
+        ev += [(t, bytes([0xc0, prog]))]
+        ev += note(0, 60, 100, t + 0.2, 1.2)          # 既定
+        t += 1.8
+        ev += [(t, b'\xb0\x4b\x14')]                  # CC75 = 20
+        ev += note(0, 62, 100, t + 0.2, 1.2)
+        t += 1.8
+        ev += [(t, b'\xb0\x4b\x64')]                  # CC75 = 100
+        ev += note(0, 64, 100, t + 0.2, 1.2)
+        t += 1.8
+        ev += [(t, b'\xb0\x4b\x40')]                  # 既定に戻す
+    # --- 離しの段（CC72）。バンク 0 で離しが動くのは Rain だけ
+    ev += [(t, bytes([0xc0, 96]))]
+    ev += note(0, 60, 100, t + 0.2, 0.6)          # 既定
+    t += 2.0
+    ev += [(t, b'\xb0\x48\x14')]                  # CC72 = 20
+    ev += note(0, 62, 100, t + 0.2, 0.6)
+    t += 2.0
+    ev += [(t, b'\xb0\x48\x64')]                  # CC72 = 100
+    ev += note(0, 64, 100, t + 0.2, 0.6)
+    t += 2.0
+    ev += [(t, b'\xb0\x48\x40')]
+    return [track(seq(ev))], t + 1.0
+
+
 def case_sxparam():
     """エフェクトの**パラメータ**を鳴らしながら流す曲。種類は頭で 1 回決めるだけ。
     実機は種類を変えるとき MEG のプログラムを書き直して 176-212ms 掛かるが、
@@ -1331,6 +1419,9 @@ CASES = {
     "bendasn": case_bendasn,
     "progrel": case_progrel,
     "banklsb": case_banklsb,
+    "velsens": case_velsens,
+    "fenvcc": case_fenvcc,
+    "pegcc": case_pegcc,
     "sxparam": case_sxparam,
     "pedals":  case_pedals,
     "partsx":  case_partsx,
