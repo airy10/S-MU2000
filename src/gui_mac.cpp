@@ -160,9 +160,15 @@ public:
 		report_drops();
 
 		// The view's context is already top-left, y down, so the shared
-		// painter (ui::app::paint_into) takes it as it stands
+		// painter (ui::app::paint_into) takes it as it stands.
+		// starved() counts what Windows calls late(); output_ms is
+		// WASAPI-only, so only the drop count crosses over (ui/status.h)
+		char middle[32] = {};
+		if (out && out->produced())
+			std::snprintf(middle, sizeof(middle), "遅れ %llu",
+			              (unsigned long long)out->starved());
 		HDC dc = static_cast<HDC>(smu_gdi_wrap_view_context(cg, w, h));
-		paint_into(dc, w);
+		paint_into(dc, w, middle);
 		DeleteDC(dc);
 	}
 
@@ -671,14 +677,6 @@ public:
 		reboot = std::thread([this] { eng->factory_reset(); });
 	}
 
-	void join_reboot()
-	{
-		if (reboot.joinable())
-			reboot.join();
-	}
-
-	std::thread reboot;                // the factory-reset boot, while it runs
-
 	// Folding ports 3 and 4 of a MIDI file onto A and B, and remembering it
 	void set_fold34(bool on)
 	{
@@ -718,16 +716,10 @@ public:
 		write_settings_file(path, ui::collect_settings(r));
 	}
 
-	int in_dev[mu2000::MIDI_PORTS] = { -1, -1, -1, -1 };   // MIDI IN A-D; -1 is unused
-	int out_dev = -1, out_dev_b = -1, out_dev_mu = -1;
-	int ain_dev = -1;
-	// MIDI thrown away by the THRU guards, and when that was last said out loud
-	u64  reported_drops = 0;
-	u64  last_drop_report = 0;
-
-private:
+ private:
 	bool m_pressed = false;
 	u64 last_flush = 0;                // when the card file was last written back
+	u64 last_drop_report = 0;          // when the MIDI drops were last said out loud
 };
 
 

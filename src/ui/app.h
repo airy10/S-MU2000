@@ -20,6 +20,7 @@
 #include <atomic>
 #include <cstdio>
 #include <string>
+#include <thread>
 
 #include "ui/audio_out.h"
 #include "ui/bridge.h"
@@ -75,20 +76,30 @@ public:
 	audio_out *out = nullptr;        // set once the audio device is open
 	audio_in  *ain = nullptr;        // set once the recording device is picked
 
+	// Device indices being opened (-1 unused). Names above outlive them:
+	// unplugging USB shifts numbers, so reconnects look the names up again
+	int in_dev[4] = { -1, -1, -1, -1 };
+	int out_dev = -1, out_dev_b = -1, out_dev_mu = -1;
+	int ain_dev = -1;
+	u64 reported_drops = 0;          // MIDI drops the UI thread last reported
+
+	std::thread reboot;              // the factory-reset reboot, while it runs
+
+	void join_reboot()
+	{
+		if (reboot.joinable())
+			reboot.join();
+	}
+
 	// ---- shared paint (the whole panel picture, status line included)
 
-	void paint_into(HDC dc, int w)
+	void paint_into(HDC dc, int w, const char *middle)
 	{
 		snapshot s;
 		br.read(s);
 		const u64 pressed = br.buttons();
 		char status[320] = {};
 		if (out && out->produced()) {
-			// starved() counts what Windows calls late(). output_ms (待ち)
-			// is WASAPI-only, so only the drop count is shared (ui/status.h)
-			char middle[32];
-			std::snprintf(middle, sizeof(middle), "遅れ %llu",
-			              (unsigned long long)out->starved());
 			format_status_line(status, sizeof(status),
 			                   s.voices_master + s.voices_slave,
 			                   out->cpu_percent(), out->worst_ms(),
