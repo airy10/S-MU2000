@@ -39,7 +39,13 @@
 #include "ui/part_shapes.h"
 #include "ui/pc_editor.h"
 #include "ui/pc_host.h"
+// Linux's pc_window lives in its own header (SDL3 shell): same class name
+// and shape, but it must not be declared twice in one program
+#ifdef __linux__
+#include "ui/pc_window_linux.h"
+#else
 #include "ui/pc_window.h"
+#endif
 #include "ui/player.h"
 #include "ui/tool_args.h"
 #include "ui/settings.h"
@@ -74,7 +80,9 @@ public:
 	midi_in  *midi;                  // MIDI IN A-D (mu2000::MIDI_PORTS of them)
 	midi_out &thru_a, &thru_b, &mu_out; // THRU A, THRU B, the machine's own OUT
 
-	panel  panel;
+	// The qualified type: a bare `panel panel;` member is an error under
+	// GCC's -Wchanges-meaning (the native Linux build compiles this file)
+	ui::panel panel;
 	player play;
 	toolbar bar;                     // the window button bar (not on --lcd)
 
@@ -885,6 +893,10 @@ public:
 			insert_card(want.card, true);
 		// --audio wins; otherwise the port that was opened last time
 		audio_name = o.audio_dev ? std::string(o.audio_dev) : want.audio_out;
+		// --audio-in wins; otherwise the recording device from last time
+		// (empty is off). Opened by start_ad once the firmware is up
+		if (o.audio_in_dev)
+			ain_name = o.audio_in_dev;
 		for (int p = 0; p < 4; p++)
 			if (a.in_dev[p] == -2)
 				a.in_dev[p] = find_device(midi_in::list(), want.in[p]);

@@ -494,6 +494,8 @@ LINUX_GUI_SRCS := src/ui/panel.cpp src/ui/layout.cpp src/ui/svg.cpp \
                   src/ui/player.cpp src/xg/model.cpp \
                   src/ui/xg_ui.cpp src/ui/fx_help.cpp src/ui/fx_icons.cpp \
                   src/ui/sdl_popup.cpp \
+                  src/ui/window_sdl.cpp \
+                  src/ui/app_linux.cpp \
                   src/ui/pc_window_linux.cpp \
                   src/ui/pc_editor.cpp src/ui/overview.cpp src/ui/fx_editor.cpp \
                   src/ui/part_shapes.cpp src/ui/master_editor.cpp
