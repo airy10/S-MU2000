@@ -142,7 +142,11 @@ static void fixed_point(ImDrawList *dl, ImVec2 p, float r)
 }
 
 // 点のそばの字。上に置けなければ下に。枠（a-b）からはみ出さないよう寄せる
-static void point_label(ImDrawList *dl, ImVec2 p, const char *text, bool above, ImVec2 a, ImVec2 b)
+// 点のそばの文字。avoid に既に描いた文字の枠を渡すと、重ならないところまで上（下）へずらす。
+// 描いた枠を avoid に足す
+struct label_box { ImVec2 lo, hi; };
+static void point_label(ImDrawList *dl, ImVec2 p, const char *text, bool above, ImVec2 a, ImVec2 b,
+                        std::vector<label_box> *avoid = nullptr)
 {
 	const float fs = ImGui::GetFontSize();
 	const ImVec2 ts = ImGui::CalcTextSize(text);
@@ -150,6 +154,18 @@ static void point_label(ImDrawList *dl, ImVec2 p, const char *text, bool above, 
 	if (y < a.y) y = p.y + fs * 0.7f;
 	if (y + ts.y > b.y) y = p.y - fs * 0.7f - ts.y;
 	const float x = std::clamp(p.x - ts.x * 0.5f, a.x + 2.0f, std::max(a.x + 2.0f, b.x - ts.x - 2.0f));
+	if (avoid) {
+		const bool up = y < p.y;
+		for (bool moved = true; moved;) {
+			moved = false;
+			for (const label_box &o : *avoid)
+				if (x - 2 < o.hi.x && x + ts.x + 2 > o.lo.x && y - 1 < o.hi.y && y + ts.y + 1 > o.lo.y) {
+					y = up ? o.lo.y - ts.y - 2 : o.hi.y + 2;
+					moved = true;
+				}
+		}
+		avoid->push_back({ ImVec2(x - 2, y - 1), ImVec2(x + ts.x + 2, y + ts.y + 1) });
+	}
 	dl->AddRectFilled(ImVec2(x - 2, y - 1), ImVec2(x + ts.x + 2, y + ts.y + 1), IM_COL32(0, 0, 0, 150), 3.0f);
 	dl->AddText(ImVec2(x, y), IM_COL32(245, 245, 235, 255), text);
 }
@@ -696,12 +712,13 @@ void overview::peg_cell(int part, xg::model &m, bridge &br, float w, float h, bo
 				char s[80];
 				const ImVec2 a(pos.x, pos.y), b(pos.x + w, pos.y + h);
 				std::snprintf(s, sizeof(s), "Init : %s (%+.0f cent)", xg::format(pi, vi).c_str(), L.pts.front().cents);
-				point_label(dl, pts[0], s, yi > mid, a, b);
+				std::vector<label_box> boxes;
+				point_label(dl, pts[0], s, yi > mid, a, b, &boxes);
 				std::snprintf(s, sizeof(s), "Attack : %s (%.0f ms)", xg::format(pa, va).c_str(), atk_ms);
-				point_label(dl, pts[1], s, true, a, b);
+				point_label(dl, pts[1], s, true, a, b, &boxes);
 				std::snprintf(s, sizeof(s), "Release : %s / %s (%.0f ms, %+.0f cent)", xg::format(pr, vr).c_str(),
 				              xg::format(pl, vl).c_str(), rel_ms, L.pts.back().cents);
-				point_label(dl, pts[3], s, yl > mid, a, b);
+				point_label(dl, pts[3], s, true, a, b, &boxes);     // 離しは点の上に
 			}
 		}
 	} else {
