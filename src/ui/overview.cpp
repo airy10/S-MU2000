@@ -522,6 +522,112 @@ void overview::ins_cell(int part, xg::model &m, bridge &br, float h, bool names,
 }
 
 
+// ピッチ EG の 1 マス。横は時間、縦は音程で、真ん中の横線が本来の音程。
+//   押した瞬間はイニシャルレベルの高さから始まり、アタックの時間で本来の音程へ移る。
+//   離したところ（縦の点線）からリリースの時間でリリースレベルの高さへ移る。
+// 3 つの点をつまむ（大きな窓だけ）:
+//   左の点（出だし）      縦でイニシャルレベル
+//   真ん中の点            横でアタックの時間
+//   右の点（リリースの先）横でリリースの時間、縦でリリースレベル
+// XG の値は音色の元の値に対する増減（64 が音色のまま）。高さは値に比例、長さは EG と同じ
+// 2 の (値 - 64) / 24 乗で伸び縮みさせた見た目で、実際の半音や秒数ではない
+void overview::peg_cell(int part, xg::model &m, bridge &br, float w, float h, bool compact)
+{
+	ImGuiIO &io = ImGui::GetIO();
+	const float fs = ImGui::GetFontSize();
+	ImDrawList *dl = ImGui::GetWindowDrawList();
+	const xg::param &pi = P("part.peg_init_level"), &pa = P("part.peg_attack_time");
+	const xg::param &pl = P("part.peg_rel_level"), &pr = P("part.peg_rel_time");
+	int vi = 64, va = 64, vl = 64, vr = 64;
+	const bool known = m.get(pi, part, vi) && m.get(pa, part, va) && m.get(pl, part, vl) && m.get(pr, part, vr);
+
+	ImGui::PushID("peg");
+	const ImVec2 pos = ImGui::GetCursorScreenPos();
+	ImGui::InvisibleButton("##peg", ImVec2(w, h), ImGuiButtonFlags_MouseButtonLeft);
+	const ImGuiID id = ImGui::GetItemID();
+	const bool hovered = ImGui::IsItemHovered();
+	const bool active = !compact && ImGui::IsItemActive();   // 一覧の小さなマスでは触らせない
+
+	const float pad = fs * 0.25f;
+	const float x0 = pos.x + pad, x1 = pos.x + w - pad;
+	const float top = pos.y + pad, bottom = pos.y + h - pad;
+	const float mid = (top + bottom) * 0.5f;
+	const float half = (bottom - top) * 0.5f * 0.92f;
+	auto y_of = [&](int v) { return mid - half * float(v - 64) / 64.0f; };
+	auto v_of = [&](float y) { return int(std::lround(64 - (y - mid) / half * 64.0f)); };
+	const float unit = (x1 - x0) / 4.0f;                    // 真ん中の値のときの 1 区間
+	auto len = [&](int v) { return unit * 0.5f * std::pow(2.0f, float(v - 64) / 24.0f); };
+	const float hold = unit;                                 // 押している間（固定）
+
+	float la = len(va), lr = len(vr);
+	const float total = la + hold + lr + unit * 0.3f;
+	const float squeeze = total > (x1 - x0) ? (x1 - x0) / total : 1.0f;
+	const float xa = x0 + la * squeeze;
+	const float xs = xa + hold * squeeze;
+	const float xr = xs + lr * squeeze;
+	const float yi = y_of(vi), yl = y_of(vl);
+
+	// つかむ点。押した瞬間に一番近い点を選び、離すまで同じ点を動かす
+	ImGuiStorage *st = ImGui::GetStateStorage();
+	int grab = st->GetInt(id, -1);
+	if (active && ImGui::IsItemActivated() && known) {
+		const ImVec2 mp = io.MousePos;
+		const float dists[3] = { std::hypot(mp.x - x0, mp.y - yi), std::hypot(mp.x - xa, mp.y - mid),
+		                         std::hypot(mp.x - xr, mp.y - yl) };
+		grab = int(std::min_element(dists, dists + 3) - dists);
+	}
+	if (!active)
+		grab = -1;
+	st->SetInt(id, grab);
+	if (active && known && grab >= 0 && (io.MouseDelta.x != 0.0f || io.MouseDelta.y != 0.0f)) {
+		auto time_of = [&](float length) {
+			return int(std::lround(64 + 24 * std::log2(std::max(1.0f, length) / (unit * 0.5f))));
+		};
+		auto send = [&](const xg::param &p, int v, int nv) {
+			nv = std::clamp(nv, p.min, p.max);
+			if (nv != v)
+				br.send(m.set(p, part, nv));
+		};
+		const ImVec2 mp = io.MousePos;
+		if (grab == 0)
+			send(pi, vi, v_of(mp.y));
+		if (grab == 1)
+			send(pa, va, time_of((mp.x - x0) / squeeze));
+		if (grab == 2) {
+			send(pr, vr, time_of((mp.x - xs) / squeeze));
+			send(pl, vl, v_of(mp.y));
+		}
+	}
+
+	// 描く
+	dl->AddRectFilled(pos, ImVec2(pos.x + w, pos.y + h), col(hovered || active ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg), 3.0f);
+	if (known) {
+		const ImU32 guide = col(ImGuiCol_TextDisabled, 0.35f);
+		dl->AddLine(ImVec2(x0, mid), ImVec2(x1, mid), guide);                       // 本来の音程
+		for (float y = top; y < bottom; y += fs * 0.5f)                             // 鍵盤を離したところ
+			dl->AddLine(ImVec2(xs, y), ImVec2(xs, std::min(bottom, y + fs * 0.25f)), guide);
+		const ImU32 line = col(ImGuiCol_SliderGrabActive);
+		const ImVec2 pts[] = { { x0, yi }, { xa, mid }, { xs, mid }, { xr, yl }, { x1, yl } };
+		dl->AddPolyline(pts, 5, line, 0, std::max(1.5f, fs * 0.1f));
+		const float r = std::max(2.5f, fs * 0.22f);
+		const ImVec2 handles[] = { pts[0], pts[1], pts[3] };
+		for (int i = 0; i < 3; i++)
+			dl->AddCircleFilled(handles[i], i == grab ? r * 1.4f : r, i == grab ? col(ImGuiCol_Text) : line);
+	} else {
+		const ImVec2 ts = ImGui::CalcTextSize("--");
+		dl->AddText(ImVec2(pos.x + (w - ts.x) * 0.5f, pos.y + (h - ts.y) * 0.5f), col(ImGuiCol_TextDisabled), "--");
+	}
+
+	if ((hovered || active) && known)
+		ImGui::SetItemTooltip("Init %s   Attack %s   Rel Lvl %s   Rel Time %s%s",
+		                      xg::format(pi, vi).c_str(), xg::format(pa, va).c_str(),
+		                      xg::format(pl, vl).c_str(), xg::format(pr, vr).c_str(),
+		                      compact ? BIG_HINT : "\n左の点: 縦で出だしの音程\n真ん中の点: 横でアタックの時間\n"
+		                                           "右の点: 横でリリースの時間、縦でリリースレベル");
+	ImGui::PopID();
+}
+
+
 // EG の 1 マス。音量の形（立ち上がり → 落ち着き → 伸ばし → 離して消える）を折れ線で描き、
 // 3 つの点をつまんで横に動かすと、アタック・ディケイ・リリースが変わる（大きな窓だけ。compact なら見るだけ）。
 // XG の値は音色の元の値に対する増減（64 が音色のまま）。形の長さは 2 の (値 - 64) / 24 乗で伸び縮みさせ、

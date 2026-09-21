@@ -135,20 +135,28 @@ void part_shapes::draw(xg::model &m, const xg_snapshot &ram, bridge &br)
 	ImGui::BeginGroup();
 	if (ImGui::BeginTabBar("right")) {
 		if (ImGui::BeginTabItem("形")) {
+			// 3 × 2。上に VIB・FILTER・EG、下にピッチ EG・EQ・ポルタメント（絵は無く棒だけ）
 			const ImVec2 room = ImGui::GetContentRegionAvail();
-			const float w = (room.x - st.ItemSpacing.x) * 0.5f;
+			const float w = (room.x - st.ItemSpacing.x * 2.0f) / 3.0f;
 			const float h = (room.y - st.ItemSpacing.y) * 0.5f;
 			panel("vib", "ビブラート（VIB）", w, h, part, m, br, { "part.vib_rate", "part.vib_depth", "part.vib_delay" },
 			      [](int p, xg::model &mm, bridge &b, float pw, float ph) { overview::vib_cell(p, mm, b, pw, ph, false); });
 			ImGui::SameLine();
 			panel("filter", "フィルタ（FILTER）", w, h, part, m, br, { "part.cutoff", "part.resonance", "part.hpf_cutoff" },
 			      [](int p, xg::model &mm, bridge &b, float pw, float ph) { overview::filter_cell(p, mm, b, pw, ph, false); });
+			ImGui::SameLine();
 			panel("eg", "音量の形（EG）", w, h, part, m, br, { "part.attack", "part.decay", "part.release" },
 			      [](int p, xg::model &mm, bridge &b, float pw, float ph) { overview::eg_cell(p, mm, b, pw, ph, false); });
+			panel("peg", "音程の形（ピッチ EG）", w, h, part, m, br,
+			      { "part.peg_init_level", "part.peg_attack_time", "part.peg_rel_level", "part.peg_rel_time" },
+			      [](int p, xg::model &mm, bridge &b, float pw, float ph) { overview::peg_cell(p, mm, b, pw, ph, false); });
 			ImGui::SameLine();
 			panel("eq", "パートの EQ", w, h, part, m, br,
 			      { "part.eq_bass_gain", "part.eq_bass_freq", "part.eq_treble_gain", "part.eq_treble_freq" },
 			      [](int p, xg::model &mm, bridge &b, float pw, float ph) { overview::eq_cell(p, mm, b, pw, ph, false); });
+			ImGui::SameLine();
+			panel("porta", "ポルタメント", w, h, part, m, br, { "part.porta_switch", "part.porta_time" },
+			      [](int, xg::model &, bridge &, float pw, float ph) { ImGui::Dummy(ImVec2(pw, ph)); });
 			ImGui::EndTabItem();
 		}
 		if (ImGui::BeginTabItem("すべて")) {
