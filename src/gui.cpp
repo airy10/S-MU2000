@@ -147,73 +147,13 @@ int main(int argc, char **argv)
 	}
 
 	static engine eng(br, midi_ports[0]);
-	if (std::getenv("SMU2000_VOICECACHE"))
-		eng_opts.voicecache = 1;
-	ui::apply_engine_options(eng.mu, eng_opts);
-	eng.native_fx.store(eng_opts.native_fx);
-	for (int p = 1; p < mu2000::MIDI_PORTS; p++)
-		eng.midi_p[p] = &midi_ports[p];
-	eng.mout_b = &mout_b;
-	eng.mout_mu = &mout_mu;
-	eng.mout = &mout;
-	if (!eng.load(a.dir)) {
-		std::fprintf(stderr, "%s\n", eng.message.c_str());
+	g_win->wire_engine(eng, eng_opts);
+	g_win->eng = &eng;
+	if (!g_win->load_machine(eng, a))
 		return 1;
-	}
-	// 一覧の窓で、音色の名前と楽器の絵を利用者の ROM から読む（xg/voices.h）
-	ui::xgui::set_voice_rom(eng.mu.program_rom());
-
-	// **既定は USB の口**（実機を PC に繋ぐときと同じ姿）。口 C・D は実機では
-	// USB だけの口で、firmware は HOST SELECT が USB のときしか通さない。
-	// USB のときは A・B も USB 側を通る（実機で DIN が黙るのと同じ）。
-	// --host-midi を付けると DIN の口 A・B だけになる。
-	//
-	// **起動より前に決めること**。reset() が「ホストが居る」の知らせ
-	// （F4 03 01 01 01）を積むかどうかはここで決まる。--shot は下で先に
-	// 起動して return するので、この行が後ろにあると絵だけ DIN の姿で
-	// 撮れてしまっていた
-	eng.mu.set_usb_host(a.usb_host);
-	std::printf(a.usb_host ? "MIDI は USB の口（A-D の 64 パート）\n"
-	                     : "--host-midi: DIN の口 A・B だけ（パート 1-32）\n");
-
-	// 絵だけ、ただし起動後の LCD が欲しい場合
-	if (!a.shot_path.empty()) {
-		if (!eng.boot()) { std::fprintf(stderr, "%s\n", eng.message.c_str()); return 1; }
-		eng.state.store(1);
-
-		// 起動直後は表示が動いている途中。少し空回しして落ち着かせる
-		{
-			s32 l, r;
-			for (size_t i = 0; i < size_t(2.0 * RATE); i++)
-				eng.mu.run_sample(l, r);
-		}
-
-		// レベルメータを出したいので、指定があれば MIDI を流しておく
-		if (!a.shot_mid.empty()) {
-			std::vector<smf::event> evs;
-			std::string err;
-			if (!smf::load(a.shot_mid, evs, err)) {
-				std::fprintf(stderr, "%s\n", err.c_str());
-			} else {
-				std::printf("MIDI %zu 件を %.1f 秒ぶん流す\n", evs.size(), a.shot_secs);
-				size_t at = 0;
-				s32 l, r;
-				for (size_t i = 0; i < size_t(a.shot_secs * RATE); i++) {
-					const double now = double(i) / RATE;
-					while (at < evs.size() && evs[at].time <= now) {
-						for (u8 b : evs[at].bytes)
-							eng.mu.midi_in(b);
-						at++;
-					}
-					eng.mu.run_sample(l, r);
-				}
-			}
-		}
-
-		eng.publish();
-		return ui::write_shot(a.shot_path, a.win_w, a.win_h, br, a.grid, win_opts.lcd_only, a.layout_path);
-	}
-
+	const int shot = g_win->run_boot_shot(eng, br, a, win_opts);
+	if (shot >= 0)
+		return shot;
 	// ---- 窓を出す
 
 	const HINSTANCE inst = GetModuleHandleA(nullptr);
@@ -241,43 +181,11 @@ int main(int argc, char **argv)
 	ui::pc_window::set_drop_handler(play_dropped_file);
 
 	g_win->eng  = &eng;
-	g_win->lcd_only = win_opts.lcd_only;
-	g_win->panel.set_lcd_only(win_opts.lcd_only);
-	// 帯は普通の窓だけ。LCD だけの窓には出さない
-	if (!win_opts.lcd_only) {
-		g_win->bar.set_items(ui::window_bar_items());
-		g_win->panel.set_top_inset(ui::toolbar::HEIGHT);
-	}
-	// 窓を出すときだけ、覚えている設定で起動する（--shot は毎回同じ絵にしたい）
-	eng.use_nvram = !out_opts.factory;
-	if (out_opts.factory)
-		std::printf("工場出荷状態で起動する（覚えていた設定は終わるときに上書きされる）\n");
-	g_win->layout_path = a.layout_path;
-	g_win->panel.resize(a.win_w, a.win_h);
-	g_win->reload_layout();
-	g_win->panel.resize(a.win_w, a.win_h);
-	{
-		// VOLUME のつまみは前に閉じたときの位置から
-		ui::remembered r = ui::app::load_remembered(settings_file_path());
-		br.set_gain(r.volume);
-		eng.analog.store(r.analog);
-		if (r.analog)
-			std::printf("音の出口: アナログ（直流を切る）\n");
-		g_win->play.set_fold_extra_ports(r.fold34);
-	}
+	g_win->setup_for_window(a, win_opts, out_opts.factory);
 
 	eng.publish();
 	ShowWindow(hwnd, SW_SHOW);
-	if (win_opts.open_editor && !win_opts.lcd_only)
-		ui::win_open_window(hwnd, g_win->pc);
-	if (win_opts.open_fx && !win_opts.lcd_only)
-		ui::win_open_window(hwnd, g_win->fx);
-	if (win_opts.open_list && !win_opts.lcd_only)
-		ui::win_open_window(hwnd, g_win->list);
-	if (win_opts.open_shapes && !win_opts.lcd_only)
-		ui::win_open_window(hwnd, g_win->shapes);
-	if (win_opts.open_master && !win_opts.lcd_only)
-		ui::win_open_window(hwnd, g_win->master);
+	g_win->open_startup_windows(win_opts);
 	UpdateWindow(hwnd);
 
 	// 起動は別スレッド。終わったら音を出し始める
@@ -293,94 +201,24 @@ int main(int argc, char **argv)
 			return;
 		}
 		// 起動が終わってから入れる（起動には firmware が要る）
-		if (eng_opts.native_engine) {
-			eng.mu.set_native_engine(eng_opts.native_engine);
-			eng.native_engine.store(eng_opts.native_engine);
-			if (eng_opts.voicecache)
-				smu2000::voicecache::load(eng.mu, smu2000::voicecache::key(eng.mu));
-		}
+		g_win->apply_native_engine(eng, eng_opts);
 		eng.state.store(1);
 		eng.publish();
 
 		// 前に選んだ口を名前で探す。--midi / --midiout があればそちらが勝つ
-		ui::remembered want = ui::app::load_remembered(settings_file_path());
-		g_win->ain_name = want.audio_in;
-		// 前に差していた SmartMedia。ファイルが無くなっていたら差さない（覚えている名前も消える）
-		if (!want.card.empty())
-			g_win->insert_card(want.card, true);
-		// --audio があればそちらが勝つ。無ければ前に選んだもの
-		g_win->audio_name = out_opts.audio_dev ? std::string(out_opts.audio_dev) : want.audio_out;
-		for (int p = 0; p < mu2000::MIDI_PORTS; p++)
-			if (a.in_dev[p] == -2)
-				a.in_dev[p] = find_device(ui::midi_in::list(), want.in[p]);
-		if (a.mout_dev == -2)
-			a.mout_dev = find_device(ui::midi_out::list(), want.out);
-		if (a.moutb_dev == -2)
-			a.moutb_dev = find_device(ui::midi_out::list(), want.out_b);
-		if (a.moutmu_dev == -2)
-			a.moutmu_dev = find_device(ui::midi_out::list(), want.out_mu);
-
-		for (int p = 0; p < mu2000::MIDI_PORTS; p++)
-			g_win->in_keep[p] = want.in[p];
-		g_win->out_keep    = want.out;
-		g_win->out_keep_b  = want.out_b;
-		g_win->out_keep_mu = want.out_mu;
-		for (int p = 0; p < mu2000::MIDI_PORTS; p++)
-			g_win->choose_in(p, a.in_dev[p], true);
-		g_win->choose_out(a.mout_dev, true);
-		g_win->choose_out_b(a.moutb_dev, true);
-		g_win->choose_out_mu(a.moutmu_dev, true);
-		// 開けなかった口は、覚えていた名前も出す（選び直すまで覚えている）
-		auto show = [](const char *label, const std::string &now, const std::string &keep) {
-			if (!now.empty())
-				std::printf("%s: %s\n", label, now.c_str());
-			else if (!keep.empty())
-				std::printf("%s: なし（「%s」が見つからないか開けない。覚えたままにしてある）\n",
-				            label, keep.c_str());
-			else
-				std::printf("%s: なし\n", label);
-		};
-		for (int p = 0; p < mu2000::MIDI_PORTS; p++)
-			show(ui::IN_LABELS[p], g_win->in_name[p], g_win->in_keep[p]);
-		show("MIDI OUT",    g_win->out_name_mu, g_win->out_keep_mu);
-		show("MIDI THRU A", g_win->out_name,    g_win->out_keep);
-		show("MIDI THRU B", g_win->out_name_b,  g_win->out_keep_b);
-		std::fflush(stdout);
+		g_win->open_remembered_ports(a, out_opts);
 
 		std::string err;
 
-		if (!out.start(a.latency, [](s16 *o, u32 n) { eng.fill(o, n); }, err, out_opts.exclusive,
-		               g_win->audio_name)) {
-			std::fprintf(stderr, "音声: %s\n", err.c_str());
-			eng.message = "音声デバイスを開けない";
-			eng.state.store(2);
-			eng.publish();
+		if (!g_win->start_audio(a.latency, out_opts.exclusive))
 			return;
-		}
-		// 開けた出口を覚える。**設定を読んで MIDI の口を開いた後でないと
-		// いけない**。前はこれを起動直後にやっていて、まだ空の MIDI の名前で
-		// gui.ini を上書きしていた（毎回 MIDI が「なし」に戻っていた）
-		g_win->audio_name = out.device_name();
 		std::printf("音声の出口: %s\n%s\n", out.device_name().c_str(),
 		            out.format_line().c_str());
 		// A/D INPUT。前に選んだ録音デバイスがあれば開く（開けなくても名前は覚えておく）
-		if (!g_win->ain_name.empty()) {
-			std::string aerr;
-			if (ain.start(g_win->ain_name, aerr))
-				std::printf("A/D INPUT: %s（%s）\n", ain.device_name().c_str(), ain.format_line().c_str());
-			else
-				std::printf("A/D INPUT: なし（%s）\n", aerr.c_str());
-		}
-		g_win->save_settings();
+		g_win->start_ad();
 		// --play が付いていれば、鳴り始めたところで流し出す
-		if (!a.play_path.empty()) {
-			std::string perr;
-			if (!g_win->play.start(a.play_path, br, perr))
-				std::fprintf(stderr, "MIDI ファイル: %s\n", perr.c_str());
-			else
-				std::printf("再生: %s（%.1f 秒）\n", a.play_path.c_str(),
-				            g_win->play.length());
-		}
+		if (!a.play_path.empty())
+			g_win->play_song(a.play_path);
 		std::printf("鳴らしている（待ち時間 %.1f ms、MMCSS %s）\n",
 		            1000.0 * out.buffer_frames() / RATE,
 		            out.mmcss() ? "登録できた" : "登録できない（途切れやすい）");
@@ -393,60 +231,10 @@ int main(int argc, char **argv)
 		DispatchMessageA(&msg);
 	}
 
-	// PC の窓に閉じたと知らせる（一覧のミュートを外して受信チャンネルを戻すなど）。
-	// 送ったものは音声の糸が流すので、少し待ってから止める
-	ui::pc_shutdown_all(g_win->list, g_win->pc, g_win->fx, g_win->shapes, g_win->master, g_win->br);
-	Sleep(100);
-
-	// **先に MIDI ファイルを止める。** 止めたときのオールノートオフは音声の糸が THRU から
-	// 外へ流すので、音を先に止めると外の機器（実機）に届かず鳴りっぱなしになる。
-	// 止めてから、音声の糸が流し終えるのを少し待つ
-	if (g_win->play.playing()) {
-		g_win->play.stop();
-		Sleep(150);
-	}
-	out.stop();
-	// 念のため、THRU の先へ直にもオールサウンドオフ・オールノートオフを送る。
-	// 音声の糸はもう止まっているので、ここから送っても取り合いにならない
-	for (ui::midi_out *thru : { &mout, &mout_b }) {
-		if (!thru->is_open())
-			continue;
-		for (int ch = 0; ch < 16; ch++) {
-			for (u8 v : { u8(0xb0 | ch), u8(120), u8(0), u8(0xb0 | ch), u8(123), u8(0) })
-				thru->send(v);
-		}
-	}
 	if (boot_thread.joinable())
 		boot_thread.join();
-	g_win->join_reboot();
-	g_win->flush_card();      // 音はもう止まっている。SmartMedia に書いたものを残す
-	g_win->save_settings();   // VOLUME のつまみの位置
-	// 音はもう止まっている。起動できていたときだけ残す
-	eng.settle_for_save();
-	if (eng.state.load() == 1 && !smu2000::nvram::save(eng.mu))
-		std::fprintf(stderr, "設定を残せなかった: %s\n", smu2000::nvram::path(eng.mu).c_str());
-	// 残した設定で起動した写しも用意しておく（src/bootcache.h）。無いと、
-	// 設定をいじった次の 1 回だけ起動が遅くなる。1 秒ほどかかるが、
-	// 窓はもう閉じているので待たせない。溜まった古い写しはここで間引く
-	if (eng.state.load() == 1) {
-		if (smu2000::bootcache::refresh(eng.mu))
-			std::printf("次の起動ぶんの写しを作った\n");
-		smu2000::bootcache::prune();
-	}
-	g_win->play.stop();
-	for (ui::midi_in &m : midi_ports)
-		m.close();
-	mout.close();
-	mout_mu.close();
-	mout_b.close();
-	ain.stop();
-
-	// 音を出さずに終わったとき（起動に失敗した、音声デバイスを開けなかった）は、どちらも出さない
-	if (out.produced()) {
-		std::printf("CPU %.1f%%、1 回の最悪 %.2f ms、間に合わなかった %llu 回\n",
-		            out.cpu_percent(), out.worst_ms(),
-		            (unsigned long long)out.late());
-		std::printf("%s\n%s\n", out.format_line().c_str(), out.latency_line().c_str());
-	}
+	g_win->shutdown();
+	g_win->print_exit_stats(out.late());
+	std::printf("%s\n%s\n", out.format_line().c_str(), out.latency_line().c_str());
 	return 0;
 }

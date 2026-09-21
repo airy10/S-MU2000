@@ -18,6 +18,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <memory>
 #include <string>
@@ -31,18 +32,25 @@
 #include "ui/keymap.h"
 #include "ui/master_editor.h"
 #include "ui/menu.h"
+#include "ui/options.h"
 #include "ui/overview.h"
 #include "ui/panel.h"
 #include "ui/part_shapes.h"
 #include "ui/pc_editor.h"
+#include "ui/pc_host.h"
 #include "ui/pc_window.h"
 #include "ui/player.h"
+#include "ui/tool_args.h"
 #include "ui/settings.h"
+#include "ui/shot.h"
 #include "ui/snapshot.h"
 #include "ui/status.h"
 #include "ui/toolbar.h"
 
+#include "nvram.h"
 #include "smartmedia.h"
+#include "smf.h"
+#include "voicecache.h"
 
 #include <mutex>
 
@@ -688,6 +696,305 @@ public:
 		else if (id == ID_PC_EDITOR)                                  open_window_by_kind(BAR_EDITOR);
 		else if (id == ID_OVERVIEW)                                   open_window_by_kind(BAR_LIST);
 		else if (id == ID_OUTPUT_DIGITAL || id == ID_OUTPUT_ANALOG)   set_analog(id == ID_OUTPUT_ANALOG);
+	}
+
+	// ---- bring-up and shutdown (both mains call these in order)
+
+	// Wires the engine to the ports main() owns and the parsed engine flags
+	void wire_engine(engine &eng, engine_options &o)
+	{
+		if (std::getenv("SMU2000_VOICECACHE"))
+			o.voicecache = 1;
+		apply_engine_options(eng.mu, o);
+		eng.native_fx.store(o.native_fx);
+		for (int p = 1; p < mu2000::MIDI_PORTS; p++)
+			eng.midi_p[p] = &midi[p];
+		eng.mout_b = &thru_b;
+		eng.mout_mu = &mu_out;
+		eng.mout = &thru_a;
+	}
+
+	// Switches the booted machine to the native engine on request (the
+	// stored flag is what the overview badge reads)
+	void apply_native_engine(engine &eng, const engine_options &o)
+	{
+		if (!o.native_engine)
+			return;
+		eng.mu.set_native_engine(o.native_engine);
+		eng.native_engine.store(o.native_engine);
+		if (o.voicecache)
+			smu2000::voicecache::load(eng.mu, smu2000::voicecache::key(eng.mu));
+	}
+
+	// Loads the ROMs and wires the USB host flag. False exits with code 1
+	bool load_machine(engine &eng, const tool_args &a)
+	{
+		if (!eng.load(a.dir)) {
+			std::fprintf(stderr, "%s\n", eng.message.c_str());
+			return false;
+		}
+		// The overview reads voice names and instrument icons from the ROM
+		xgui::set_voice_rom(eng.mu.program_rom());
+		// USB ports by default, as when the hardware sits on PC USB (parts
+		// C/D only pass when HOST SELECT is USB; on USB, A/B go quiet on DIN
+		// just like the hardware). --host-midi leaves DIN A/B only.
+		// Decided before booting: reset() learns here whether to queue the
+		// "a host is here" notice
+		eng.mu.set_usb_host(a.usb_host);
+		std::printf(a.usb_host ? "MIDI は USB の口（A-D の 64 パート）\n"
+		                     : "--host-midi: DIN の口 A・B だけ（パート 1-32）\n");
+		return true;
+	}
+
+	// Boots the firmware to snap --shot/--mid pictures (settles the display,
+	// plays the MIDI for the meters). 1 fails, 0 snaps, -1 carries on
+	int run_boot_shot(engine &eng, bridge &br, const tool_args &a,
+	                  const window_options &w)
+	{
+		if (a.shot_path.empty())
+			return -1;
+		if (!eng.boot()) {
+			std::fprintf(stderr, "%s\n", eng.message.c_str());
+			return 1;
+		}
+		eng.state.store(1);
+		// Right after boot the display is still settling
+		{
+			s32 l, r;
+			for (size_t i = 0; i < size_t(2.0 * AUDIO_RATE); i++)
+				eng.mu.run_sample(l, r);
+		}
+		// With MIDI, play it first so the level meters have something to show
+		if (!a.shot_mid.empty()) {
+			std::vector<smf::event> evs;
+			std::string err;
+			if (!smf::load(a.shot_mid, evs, err)) {
+				std::fprintf(stderr, "%s\n", err.c_str());
+			} else {
+				std::printf("MIDI %zu 件を %.1f 秒ぶん流す\n", evs.size(), a.shot_secs);
+				size_t at = 0;
+				s32 l, r;
+				for (size_t i = 0; i < size_t(a.shot_secs * AUDIO_RATE); i++) {
+					const double now = double(i) / AUDIO_RATE;
+					while (at < evs.size() && evs[at].time <= now) {
+						for (u8 b : evs[at].bytes)
+							eng.mu.midi_in(b);
+						at++;
+					}
+					eng.mu.run_sample(l, r);
+				}
+			}
+		}
+		eng.publish();
+		return write_shot(a.shot_path, a.win_w, a.win_h, br, a.grid,
+		                  w.lcd_only, a.layout_path);
+	}
+
+	// Window-side setup both mains do once the machine object exists:
+	// LCD/bar/panel sizing and layout, remembered volume and output,
+	// clean or remembered boot
+	void setup_for_window(const tool_args &a, const window_options &w, bool factory)
+	{
+		lcd_only = w.lcd_only;
+		panel.set_lcd_only(lcd_only);
+		if (!lcd_only) {
+			bar.set_items(window_bar_items());
+			panel.set_top_inset(toolbar::HEIGHT);
+		}
+		panel.resize(a.win_w, a.win_h);
+		layout_path = a.layout_path;
+		apply_layout(a.layout_path, false);
+		panel.resize(a.win_w, a.win_h);
+		{
+			// The VOLUME knob starts where it was left
+			remembered r = load_remembered(settings_path());
+			br.set_gain(r.volume);
+			if (eng)
+				eng->analog.store(r.analog);
+			if (r.analog)
+				std::printf("音の出口: アナログ（直流を切る）\n");
+			play.set_fold_extra_ports(r.fold34);
+		}
+		// Only the window boots from remembered settings: --shot must give
+		// the same picture every time
+		if (eng)
+			eng->use_nvram = !factory;
+		if (factory)
+			std::printf("工場出荷状態で起動する（覚えていた設定は終わるときに上書きされる）\n");
+	}
+
+	// A found port prints by name; a missing one keeps showing its
+	// remembered name until it is picked again
+	static void show_port(const char *label, const std::string &now,
+	                      const std::string &keep)
+	{
+		if (!now.empty())
+			std::printf("%s: %s\n", label, now.c_str());
+		else if (!keep.empty())
+			std::printf("%s: なし（「%s」が見つからないか開けない。覚えたままにしてある）\n",
+			            label, keep.c_str());
+		else
+			std::printf("%s: なし\n", label);
+	}
+
+	// Opens the remembered MIDI ports by name (--midi and friends win).
+	// Reports what is and is not there
+	void open_remembered_ports(tool_args &a, const output_options &o)	{
+		remembered want = load_remembered(settings_path());
+		ain_name = want.audio_in;
+		ain_keep = want.audio_in;
+		if (!want.card.empty())
+			insert_card(want.card, true);
+		// --audio wins; otherwise the port that was opened last time
+		audio_name = o.audio_dev ? std::string(o.audio_dev) : want.audio_out;
+		for (int p = 0; p < 4; p++)
+			if (a.in_dev[p] == -2)
+				a.in_dev[p] = find_device(midi_in::list(), want.in[p]);
+		if (a.mout_dev == -2)   a.mout_dev   = find_device(midi_out::list(), want.out);
+		if (a.moutb_dev == -2)  a.moutb_dev  = find_device(midi_out::list(), want.out_b);
+		if (a.moutmu_dev == -2) a.moutmu_dev = find_device(midi_out::list(), want.out_mu);
+		// A port that is not there yet keeps its name in the settings
+		for (int p = 0; p < 4; p++)
+			in_keep[p] = want.in[p];
+		out_keep    = want.out;
+		out_keep_b  = want.out_b;
+		out_keep_mu = want.out_mu;
+		for (int p = 0; p < 4; p++)
+			choose_in(p, a.in_dev[p], true);
+		choose_out(a.mout_dev, true);
+		choose_out_b(a.moutb_dev, true);
+		choose_out_mu(a.moutmu_dev, true);
+		// A port that would not open keeps showing its remembered name
+		// until it is picked again
+		for (int p = 0; p < 4; p++)
+			show_port(IN_LABELS[p], in_name[p], in_keep[p]);
+		show_port("MIDI OUT", out_name_mu, out_keep_mu);
+		show_port("MIDI THRU A", out_name, out_keep);
+		show_port("MIDI THRU B", out_name_b, out_keep_b);
+		std::fflush(stdout);
+	}
+
+	// Opens the --editor/--list-window and friends alongside the panel
+	void open_startup_windows(const window_options &w)
+	{
+		if (w.open_editor && !w.lcd_only)
+			open_window_by_kind(BAR_EDITOR);
+		if (w.open_fx && !w.lcd_only)
+			open_window_by_kind(BAR_FX);
+		if (w.open_list && !w.lcd_only)
+			open_window_by_kind(BAR_LIST);
+		if (w.open_shapes && !w.lcd_only)
+			open_window_by_kind(BAR_SHAPES);
+		if (w.open_master && !w.lcd_only)
+			open_window_by_kind(BAR_MASTER);
+	}
+
+	// Starts the audio device. False parks the engine on the failure and
+	// asks main to return (the device line each side prints stays per side)
+	bool start_audio(int latency_ms, bool exclusive)
+	{
+		if (!out || !eng)
+			return false;
+		std::string err;
+		if (!out->start(latency_ms, [this](s16 *o, u32 n) { eng->fill(o, n); },
+		                err, exclusive, audio_name)) {
+			std::fprintf(stderr, "音声: %s\n", err.c_str());
+			eng->message = "音声デバイスを開けない";
+			eng->state.store(2);
+			eng->publish();
+			return false;
+		}
+		// Remember the port that was actually opened, by name. After the
+		// MIDI ports above, or the settings written here would carry an
+		// empty MIDI name and the next start would come up with no ports
+		audio_name = out->device_name();
+		return true;
+	}
+
+	// Opens the remembered recording device, by name. A device that is not
+	// there now keeps its name in the settings, like a MIDI port
+	void start_ad()
+	{
+		if (ain_name.empty() || !ain)
+			return;
+		const auto names = audio_in::list();
+		const int dev = find_device(names, ain_name);
+		std::string aerr;
+		if (dev >= 0 && ain->start(names[size_t(dev)], aerr))
+			std::printf("A/D INPUT: %s（%s）\n", ain->device_name().c_str(),
+			            ain->format_line().c_str());
+		else
+			std::printf("A/D INPUT: なし（%s）\n",
+			            dev < 0 ? "デバイスが見つからない" : aerr.c_str());
+		std::fflush(stdout);
+		save_settings();
+	}
+
+	// Everything after the pump returns, both sides in this order: tell the
+	// editor windows, drain the audio thread, all-notes-off the THRU ports,
+	// keep the card and the settings, snapshot for the next boot, close up.
+	// The boot thread join stays in main (it owns the thread)
+	void shutdown()
+	{
+		pc_shutdown_all(list, pc, fx, shapes, master, br);
+		std::this_thread::sleep_for(std::chrono::milliseconds(100));
+		// Stop a MIDI file first: its all-notes-off travels out through the
+		// audio thread, so stopping the sound first would leave the far-end
+		// gear ringing. Then give the thread a breath to flush it through
+		if (play.playing()) {
+			play.stop();
+			std::this_thread::sleep_for(std::chrono::milliseconds(150));
+		}
+		if (out)
+			out->stop();
+		if (ain)
+			ain->stop();
+		// Leaving the THRU ports open with notes still held would leave them
+		// stuck on whatever is listening, so all sound off and all notes off
+		// go out first
+		for (midi_out *thru : { &thru_a, &thru_b }) {
+			if (!thru->is_open())
+				continue;
+			for (int ch = 0; ch < 16; ch++) {
+				for (u8 v : { u8(0xb0 | ch), u8(120), u8(0), u8(0xb0 | ch), u8(123), u8(0) })
+					thru->send(v);
+			}
+		}
+		join_reboot();
+		flush_card();      // the sound has stopped; keep what was on the card
+		save_settings();   // the ports, the A/D input and the VOLUME knob
+		// The sound has stopped by now. Keep the machine's settings only if
+		// it came up
+		if (eng) {
+			eng->settle_for_save();
+			if (eng->state.load() == 1 && !smu2000::nvram::save(eng->mu))
+				std::fprintf(stderr, "設定を残せなかった: %s\n",
+				             smu2000::nvram::path(eng->mu).c_str());
+			// Snapshot for the settings just saved, or the next boot after
+			// touching them is the slow one. The window is gone, so the
+			// second it takes holds nobody up; old snapshots are pruned here
+			if (eng->state.load() == 1) {
+				if (smu2000::bootcache::refresh(eng->mu))
+					std::printf("次の起動ぶんの写しを作った\n");
+				smu2000::bootcache::prune();
+			}
+		}
+		play.stop();
+		for (int p = 0; p < 4; p++)
+			midi[p].close();
+		thru_a.close();
+		thru_b.close();
+		mu_out.close();
+	}
+
+	// How the run ended up sounding, when it sounded at all. drops is what
+	// the backend counted (WASAPI late(), CoreAudio starved())
+	void print_exit_stats(u64 drops)
+	{
+		if (out && out->produced())
+			std::printf("CPU %.1f%%、1 回の最悪 %.2f ms、間に合わなかった %llu 回\n",
+			            out->cpu_percent(), out->worst_ms(),
+			            (unsigned long long)drops);
 	}
 
 	// ---- per-platform acts (thin shells implement these)
