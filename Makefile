@@ -239,6 +239,12 @@ $(BUILD)/fxsweep$(EXE): $(OBJS) $(BUILD)/src/mu2000.o $(BUILD)/tools/fxsweep/fxs
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
 
+# リバーブ・コーラス・バリエーションのパラメータを、種類ごとに firmware に確かめる（src/xg/sysfx.h）。
+#   build/sysfx_check.exe ../MU2000/roms > sysfx.txt
+$(BUILD)/sysfx_check$(EXE): $(OBJS) $(BUILD)/src/mu2000.o $(BUILD)/tools/fxsweep/sysfx_check.o
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
+
 # SH-2 を止めたまま音を出す（doc/native-engine.md の段 2）。
 #   build/nativeplay.exe ../MU2000/roms out.wav -b 0,0,0 -n 60
 $(BUILD)/nativeplay$(EXE): $(OBJS) $(BUILD)/src/mu2000.o $(BUILD)/tools/native/nativeplay.o

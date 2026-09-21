@@ -55,9 +55,9 @@ void program_menu(int part, xg::model &m, const xg_snapshot *ram, bridge &br);
 bool fx_type_menu(const std::vector<xg::fx_type> &types, int current, int &chosen);
 
 // ---- インサーションの設定の窓を開く頼み。一覧が出して、gui がタイマーで拾って窓を出す
-void request_fx(int slot);              // slot は 1-4
+void request_fx(int slot);              // slot は 1-4 がインサーション、5-7 がリバーブ・コーラス・バリエーション
 bool take_fx_request();                 // 頼みがあれば true（1 回だけ）
-int  fx_window_slot();                         // 設定の窓で見ているインサーション（1-4）
+int  fx_window_slot();                         // 設定の窓で見ているエフェクト（1-7）
 void set_fx_window_slot(int slot);
 
 // ---- パートの音色の窓（VIB・FILTER・EG・EQ を大きく）を開く頼み。一覧の絵のダブルクリックから
@@ -70,6 +70,21 @@ void set_shape_window_part(int part);
 // 一覧のマスターの行（MASTER の名前、MASTER EQ の絵）のダブルクリックから
 void request_master();
 bool take_master_request();             // 頼みがあれば true（1 回だけ）
+
+// ---- ファイルの窓（.syx の書き出し・読み込み）。
+// 描画の中からは開けない（窓が回っている間にタイマーが次のコマを描きに来て ImGui に入り直す）。
+// だから頼みだけ置き、窓の持ち主（pc_window）が描き終えてから開いて、読み書きもする。
+// 持ち主が開けない所（今は macOS）では file_dialogs() が false
+enum class file_ask { none, save, open };
+void set_file_dialogs(bool on);
+bool file_dialogs();
+void ask_save_file(std::vector<u8> bytes);          // 書き出す中身を渡して、名前を聞いてもらう
+void ask_open_file();                               // 読み込むファイルを聞いてもらう
+file_ask take_file_ask(std::vector<u8> &bytes);     // 持ち主が取る（save のときは中身も）
+void give_opened_file(std::vector<u8> bytes);       // 持ち主が、読んだ中身を返す
+bool take_opened_file(std::vector<u8> &bytes);      // 頼んだ側が受け取る（1 回だけ）
+void set_file_note(std::string text);               // 結果のひとこと（「書き出した」など）
+const std::string &file_note();
 
 // 値の棒 1 本。表示は層の書式（xg::format）で、ダブルクリックか Ctrl+クリックで数を打てる。
 // EQ の周波数は表の番号でなく Hz、マスター EQ の Q は 10 分の 1 で出す。戻り値は「値を変えたか」。

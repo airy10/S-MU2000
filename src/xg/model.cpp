@@ -15,6 +15,7 @@ constexpr const char *const PART_MODE[]  = { "NORMAL", "DRUM", "DRUMS1", "DRUMS2
 constexpr const char *const CONNECT[]    = { "INSERTION", "SYSTEM" };
 constexpr const char *const EQ_TYPE[]    = { "FLAT", "JAZZ", "POPS", "ROCK", "CONCERT" };
 constexpr const char *const EQ_SHAPE[]   = { "SHELF", "PEAK" };
+constexpr const char *const OFF_ON[]     = { "OFF", "ON" };
 
 // 番地は XG の決まりから。**マルチパートの 41 バイトは、firmware が返した一括ダンプと
 // 1 バイトずつ突き合わせて並びを確かめた**（doc/params.md）。範囲と読み返しは
@@ -84,7 +85,7 @@ const std::vector<param> TABLE = {
 	{ "part.rcv_channel",     "Rcv Ch",      area::part, 0x08, 0, 0x04, 1, coding::byte7,  0,    63,  127, 0,    view::raw,    0,    nullptr },
 	{ "part.mono_poly",       "Mono/Poly",   area::part, 0x08, 0, 0x05, 1, coding::byte7,  0,    1,    -1, 1,    view::choice, 0,    MONO_POLY },
 	{ "part.key_assign",      "Key Assign",  area::part, 0x08, 0, 0x06, 1, coding::byte7,  0,    1,    -1, 1,    view::choice, 0,    KEY_ASSIGN },
-	{ "part.mode",            "Part Mode",   area::part, 0x08, 0, 0x07, 1, coding::byte7,  0,    3,    -1, 0,    view::choice, 0,    PART_MODE },
+	{ "part.mode",            "Part Mode",   area::part, 0x08, 0, 0x07, 1, coding::byte7,  0,    5,    -1, 0,    view::choice, 0,    PART_MODE },
 	{ "part.note_shift",      "Note Shift",  area::part, 0x08, 0, 0x08, 1, coding::byte7,  0x28, 0x58, -1, 0x40, view::center, 0x40, nullptr },
 	{ "part.detune",          "Detune",      area::part, 0x08, 0, 0x09, 2, coding::nibble, 0x00, 0xff, -1, 0x80, view::center, 0x80, nullptr },
 	{ "part.volume",          "Volume",      area::part, 0x08, 0, 0x0b, 1, coding::byte7,  0,    127,  -1, 100,  view::raw,    0,    nullptr },
@@ -117,6 +118,17 @@ const std::vector<param> TABLE = {
 	{ "part.bend_lfo_pmod",   "PB LFO PM",   area::part, 0x08, 0, 0x26, 1, coding::byte7,  0,    127,  -1, 0,    view::raw,    0,    nullptr },
 	{ "part.bend_lfo_fmod",   "PB LFO FM",   area::part, 0x08, 0, 0x27, 1, coding::byte7,  0,    127,  -1, 0,    view::raw,    0,    nullptr },
 	{ "part.bend_lfo_amod",   "PB LFO AM",   area::part, 0x08, 0, 0x28, 1, coding::byte7,  0,    127,  -1, 0,    view::raw,    0,    nullptr },
+	// ポルタメントとピッチ EG（08 pp 67-6C）。firmware の液晶のメニュー（Part Edit）の
+	// 表にこの番地があり、問い合わせにも答える。ワーク RAM では塊の +0x60 から
+	{ "part.porta_switch",    "Porta Sw",    area::part, 0x08, 0, 0x67, 1, coding::byte7,  0,    1,    -1, 0,    view::choice, 0,    OFF_ON },
+	{ "part.porta_time",      "Porta Time",  area::part, 0x08, 0, 0x68, 1, coding::byte7,  0,    127,  -1, 0,    view::raw,    0,    nullptr },
+	{ "part.peg_init_level",  "PEG Init",    area::part, 0x08, 0, 0x69, 1, coding::byte7,  0,    127,  -1, 64,   view::center, 64,   nullptr },
+	{ "part.peg_attack_time", "PEG Attack",  area::part, 0x08, 0, 0x6a, 1, coding::byte7,  0,    127,  -1, 64,   view::center, 64,   nullptr },
+	{ "part.peg_rel_level",   "PEG Rel Lv",  area::part, 0x08, 0, 0x6b, 1, coding::byte7,  0,    127,  -1, 64,   view::center, 64,   nullptr },
+	{ "part.peg_rel_time",    "PEG Rel Tm",  area::part, 0x08, 0, 0x6c, 1, coding::byte7,  0,    127,  -1, 64,   view::center, 64,   nullptr },
+	// HPF の切る高さ。**番地は 0A pp 20**（08 pp ではない）。液晶のメニューの表から見つけ、
+	// 7F にすると 150Hz より下が 45dB 下がるのを確かめた。ワーク RAM では塊の +0x78
+	{ "part.hpf_cutoff",      "HPF Cutoff",  area::part, 0x0a, 0, 0x20, 1, coding::byte7,  0,    127,  -1, 64,   view::center, 64,   nullptr },
 	// パートの EQ（08 pp 72-77）。周波数の範囲は firmware が切り詰めた値。ゲインは firmware が
 	// 0-127 をそのまま受けるが、XG の決まりの ±12dB（52-76）に留める
 	{ "part.eq_bass_gain",    "EQ Bass G",   area::part, 0x08, 0, 0x72, 1, coding::byte7,  52,   76,   -1, 64,   view::center, 64,   nullptr },

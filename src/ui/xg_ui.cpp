@@ -183,10 +183,10 @@ int  g_fx_slot = 1;
 bool g_fx_request = false;
 }
 
-void request_fx(int slot) { g_fx_slot = std::clamp(slot, 1, 4); g_fx_request = true; }
+void request_fx(int slot) { g_fx_slot = std::clamp(slot, 1, 7); g_fx_request = true; }
 bool take_fx_request() { const bool r = g_fx_request; g_fx_request = false; return r; }
 int  fx_window_slot() { return g_fx_slot; }
-void set_fx_window_slot(int slot) { g_fx_slot = std::clamp(slot, 1, 4); }
+void set_fx_window_slot(int slot) { g_fx_slot = std::clamp(slot, 1, 7); }
 
 namespace {
 int  g_shape_part = 0;
@@ -204,6 +204,40 @@ bool g_master_request = false;
 
 void request_master() { g_master_request = true; }
 bool take_master_request() { const bool r = g_master_request; g_master_request = false; return r; }
+
+namespace {
+bool g_file_dialogs = false;
+file_ask g_file_ask = file_ask::none;
+std::vector<u8> g_file_out, g_file_in;
+bool g_file_in_ready = false;
+std::string g_file_note;
+}
+
+void set_file_dialogs(bool on) { g_file_dialogs = on; }
+bool file_dialogs() { return g_file_dialogs; }
+void ask_save_file(std::vector<u8> bytes) { g_file_out = std::move(bytes); g_file_ask = file_ask::save; }
+void ask_open_file() { g_file_ask = file_ask::open; }
+file_ask take_file_ask(std::vector<u8> &bytes)
+{
+	const file_ask a = g_file_ask;
+	g_file_ask = file_ask::none;
+	if (a == file_ask::save)
+		bytes = std::move(g_file_out);
+	g_file_out.clear();
+	return a;
+}
+void give_opened_file(std::vector<u8> bytes) { g_file_in = std::move(bytes); g_file_in_ready = true; }
+bool take_opened_file(std::vector<u8> &bytes)
+{
+	if (!g_file_in_ready)
+		return false;
+	bytes = std::move(g_file_in);
+	g_file_in.clear();
+	g_file_in_ready = false;
+	return true;
+}
+void set_file_note(std::string text) { g_file_note = std::move(text); }
+const std::string &file_note() { return g_file_note; }
 
 const xg::param &P(const char *key)
 {
@@ -750,9 +784,10 @@ const help_text HELP[] = {
 		"Part volume (CC7). Balances the loudness of the parts against each other." } },
 	{ "EXP", {
 		"エクスプレッション（CC11）。音量をさらに絞る。VOL と掛け算で効き、\n"
-		"曲の中で抑揚（だんだん大きく・小さく）をつけるのに使われる。表示だけ",
+		"曲の中で抑揚（だんだん大きく・小さく）をつけるのに使われる。\n"
+		"触ると、そのパートの受信チャンネルへ CC11 を送る",
 		"Expression (CC11). Scales the volume further, multiplied with VOL.\n"
-		"Songs use it for swells and fades. Display only." } },
+		"Songs use it for swells and fades. Editing sends CC11 on the part's receive channel." } },
 	{ "PAN", {
 		"左右の位置（CC10 / Pan）。C が真ん中、L は左、R は右。Rnd は弾くたびにばらばら",
 		"Stereo position (CC10). C is centre, L left, R right. Rnd moves on every note." } },
@@ -760,8 +795,10 @@ const help_text HELP[] = {
 		"ピッチベンド。音程を滑らかに上げ下げする。0 が元の音程。表示だけ",
 		"Pitch bend. Slides the pitch up or down; 0 is the original pitch. Display only." } },
 	{ "MOD", {
-		"モジュレーション（CC1）。ビブラートなど、音の揺れの深さ。表示だけ",
-		"Modulation (CC1). Depth of vibrato and similar wobble. Display only." } },
+		"モジュレーション（CC1）。ビブラートなど、音の揺れの深さ。\n"
+		"触ると、そのパートの受信チャンネルへ CC1 を送る",
+		"Modulation (CC1). Depth of vibrato and similar wobble.\n"
+		"Editing sends CC1 on the part's receive channel." } },
 	{ "HOLD", {
 		"ダンパーペダル（CC64）。ON の間は、鍵盤を離しても音が伸びる。表示だけ",
 		"Damper pedal (CC64). While ON, notes keep sounding after the keys are released. Display only." } },

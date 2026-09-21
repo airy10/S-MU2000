@@ -208,6 +208,8 @@ void overview::cell(const column &c, int part, xg::model &m, const xg_snapshot &
 
 	// 値と、見せ方
 	int v = 0, lo = 0, hi = 127;
+	int cc_slot = -1, cc_num = -1;       // EXP・MOD の列: CC を流す先（受信チャンネル）と CC の番号
+	const ImGuiID sent_id = ImGui::GetID(c.title) + ImGuiID(part + 1) * 2;   // 送った値と時刻を覚える所
 	bool known = true, bipolar = false, editable = false;
 	std::string text;
 	const xg::param *p = from == src::param ? &P(key) : nullptr;
@@ -219,8 +221,24 @@ void overview::cell(const column &c, int part, xg::model &m, const xg_snapshot &
 		editable = known;
 		text = known ? xg::format(*p, v) : "--";
 		break;
-	case src::exp:  v = blk[xg::ram::PART_EXP] & 0x7f; text = std::to_string(v); break;
-	case src::mod:  v = blk[xg::ram::PART_MOD] & 0x7f; text = std::to_string(v); break;
+	case src::exp:
+	case src::mod: {
+		// 演奏の値（CC11・CC1）。触ると、そのパートが受けているチャンネルへ CC を流す。
+		// RAM の写しは 25ms ごとなので、送ったばかりの間は送った値を出す
+		v = blk[from == src::exp ? xg::ram::PART_EXP : xg::ram::PART_MOD] & 0x7f;
+		int rcv = 127;
+		m.get(P("part.rcv_channel"), part, rcv);
+		if (m_saved_rcv[part] >= 0)
+			rcv = m_saved_rcv[part];
+		cc_slot = rcv >= 0 && rcv < PARTS ? rcv : -1;
+		cc_num = from == src::exp ? 11 : 1;
+		ImGuiStorage *st = ImGui::GetStateStorage();
+		if (ImGui::GetTime() - st->GetFloat(sent_id + 1, -10.0f) < 0.3f)
+			v = st->GetInt(sent_id, v);
+		editable = cc_slot >= 0;
+		text = std::to_string(v);
+		break;
+	}
 	case src::bend: {
 		// RAM には MSB の半分と、下のバイトの最下位ビットに MSB の残り
 		const int msb = (blk[xg::ram::PART_BEND] & 0x3f) * 2 + (blk[xg::ram::PART_BEND + 1] & 1);
@@ -266,7 +284,7 @@ void overview::cell(const column &c, int part, xg::model &m, const xg_snapshot &
 		if (hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
 			ImGui::OpenPopup("##type");
 		if (ImGui::BeginPopup("##type")) {
-			ImGui::TextDisabled("%s %s（%d-%d）", master ? "MASTER" : part_name(part).c_str(), p->label, lo, hi);
+			ImGui::TextDisabled("%s %s（%d-%d）", master ? "MASTER" : part_name(part).c_str(), p ? p->label : c.title, lo, hi);
 			const ImGuiID typed_id = ImGui::GetID("typed");
 			ImGuiStorage *st = ImGui::GetStateStorage();
 			int typed = st->GetInt(typed_id, v);
@@ -279,9 +297,16 @@ void overview::cell(const column &c, int part, xg::model &m, const xg_snapshot &
 			st->SetInt(typed_id, typed);
 			ImGui::EndPopup();
 		}
-		if (nv != v) {
+		if (nv != v && p) {
 			br.send(m.set(*p, at, nv));
 			text = xg::format(*p, nv);
+		} else if (nv != v && cc_num >= 0) {
+			const u8 cc[3] = { u8(0xb0 | (cc_slot & 15)), u8(cc_num), u8(nv) };
+			br.send_port(cc_slot / 16, cc, 3);
+			ImGuiStorage *st = ImGui::GetStateStorage();
+			st->SetInt(sent_id, nv);
+			st->SetFloat(sent_id + 1, float(ImGui::GetTime()));
+			text = std::to_string(nv);
 		}
 	}
 
