@@ -102,7 +102,7 @@ public:
 
 	// ---- the shared popups, rendered through ui/sdl_popup
 
-	// The groups ui::app::menu_groups_for builds, shown over the live panel.
+	// The groups ui::app::context_menu builds, shown over the live panel.
 	// A group whose title is empty pours its items into the top level; a
 	// titled group becomes a submenu entry that opens one flat list -- two
 	// levels at most, exactly what menu_win.h renders from the same groups
@@ -193,10 +193,6 @@ public:
 		if (!w.show(err))
 			sdl_popup::alert(win, "S-MU2000", "開けない: " + err);
 	}
-
-	// A file dropped on the window is played, which is what WM_DROPFILES
-	// does with one on Windows
-	void file_dropped(const std::string &path) { play_song(path); }
 
 	// One frame: the shared tick/status/paint sequence (like the Mac's one
 	// draw call), into the surface gui_linux.cpp's pump keeps in panel_dc

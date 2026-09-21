@@ -30,8 +30,10 @@ win_app *g_win = nullptr;
 void play_dropped_file(const std::string &path)
 {
 	// Outside a menu command, so a failure shows straight away rather than
-	// through last_error at the end of WM_COMMAND
-	if (!g_win->play_song(path) && !g_win->last_error.empty()) {
+	// through last_error at the end of WM_COMMAND. What a drop means is
+	// the app's (ui::app::file_dropped)
+	g_win->file_dropped(path);
+	if (!g_win->last_error.empty()) {
 		win_error(GetForegroundWindow(), g_win->last_error);
 		g_win->last_error.clear();
 	}

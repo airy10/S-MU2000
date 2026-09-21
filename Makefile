@@ -641,9 +641,7 @@ $(BUILD)/live$(EXE): $(OBJS) $(BUILD)/src/mu2000.o $(MAC_IO_OBJS) $(BUILD)/src/l
 # CoreGraphics and window_mac.mm fills the window in with AppKit
 # (doc/porting-macos.md).
 #
-# window_mac.mm is the one file compiled as Objective-C++: Cocoa's headers and
-# compat/gdi.h both want to define BOOL and Polygon, so they cannot be in the
-# same translation unit.
+# window_mac.mm is the one file compiled as Objective-C++.
 MAC_GUI_SRCS := src/ui/panel.cpp src/ui/editor.cpp src/ui/effects.cpp \
                 src/ui/png.cpp src/ui/layout.cpp src/ui/svg.cpp src/ui/player.cpp \
                 src/ui/audio_out_mac.cpp src/ui/audio_in_mac.cpp \
@@ -681,8 +679,9 @@ $(BUILD)/%.o: %.mm
 
 # The macOS front end pulls in the editor's headers (fx_editor.h and friends)
 # through app.h, which want imgui.h on the include path. Same reason as gui.o
-# on Windows
+# on Windows -- and window_mac.mm too now, since it includes app.h directly
 $(BUILD)/src/ui/app_mac.o: CXXFLAGS += $(IMGUI_FLAGS)
+$(BUILD)/src/ui/window_mac.o: CXXFLAGS += $(IMGUI_FLAGS)
 $(BUILD)/src/gui_mac.o: CXXFLAGS += $(IMGUI_FLAGS)
 
 MAC_FRAMEWORKS += -framework Metal

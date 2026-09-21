@@ -8,7 +8,7 @@
 //
 // SDL has no menus, so the popups are drawn into the window itself
 // (ui/sdl_popup) over the live panel; the shared menu content comes from
-// ui::app::menu_groups_for, dispatched by ui::app::menu_chosen.
+// ui::app::context_menu, dispatched by ui::app::menu_chosen.
 
 #include "window_sdl.h"
 
@@ -33,6 +33,20 @@
 namespace {
 
 constexpr u32 RATE = ui::AUDIO_RATE;
+
+// SDL keycodes translated into the shared key space (ui/keymap.h): the four
+// F-keys the app acts on, the panel characters, 0 for everything else
+int sdl_key_to_shared(int k)
+{
+	switch (k) {
+	case SDLK_F2: return ui::KEY_F2;
+	case SDLK_F3: return ui::KEY_F3;
+	case SDLK_F4: return ui::KEY_F4;
+	case SDLK_F5: return ui::KEY_F5;
+	default: break;
+	}
+	return k < 128 ? k : 0;
+}
 
 // ---- A Cairo image surface behind a GDI DC --------------------------------
 //
@@ -85,12 +99,12 @@ struct framebuf {
 	~framebuf() { free(); }
 };
 
-// The context menu at a point: the shared groups (ui::app::menu_groups_for),
+// The context menu at a point: the shared groups (ui::app::context_menu),
 // rendered through sdl_popup by the app, then the shared dispatch. The id
 // reaching menu_chosen is exactly what WM_COMMAND receives on Windows
 void open_menu(ui::linux_app &gui, int x, int y)
 {
-	const std::vector<ui::menu_group> groups = gui.menu_groups_for(x, y);
+	const std::vector<ui::menu_group> groups = gui.context_menu(x, y);
 	if (groups.empty())
 		return;
 	const int id = gui.show_popup(groups, x, y);
@@ -199,30 +213,30 @@ int run_window(linux_app &gui, const char *title, int w, int h)
 					gui.tex = tex;
 					gui.panel_dc = fb.dc;
 					gui.panel_bits = fb.bits;
-					gui.panel.resize(gui.ww, gui.wh);
+					gui.resized(gui.ww, gui.wh);
 				}
 				break;
 			case SDL_EVENT_WINDOW_FOCUS_LOST:
-				gui.release_keys();   // leaving the window releases everything
+				gui.focus_lost();   // leaving the window releases everything
 				break;
 			case SDL_EVENT_MOUSE_BUTTON_DOWN: {
 				const int mx = int(ev.button.x), my = int(ev.button.y);
 				const bool right = ev.button.button == SDL_BUTTON_RIGHT;
-				const app::mouse_out o = gui.do_mouse_down(mx, my, right);
+				const ui::mouse_out o = gui.mouse_down(mx, my, right);
 				if (o.show_menu)
 					open_menu(gui, mx, my);
 				down = o.panel_pressed;
 				break;
 			}
 			case SDL_EVENT_MOUSE_BUTTON_UP:
-				gui.do_mouse_up();
+				gui.mouse_up();
 				down = false;
 				break;
 			case SDL_EVENT_MOUSE_MOTION:
 				if (down)
-					gui.do_mouse_drag(int(ev.motion.x), int(ev.motion.y));
+					gui.mouse_drag(int(ev.motion.x), int(ev.motion.y));
 				else if (cur_hand && cur_arrow)
-					SDL_SetCursor(gui.hand_at(int(ev.motion.x), int(ev.motion.y))
+					SDL_SetCursor(gui.hand_cursor(int(ev.motion.x), int(ev.motion.y))
 					                  ? cur_hand
 					                  : cur_arrow);
 				break;
@@ -230,34 +244,17 @@ int run_window(linux_app &gui, const char *title, int w, int h)
 				float fx, fy;
 				SDL_GetMouseState(&fx, &fy);
 				const int steps = int(ev.wheel.y > 0 ? 1 : ev.wheel.y < 0 ? -1 : 0);
-				gui.do_wheel(int(fx), int(fy), steps);
+				gui.wheel(int(fx), int(fy), steps);
 				break;
 			}
 			case SDL_EVENT_KEY_DOWN: {
 				if (ev.key.repeat)
 					break;   // held-key repeats are ignored
-				const SDL_Keycode k = ev.key.key;
-				if (k == SDLK_F5) {
-					gui.reload_layout();
-					break;
-				}
-				if (k == SDLK_F2) {             // PC editor
-					gui.open_window_by_kind(BAR_EDITOR);
-					break;
-				}
-				if (k == SDLK_F3) {             // overview
-					gui.open_window_by_kind(BAR_LIST);
-					break;
-				}
-				if (k == SDLK_F4) {             // the native-engine toggle
-					gui.toggle_engine();
-					break;
-				}
-				gui.handle_panel_key(k < 128 ? int(k) : 0, true);
+				gui.key(sdl_key_to_shared(ev.key.key), true);
 				break;
 			}
 			case SDL_EVENT_KEY_UP:
-				gui.handle_panel_key(ev.key.key < 128 ? int(ev.key.key) : 0, false);
+				gui.key(sdl_key_to_shared(ev.key.key), false);
 				break;
 			case SDL_EVENT_DROP_FILE:
 				if (ev.drop.data) {

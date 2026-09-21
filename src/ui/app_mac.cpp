@@ -1,7 +1,7 @@
 // license:BSD-3-Clause
 //
-// The Mac front end's app globals; the class is ui/app_mac.h. Windows'
-// twin is ui/app_win.cpp.
+// The Mac front end's app globals; the class is ui/app_mac.h. Windows' and
+// Linux's twins are ui/app_win.cpp and ui/app_linux.cpp.
 
 #include "app_mac.h"
 
@@ -14,7 +14,7 @@ gui_app *g_gui = nullptr;
 void play_dropped_file(const std::string &path)
 {
 	if (g_gui)
-		g_gui->play_song(path);
+		g_gui->file_dropped(path);
 }
 
 std::string settings_file_path()

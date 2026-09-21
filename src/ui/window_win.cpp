@@ -18,7 +18,7 @@ namespace ui {
 // Menu command numbers, labels and builders are shared with gui_mac.cpp
 // in ui/menu.h (Windows is the reference), so a menu added on one side
 // cannot be missed on the other. Which popup a point asks for is shared
-// too (ui::app::menu_groups_for); only rendering it through ui/menu_win.h
+// too (ui::app::context_menu); only rendering it through ui/menu_win.h
 // stays here.
 
 // Creates and shows the main window. The window class and the drag target
@@ -55,7 +55,7 @@ void track_menu_at(HWND hwnd, int mx, int my)
 {
 	POINT pt{ mx, my };
 	ClientToScreen(hwnd, &pt);
-	win_track_menu(hwnd, pt, g_win->menu_groups_for(mx, my));
+	win_track_menu(hwnd, pt, g_win->context_menu(mx, my));
 }
 
 void ensure_backing(HDC dc, int w, int h)
@@ -86,21 +86,25 @@ void ensure_backing(HDC dc, int w, int h)
 	}
 
 	case WM_DROPFILES: {
-		// 窓に落とされたファイルの 1 つ目を流す
+		// 窓に落とされたファイルの 1 つ目を流す。何を意味するかは app の仕事
+		// (ui::app::file_dropped)、失敗の見せ方はコマンドと同じ
 		const HDROP drop = HDROP(wp);
 		wchar_t path[MAX_PATH * 4] = {};
 		const bool got = DragQueryFileW(drop, 0, path, UINT(sizeof(path) / sizeof(path[0]))) > 0;
 		DragFinish(drop);
-	if (got && !g_win->play_song(ui::to_utf8(path)) && !g_win->last_error.empty()) {
-		ui::win_error(hwnd, g_win->last_error);
-		g_win->last_error.clear();
-	}
+		if (got) {
+			g_win->file_dropped(ui::to_utf8(path));
+			if (!g_win->last_error.empty()) {
+				ui::win_error(hwnd, g_win->last_error);
+				g_win->last_error.clear();
+			}
+		}
 		return 0;
 	}
 
 
 	case WM_SIZE:
-		g_win->panel.resize(LOWORD(lp), HIWORD(lp));
+		g_win->resized(LOWORD(lp), HIWORD(lp));
 		InvalidateRect(hwnd, nullptr, FALSE);
 		return 0;
 
@@ -124,12 +128,10 @@ void ensure_backing(HDC dc, int w, int h)
 	}
 
 	case WM_LBUTTONDOWN: {
-		if (g_win->lcd_only)
-			return 0;
 		const int mx = GET_X_LPARAM(lp), my = GET_Y_LPARAM(lp);
 		// Decided and mostly acted in the base; the window only shows the
 		// popup and repaints
-		const ui::app::mouse_out o = g_win->do_mouse_down(mx, my, false);
+		const ui::mouse_out o = g_win->mouse_down(mx, my, false);
 		if (o.panel_pressed)
 			SetCapture(hwnd);
 		if (o.opened_window || o.panel_pressed)
@@ -141,8 +143,6 @@ void ensure_backing(HDC dc, int w, int h)
 	}
 
 	case WM_RBUTTONUP: {
-		if (g_win->lcd_only)
-			return 0;
 		const int mx = GET_X_LPARAM(lp), my = GET_Y_LPARAM(lp);
 		track_menu_at(hwnd, mx, my);
 		return 0;
@@ -168,7 +168,7 @@ void ensure_backing(HDC dc, int w, int h)
 		POINT pt;
 		GetCursorPos(&pt);
 		ScreenToClient(hwnd, &pt);
-		if (LOWORD(lp) == HTCLIENT && g_win->hand_at(pt.x, pt.y)) {
+		if (LOWORD(lp) == HTCLIENT && g_win->hand_cursor(pt.x, pt.y)) {
 			SetCursor(LoadCursor(nullptr, IDC_HAND));
 			return TRUE;
 		}
@@ -176,64 +176,38 @@ void ensure_backing(HDC dc, int w, int h)
 	}
 
 	case WM_MOUSEMOVE:
-		if (g_win->lcd_only)
-			return 0;
-		if (g_win->do_mouse_drag(GET_X_LPARAM(lp), GET_Y_LPARAM(lp)))
+		if (g_win->mouse_drag(GET_X_LPARAM(lp), GET_Y_LPARAM(lp)))
 			InvalidateRect(hwnd, nullptr, FALSE);
 		return 0;
 
 	case WM_LBUTTONUP:
-		if (g_win->lcd_only)
-			return 0;
-		g_win->do_mouse_up();
+		g_win->mouse_up();
 		ReleaseCapture();
 		InvalidateRect(hwnd, nullptr, FALSE);
 		return 0;
 
 	case WM_MOUSEWHEEL: {
-		if (g_win->lcd_only)
-			return 0;
 		POINT pt{ GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
 		ScreenToClient(hwnd, &pt);
 		const int delta = GET_WHEEL_DELTA_WPARAM(wp) / WHEEL_DELTA;
-		if (g_win->do_wheel(pt.x, pt.y, delta))
+		if (g_win->wheel(pt.x, pt.y, delta))
 			InvalidateRect(hwnd, nullptr, FALSE);
 		return 0;
 	}
 
 	case WM_KEYDOWN: {
-		if (g_win->lcd_only)
-			return 0;
 		if (lp & (1 << 30))                     // 押しっぱなしの繰り返しは無視
 			return 0;
-		if (wp == VK_F2) {                      // PC エディタ
-			g_win->open_window_by_kind(ui::BAR_EDITOR);
-			return 0;
-		}
-		if (wp == VK_F3) {                      // 一覧
-			g_win->open_window_by_kind(ui::BAR_LIST);
-			return 0;
-		}
-		if (wp == VK_F4) {                      // firmware を走らせない口の入切
-			g_win->toggle_engine();
-			return 0;
-		}
-		if (wp == VK_F5) {                      // 配置を読み直す
-			g_win->reload_layout();
-			InvalidateRect(hwnd, nullptr, FALSE);
-			return 0;
-		}
-		g_win->handle_panel_key(ui::key_char_of_vk(int(wp)), true);
+		g_win->key(ui::key_char_of_vk(int(wp)), true);
 		return 0;
 	}
 
-	case WM_KEYUP: {
-		g_win->handle_panel_key(ui::key_char_of_vk(int(wp)), false);
+	case WM_KEYUP:
+		g_win->key(ui::key_char_of_vk(int(wp)), false);
 		return 0;
-	}
 
 	case WM_KILLFOCUS:
-		g_win->release_keys();                  // 窓から離れたら全部離す
+		g_win->focus_lost();                    // 窓から離れたら全部離す
 		return 0;
 
 	case WM_DESTROY:

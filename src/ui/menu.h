@@ -12,6 +12,9 @@
 // Plain C++ only: gui.cpp is windows.h-heavy and window_mac.h must stay
 // AppKit/gdi-free, so this header includes only <string> and <vector>.
 // Header-only (inline) so no build system changes are needed anywhere.
+//
+// Alongside the menus this is home to the small shared pump vocabulary:
+// mouse_out and the F-key codes every platform's event loop translates into.
 
 #ifndef S_MU2000_UI_MENU_H
 #define S_MU2000_UI_MENU_H
@@ -41,6 +44,30 @@ struct menu_item {
 struct menu_group {
 	std::string            title;
 	std::vector<menu_item> items;
+};
+
+// What one mouse press on the main window did. The pump decides what still
+// to do: press a panel control down (panel_pressed, feeds drag/up and the
+// repaint), open a PC window (bar_window, a kind id, -1 when none) or show
+// the popup (show_menu; the items come from menu_groups_for()). Lives here
+// because every platform's pump reads the same struct: the Mac's bool
+// mouse_down once left an opened window looking like a popup request
+struct mouse_out {
+	bool panel_pressed = false;
+	bool opened_window = false;
+	bool show_menu = false;
+};
+
+// Panel keys that are not characters: the F-keys, in a shared code space
+// above ASCII that every platform translates into (virtual keys on Windows,
+// SDL keycodes on Linux, Carbon key codes on macOS). button_for_char()
+// ignores anything outside ASCII, so these cannot alias a panel button --
+// which is what lets the one shared handler act on them
+enum : int {
+	KEY_F2 = 0x100,   // the PC editor window
+	KEY_F3 = 0x101,   // the overview window
+	KEY_F4 = 0x102,   // the native-engine toggle
+	KEY_F5 = 0x103,   // layout reload
 };
 
 // Menu command numbers for picking a port. MIDI IN has four ports, laid out

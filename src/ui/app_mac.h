@@ -1,28 +1,20 @@
 // license:BSD-3-Clause
 //
-// The Mac front end's app: ui::app wearing AppKit's face (ui::mac_app).
-// gui_mac.cpp keeps main(); everything here answers either the window
-// system (mac_app) or the shared program (ui::app::run and friends).
-//
-// The file split is the same on both sides -- window system
-// (ui/window_mac.* / ui/window_win.*), app class (this, ui/app_win.h),
-// main (gui_mac.cpp / gui.cpp) -- but this class cannot live in the
-// main file's neighbourhood on the Mac: it multiply inherits ui::app,
-// whose header pulls in the GDI shim, and the GDI shim cannot be visible
-// together with Cocoa's headers. win_app has the same shape and sits in
-// ui/app_win.h; only the include below is platform-forced.
+// The Mac front end's app class. gui_mac.cpp keeps main(); window_mac.mm
+// drives ui::app's event verbs directly (mouse_down, key, context_menu, ...),
+// and this class fills in the per-platform hooks the shared program asks
+// for -- dialogs, audio say-lines, window opening. The same shape as
+// ui/app_win.h and ui/app_linux.h: one window-system file, one app class,
+// one main.
 
 #ifndef S_MU2000_UI_APP_MAC_H
 #define S_MU2000_UI_APP_MAC_H
 
 #pragma once
 
-#include <cstddef>
 #include <cstdio>
 #include <string>
-#include <vector>
 
-#include "compat/gdi.h"          // smu_gdi_wrap_view_context, HDC
 #include "app.h"
 #include "window_mac.h"
 
@@ -31,7 +23,7 @@ namespace ui {
 // gui.ini lives in ~/Library/Application Support/S-MU2000/
 std::string settings_file_path();
 
-class gui_app : public mac_app, public app
+class gui_app : public app
 {
 public:
 	// mi is MIDI IN A-D, mu2000::MIDI_PORTS of them
@@ -39,91 +31,7 @@ public:
 	        midi_out &tha, midi_out &thb, midi_out &muo)
 	    : app(b, mi, tha, thb, muo) {}
 
-	// ---- mac_app
-
-	void draw(void *cg, int w, int h) override
-	{
-		// The view's context is already top-left, y down: wrap it for the
-		// shared painter. Nothing else here is AppKit
-		HDC dc = static_cast<HDC>(smu_gdi_wrap_view_context(cg, w, h));
-		paint_main(dc, w);
-		DeleteDC(dc);
-	}
-
-	void resized(int w, int h) override
-	{
-		panel.resize(w, h);
-	}
-
-	bool mouse_down(int x, int y, bool right) override
-	{
-		// Decided and acted in the base; the window only reports whether
-		// a popup follows (its infra then asks context_menu for the items)
-		return press_at(x, y, right);
-	}
-
-	void mouse_drag(int x, int y) override
-	{
-		do_mouse_drag(x, y);
-	}
-
-	void mouse_up() override
-	{
-		do_mouse_up();
-	}
-
-	void wheel(int x, int y, int steps) override
-	{
-		do_wheel(x, y, steps);
-	}
-
-	void key(int code, bool down) override
-	{
-		if (lcd_only && down)
-			return;
-		if (code == MAC_KEY_FUNCTION_BASE + 0x60) {      // F5
-			if (down)
-				reload_layout();
-			return;
-		}
-		if (down && code == MAC_KEY_FUNCTION_BASE + 0x78) {   // F2
-			open_window_by_kind(BAR_EDITOR);
-			return;
-		}
-		if (down && code == MAC_KEY_FUNCTION_BASE + 0x63) {   // F3
-			open_window_by_kind(BAR_LIST);
-			return;
-		}
-		if (down && code == MAC_KEY_FUNCTION_BASE + 0x76) {   // F4
-			toggle_engine();
-			return;
-		}
-		handle_panel_key(code, down);
-	}
-
-	void focus_lost() override
-	{
-		release_keys();
-	}
-
-	bool hand_cursor(int x, int y) override
-	{
-		if (lcd_only)
-			return false;
-		return hand_at(x, y);
-	}
-
-	std::vector<menu_group> context_menu(int x, int y) override
-	{
-		if (lcd_only)
-			return {};
-		return menu_groups_for(x, y);
-	}
-
-	// mac_app asks through here; the dispatch is shared (ui::app)
-	void menu_chosen(int id) override { app::menu_chosen(id); }
-
-	// ui::app hooks: file dialogs, confirmations and error display are
+	// ---- ui::app hooks: file dialogs, confirmations and error display are
 	// AppKit's business, everything they decide is shared
 	std::string settings_path() const override { return settings_file_path(); }
 	void menu_error(const std::string &text) override
@@ -153,10 +61,6 @@ public:
 		                     "ユーティリティの設定や、覚えている音量・音色の設定はすべて消えます。",
 		                     "戻す");
 	}
-
-	void reload_layout() override { app::reload_layout(); }
-
-	// ---- the rest
 
 	// An editor window comes up, or says why it could not
 	void open_pc_window(pc_window &w) override
@@ -210,14 +114,6 @@ public:
 	}
 	// starved() counts what Windows calls late()
 	u64 audio_drops() override { return out->starved(); }
-
-	// A file dropped on the window is played, which is what gui.cpp's
-	// WM_DROPFILES handler does with one. The window only hands the path
-	// over: what a drop means is the app's business
-	void file_dropped(const std::string &path) override
-	{
-		play_song(path);
-	}
 };
 
 extern gui_app *g_gui;                  // set once main has made the app

@@ -6,7 +6,7 @@
 // button bar, remembered ports) and paint the same picture; only the event
 // pump, the window system and the dialogs differ. That shared half lives
 // here so a feature added on one side cannot be missed on the other. Each
-// front end keeps its window class (WndProc / ui::mac_app) and forwards to
+// front end keeps its window class (WndProc / window_mac.mm) and forwards to
 // these from thin per-platform shells.
 //
 // Slice 1: state + panel paint. Input dispatch, menu actions and lifecycle
@@ -242,6 +242,37 @@ public:
 		return true;
 	}
 
+	// The one key handler: every pump translates its key codes into the
+	// shared space (menu.h -- KEY_F2..F5 and the panel characters) and
+	// calls this. Keyups of the F-keys mean nothing; the panel characters
+	// latch their button while held
+	virtual void key(int code, bool down)
+	{
+		if (lcd_only && down)
+			return;
+		switch (code) {
+		case ui::KEY_F2:
+			if (down)
+				open_window_by_kind(BAR_EDITOR);
+			return;
+		case ui::KEY_F3:
+			if (down)
+				open_window_by_kind(BAR_LIST);
+			return;
+		case ui::KEY_F4:
+			if (down)
+				toggle_engine();
+			return;
+		case ui::KEY_F5:
+			if (down)
+				reload_layout();
+			return;
+		default:
+			handle_panel_key(code, down);
+			return;
+		}
+	}
+
 	// The F4 native-engine toggle both sides offer (key and menu)
 	void toggle_engine()
 	{
@@ -249,10 +280,24 @@ public:
 			eng->want_native_engine.store(eng->native_engine.load() ? 0 : 1);
 	}
 
-	void release_keys()
+	// The window lost focus: let go of everything the user was holding
+	virtual void focus_lost()
 	{
 		pressed = false;
 		br.release_all();
+	}
+
+	// The main window changed size
+	virtual void resized(int w, int h)
+	{
+		panel.resize(w, h);
+	}
+
+	// A file was dropped on the window: playing it is what a drop means on
+	// every platform
+	virtual void file_dropped(const std::string &path)
+	{
+		play_song(path);
 	}
 
 	// Panel layout from a file (F5 reads it back). Same file both sides
@@ -274,9 +319,10 @@ public:
 
 	void reload_layout() { apply_layout(layout_path, false); }
 
-	// Which popup the point asks for. The card slot, PHONES and A/D INPUT
-	// have their own; everywhere else gets the port picker
-	std::vector<menu_group> menu_groups_for(int x, int y)
+	// Which popup the point asks for. The
+	// card slot, PHONES and A/D INPUT have their own; everywhere else gets
+	// the port picker
+	virtual std::vector<menu_group> context_menu(int x, int y)
 	{
 		if (panel.on_card_slot(x, y))
 			return menu_card(menu_snapshot());
@@ -287,18 +333,15 @@ public:
 		return menu_ports(menu_snapshot());
 	}
 
-	// What a mouse press does. bar_window opens through open_window_by_kind
-	// and show_menu wants the popup; panel_pressed means the panel took it
-	// (the side repaints). A press is remembered for drag/up
-	struct mouse_out {
-		bool panel_pressed = false;
-		bool opened_window = false;
-		bool show_menu = false;
-	};
-
-	mouse_out do_mouse_down(int x, int y, bool right)
+	// ---- the event verbs, in pump vocabulary. Every pump (wnd_proc, the
+	// SDL loop, window_mac.mm) calls these under the same names, so a
+	// meaning lives once: the lcd_only guards and the outcome struct are
+	// here, and the platforms only translate their events into these calls
+	virtual ui::mouse_out mouse_down(int x, int y, bool right)
 	{
 		mouse_out o;
+		if (lcd_only)
+			return o;
 		const mouse_hit h = hit_test(x, y, right);
 		if (h.bar_window >= 0) {
 			bar.set_down(h.bar_window);
@@ -317,14 +360,14 @@ public:
 		return o;
 	}
 
-	bool do_mouse_drag(int x, int y)
+	virtual bool mouse_drag(int x, int y)
 	{
 		if (lcd_only || !pressed)
 			return false;
 		return panel.drag(x, y, br);
 	}
 
-	void do_mouse_up()
+	virtual void mouse_up()
 	{
 		if (!pressed)
 			return;
@@ -333,26 +376,18 @@ public:
 		panel.release(br);
 	}
 
-	// A press all the way through, for windows whose infra asks only
-	// whether a popup follows (the press state still feeds drag/up).
-	// True when a popup follows
-	bool press_at(int x, int y, bool right)
-	{
-		if (lcd_only)
-			return false;
-		const mouse_out o = do_mouse_down(x, y, right);
-		return o.show_menu || o.opened_window;
-	}
-
-	bool do_wheel(int x, int y, int steps)
+	virtual bool wheel(int x, int y, int steps)
 	{
 		if (lcd_only || !steps)
 			return false;
 		return panel.wheel_at(x, y, steps, br);
 	}
 
-	bool hand_at(int x, int y) const
+	// A pointing-hand cursor where something opens
+	virtual bool hand_cursor(int x, int y)
 	{
+		if (lcd_only)
+			return false;
 		return panel.on_midi_jack(x, y) || panel.on_ad_input(x, y) ||
 		       panel.on_card_slot(x, y) || panel.on_phones(x, y);
 	}
