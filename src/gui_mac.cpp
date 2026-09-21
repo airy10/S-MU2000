@@ -90,7 +90,7 @@ constexpr u32 RATE = ui::AUDIO_RATE;
 // shifts the numbers, so a remembered number would connect to a different
 // device the next time the window is opened.
 
-std::string settings_path()
+std::string settings_file_path()
 {
 	const std::string dir = smu2000::ensure_config_dir();
 	return dir.empty() ? std::string() : dir + "gui.ini";
@@ -98,25 +98,6 @@ std::string settings_path()
 
 // gui.ini keys live in ui/settings.h as ui::SET_* (shared with gui.cpp).
 // Menu wording lives in ui/menu.h as ui::IN_LABELS.
-
-// The remembered ports, in file order. One struct for both front ends
-// (ui::remembered, shared with gui.cpp); the Mac side used to spell it
-// port_names with audio instead of audio_out.
-using port_names = ui::remembered;
-
-port_names load_settings()
-{
-	port_names n;
-	const std::string path = settings_path();
-	if (path.empty())
-		return n;
-	settings_map kv;
-	if (!read_settings_file(path, kv))
-		return n;
-	ui::apply_settings(kv, n);
-	return n;
-}
-
 
 // ---- Things handed to the window
 
@@ -260,30 +241,6 @@ public:
 		       panel.on_card_slot(x, y) || panel.on_phones(x, y);
 	}
 
-	// What the shared builders (ui/menu.h) show, from this window's state
-	menu_state menu_snapshot()
-	{
-		static_assert(mu2000::MIDI_PORTS == 4, "shared menu IDs lay out 4 MIDI IN ports");
-		menu_state s;
-		s.midi_ins = ui::midi_in::list();
-		s.midi_outs = ui::midi_out::list();
-		s.audio_ins = ui::audio_in::list();
-		for (int p = 0; p < mu2000::MIDI_PORTS; p++)
-			s.in_dev[p] = in_dev[p];
-		s.out_dev = out_dev;
-		s.out_dev_b = out_dev_b;
-		s.out_dev_mu = out_dev_mu;
-		s.ain_name = ain_name;
-		s.card_path = card_path;
-		s.playing = play.playing();
-		s.play_name = play.name();
-		s.fold34 = play.fold_extra_ports();
-		s.ready = ready();
-		s.native_fx = eng && eng->native_fx.load();
-		s.native_engine = eng && eng->native_engine.load();
-		return s;
-	}
-
 	std::vector<ui::menu_group> context_menu(int x, int y) override
 	{
 		if (lcd_only)
@@ -299,49 +256,38 @@ public:
 		return ui::menu_ports(menu_snapshot());
 	}
 
-	// Whether the firmware has finished booting. The engine lives in main(), so
-	// it is its state that is pointed at here rather than copied
-	bool ready() const { return state && state->load() == 1; }
+		// mac_app asks through here; the dispatch is shared (ui::app)
+	void menu_chosen(int id) override { ui::app::menu_chosen(id); }
 
-	void menu_chosen(int id) override
+	// ui::app hooks: file dialogs, confirmations and error display are
+	// AppKit's business, everything they decide is shared
+	std::string settings_path() const override { return settings_file_path(); }
+	void menu_error(const std::string &text) override
 	{
-		for (int p = 0; p < mu2000::MIDI_PORTS; p++) {
-			const int none = ID_IN_NONE + p * ID_IN_STRIDE, base = ID_IN_BASE + p * ID_IN_STRIDE;
-			if (id == none)                        { choose_in(p, -1); return; }
-			if (id >= base && id < base + 256)     { choose_in(p, id - base); return; }
-		}
-		if (id == ID_OUT_NONE)                                        choose_out(-1);
-		else if (id >= ID_OUT_BASE && id < ID_OUT_BASE + 256)         choose_out(id - ID_OUT_BASE);
-		else if (id == ID_OUTMU_NONE)                                 choose_out_mu(-1);
-		else if (id >= ID_OUTMU_BASE && id < ID_OUTMU_BASE + 256)     choose_out_mu(id - ID_OUTMU_BASE);
-		else if (id == ID_OUTB_NONE)                                  choose_out_b(-1);
-		else if (id >= ID_OUTB_BASE && id < ID_OUTB_BASE + 256)       choose_out_b(id - ID_OUTB_BASE);
-		else if (id == ID_AIN_NONE)                                   choose_ain(-1);
-		else if (id >= ID_AIN_BASE && id < ID_AIN_BASE + 256)         choose_ain(id - ID_AIN_BASE);
-		else if (id == ID_CARD_OPEN)                                  open_card();
-		else if (id == ID_CARD_EJECT)                                 eject_card();
-		else if (id >= ID_CARD_NEW16 && id <= ID_CARD_NEW128)         new_card(16u << (id - ID_CARD_NEW16));
-		else if (id == ID_PORTS34_FOLD)                               set_fold34(true);
-		else if (id == ID_PORTS34_DROP)                               set_fold34(false);
-		else if (id == ID_PC_EDITOR)                                  open_window_by_kind(ui::BAR_EDITOR);
-		else if (id == ID_OVERVIEW)                                   open_window_by_kind(ui::BAR_LIST);
-		else if (id == ID_NATIVE_FX && eng)
-			eng->want_native_fx.store(eng->native_fx.load() ? 0 : 2);
-		else if (id == ID_NATIVE_ENGINE && eng)
-			eng->want_native_engine.store(eng->native_engine.load() ? 0 : 1);
-		else if (id == ID_FACTORY)                                    factory_reset();
-		else if ((id == ID_OUTPUT_DIGITAL || id == ID_OUTPUT_ANALOG) && eng) {
-			eng->analog.store(id == ID_OUTPUT_ANALOG);
-			std::printf("音の出口: %s\n", id == ID_OUTPUT_ANALOG ? "アナログ（直流を切る）" : "デジタル");
-			std::fflush(stdout);
-			save_settings();
-		}
-		else if (id == ID_PLAY_FILE) {
-			const std::string path = ui::open_midi_file_panel();
-			if (!path.empty())
-				play_song(path);
-		}
-		else if (id == ID_STOP_FILE) play.stop();
+		ui::alert_modal("S-MU2000", text.c_str());
+	}
+	void menu_note(const std::string &text) override
+	{
+		ui::alert_modal("S-MU2000", text.c_str());
+	}
+	std::string ask_card_open_path() override
+	{
+		return ui::open_file_panel("差す SmartMedia", "img");
+	}
+	std::string ask_card_save_path() override
+	{
+		return ui::save_file_panel("新しい SmartMedia の保存先", "smartmedia.img", "img");
+	}
+	std::string ask_midi_file_path() override
+	{
+		return ui::open_midi_file_panel();
+	}
+	bool confirm_factory_reset() override
+	{
+		return ui::confirm_modal("S-MU2000",
+		                         "MU2000 を工場出荷状態に戻して、電源を入れ直します。\n"
+		                         "ユーティリティの設定や、覚えている音量・音色の設定はすべて消えます。",
+		                         "戻す");
 	}
 
 	void reload_layout() override
@@ -397,23 +343,6 @@ public:
 		panel.resize(panel.width(), panel.height());
 	}
 
-	void play_song(const std::string &path)
-	{
-		std::string err;
-		if (!play.start(path, br, err)) {
-			std::fprintf(stderr, "開けない: %s\n", err.c_str());
-			return;
-		}
-		std::printf("再生: %s（%.1f 秒）\n", path.c_str(), play.length());
-		// The machine has two ports, so a file that uses four is either folded
-		// onto them or has its extra parts dropped. Say which, as gui.cpp does
-		if (play.ports_used() > 2)
-			std::printf("  この曲は %d 口ぶん。C・D は未対応なので、口 3 以降は%s\n",
-			            play.ports_used(),
-			            play.fold_extra_ports() ? " A・B に重ねて鳴らす" : "鳴らさない");
-		std::fflush(stdout);
-	}
-
 	// A file dropped on the window is played, which is what gui.cpp's
 	// WM_DROPFILES handler does with one. The window only hands the path over:
 	// what a drop means is the app's business
@@ -446,279 +375,8 @@ public:
 		             (unsigned long long)eng->mu.midi_dropped());
 	}
 
-	// Open what the menu picked. On failure it falls back to "unused".
-	// keep is true only while starting up: the name that was asked for is then
-	// kept even if the port is not there yet (see save_settings())
-	// port is 0-3 for MIDI IN A-D
-	void choose_in(int port, int dev, bool keep = false)
-	{
-		if (port < 0 || port >= mu2000::MIDI_PORTS)
-			return;
-		if (!keep)
-			in_keep[port].clear();
-		std::string err;
-		if (!midi[port].open(dev, err)) {
-			std::fprintf(stderr, "%s: %s\n", IN_LABELS[port], err.c_str());
-			midi[port].open(-1, err);
-			dev = -1;
-		}
-		in_dev[port]  = midi[port].is_open() ? dev : -1;
-		in_name[port] = midi[port].device_name();
-		save_settings();
-	}
-
-	void choose_out(int dev, bool keep = false)
-	{
-		if (!keep)
-			out_keep.clear();
-		std::string err;
-		if (!thru_a.open(dev, err)) {
-			std::fprintf(stderr, "MIDI 出力: %s\n", err.c_str());
-			thru_a.open(-1, err);
-			dev = -1;
-		}
-		out_dev  = thru_a.is_open() ? dev : -1;
-		out_name = thru_a.device_name();
-		save_settings();
-	}
-
-	void choose_out_b(int dev, bool keep = false)
-	{
-		if (!keep)
-			out_keep_b.clear();
-		std::string err;
-		if (!thru_b.open(dev, err)) {
-			std::fprintf(stderr, "MIDI 出力 B: %s\n", err.c_str());
-			thru_b.open(-1, err);
-			dev = -1;
-		}
-		out_dev_b  = thru_b.is_open() ? dev : -1;
-		out_name_b = thru_b.device_name();
-		save_settings();
-	}
-
-	// The machine's own MIDI OUT: what the firmware sends out by itself (a
-	// dump reply, the sequencer). Pointed at a virtual port it is how an
-	// external editor reads and writes the settings
-	void choose_out_mu(int dev, bool keep = false)
-	{
-		if (!keep)
-			out_keep_mu.clear();
-		std::string err;
-		if (!mu_out.open(dev, err)) {
-			std::fprintf(stderr, "MIDI 出力（本体の OUT）: %s\n", err.c_str());
-			mu_out.open(-1, err);
-			dev = -1;
-		}
-		out_dev_mu  = mu_out.is_open() ? dev : -1;
-		out_name_mu = mu_out.device_name();
-		save_settings();
-	}
-
-	// ---- A/D INPUT (the recording device the machine samples)
-	//
-	// Same as gui.cpp's choose_ain: "no device" stops the capture and leaves
-	// nothing feeding the machine, which then samples silence
-	void choose_ain(int dev, bool keep = false)
-	{
-		if (!keep)
-			ain_keep.clear();
-		if (!ain)
-			return;
-		ain->stop();
-		if (dev < 0) {
-			ain_name.clear();
-			ain_dev = -1;
-			std::printf("A/D INPUT: なし\n");
-			std::fflush(stdout);
-			save_settings();
-			return;
-		}
-		const auto names = ui::audio_in::list();
-		if (size_t(dev) >= names.size()) {
-			std::fprintf(stderr, "A/D INPUT: %d 番のデバイスが無い\n", dev);
-			return;
-		}
-		std::string err;
-		if (!ain->start(names[size_t(dev)], err)) {
-			std::fprintf(stderr, "A/D INPUT: %s\n", err.c_str());
-			ain_name.clear();
-			ain_dev = -1;
-			return;
-		}
-		std::printf("A/D INPUT: %s（%s）\n", ain->device_name().c_str(), ain->format_line().c_str());
-		std::fflush(stdout);
-		// The chosen name is kept even if it was the default that opened: the
-		// menu shows which entry is ticked, and the entry is a name
-		ain_name = names[size_t(dev)];
-		ain_dev  = dev;
-		save_settings();
-	}
-
-	// ---- SmartMedia (the card slot)
-	//
-	// The image is a file, and what the machine writes has to go back into it.
-	// engine::card_lock is held while the machine itself is touched, because the
-	// audio thread is running the machine from the other side (see ui/engine.h)
-	void flush_card()
-	{
-		if (!eng || card_path.empty())
-			return;
-		std::vector<smu2000::smartmedia::block> blocks;
-		{
-			const std::lock_guard<std::mutex> hold(eng->card_lock);
-			eng->mu.card().take_dirty_blocks(blocks);
-		}
-		if (blocks.empty())
-			return;
-		std::string err;
-		if (!smu2000::smartmedia::write_blocks(card_path, blocks, err))
-			std::fprintf(stderr, "SmartMedia: %s\n", err.c_str());
-	}
-
-	void eject_card()
-	{
-		if (!eng)
-			return;
-		flush_card();
-		{
-			const std::lock_guard<std::mutex> hold(eng->card_lock);
-			eng->mu.card().eject();
-		}
-		if (!card_path.empty())
-			std::printf("SmartMedia を抜いた: %s\n", card_path.c_str());
-		card_path.clear();
-		save_settings();
-	}
-
-	// Load it first, so a file that cannot be read does not take the slot away
-	// from the card that is already in it
-	bool insert_card(const std::string &path)
-	{
-		if (!eng)
-			return false;
-		smu2000::smartmedia card;
-		std::string err;
-		if (!card.load(path, err)) {
-			std::fprintf(stderr, "SmartMedia: %s\n", err.c_str());
-			return false;
-		}
-		eject_card();
-		{
-			const std::lock_guard<std::mutex> hold(eng->card_lock);
-			eng->mu.card() = std::move(card);
-		}
-		card_path = path;
-		std::printf("SmartMedia を差した: %s（%uMB）\n", path.c_str(), eng->mu.card().megabytes());
-		std::fflush(stdout);
-		save_settings();
-		return true;
-	}
-
-	// An empty card, in the physical layout a new one comes in. It has to be
-	// formatted by the machine (UTIL -> CARD -> Format) before it holds anything
-	void new_card(u32 megabytes)
-	{
-		const std::string path = ui::save_file_panel("新しい SmartMedia の保存先", "smartmedia.img", "img");
-		if (path.empty())
-			return;
-		smu2000::smartmedia card;
-		if (!card.create(megabytes)) {
-			std::fprintf(stderr, "SmartMedia を作れない\n");
-			return;
-		}
-		std::string err;
-		if (!card.save(path, err)) {
-			std::fprintf(stderr, "SmartMedia: %s\n", err.c_str());
-			return;
-		}
-		// A fresh card only has the physical layout on it, so the machine still
-		// has to format it before it holds anything (gui.cpp says this too)
-		if (insert_card(path))
-			ui::alert_modal("S-MU2000",
-			                "空の SmartMedia を差しました。\n"
-			                "使う前に、本体の UTIL → CARD → Format で書式化してください。");
-	}
-
-	void open_card()
-	{
-		const std::string path = ui::open_file_panel("差す SmartMedia", "img");
-		if (!path.empty())
-			insert_card(path);
-	}
-
-	// Called from the window's timer. The machine writes to the card while it
-	// runs, so the file is brought up to date every couple of seconds: that is
-	// what keeps a crash from losing more than the last two seconds. Ejecting,
-	// closing the window and saving all flush as well
-	void card_tick()
-	{
-		const u64 now = smu2000::perf_ticks() * 1000 / smu2000::perf_freq();
-		if (now - last_flush < 2000)
-			return;
-		last_flush = now;
-		flush_card();
-	}
-
-	// Throwing the settings away means booting the machine again, which takes
-	// tens of seconds, so it runs on its own thread. The previous one is joined
-	// first: two boots at once would both be writing the machine
-	void factory_reset()
-	{
-		if (!ready() || !eng)
-			return;
-		if (!ui::confirm_modal("S-MU2000",
-		                       "MU2000 を工場出荷状態に戻して、電源を入れ直します。\n"
-		                       "ユーティリティの設定や、覚えている音量・音色の設定はすべて消えます。",
-		                       "戻す"))
-			return;
-		play.stop();
-		join_reboot();
-		reboot = std::thread([this] { eng->factory_reset(); });
-	}
-
-	// Folding ports 3 and 4 of a MIDI file onto A and B, and remembering it
-	void set_fold34(bool on)
-	{
-		play.set_fold_extra_ports(on);
-		save_settings();
-	}
-
-	// Remembered by name rather than number (see the note on settings_path).
-	// A port that would not open keeps the name it was asked for, so a virtual
-	// port that is not up yet is not forgotten by the next start
-	void save_settings()
-	{
-		// --nomidi must not write empty port names over the remembered ones
-		if (keep_settings)
-			return;
-		const std::string path = settings_path();
-		if (path.empty())
-			return;
-		// The rows themselves are shared (ui::collect_settings); only gathering
-		// this window's state stays here. A device that is not there yet keeps
-		// its name the same way the MIDI ports do (see in_keep below)
-		ui::remembered r;
-		for (int p = 0; p < mu2000::MIDI_PORTS; p++)
-			r.in[p] = in_name[p].empty() ? in_keep[p] : in_name[p];
-		r.out       = out_name.empty()    ? out_keep    : out_name;
-		r.out_b     = out_name_b.empty()  ? out_keep_b  : out_name_b;
-		r.out_mu    = out_name_mu.empty() ? out_keep_mu : out_name_mu;
-		r.audio_out = audio_name;
-		// An empty recording name means "not used", which the menu sets
-		r.audio_in  = ain_name.empty() ? ain_keep : ain_name;
-		r.card      = card_path;
-		r.fold34    = play.fold_extra_ports();
-		r.analog    = eng && eng->analog.load();
-		// The panel's VOLUME knob. On the real machine it is the analogue one behind
-		// the DAC, so the firmware's RAM does not hold it and it is kept here
-		r.volume    = br.gain();
-		write_settings_file(path, ui::collect_settings(r));
-	}
-
- private:
+private:
 	bool m_pressed = false;
-	u64 last_flush = 0;                // when the card file was last written back
 	u64 last_drop_report = 0;          // when the MIDI drops were last said out loud
 };
 
@@ -983,7 +641,7 @@ int main(int argc, char **argv)
 	eng.ain = &ain;
 
 	{
-		const port_names want = load_settings();
+		const ui::remembered want = ui::app::load_remembered(settings_file_path());
 		br.set_gain(want.volume);
 		// set before set_fold34, which writes the settings back through save_settings()
 		eng.analog.store(want.analog);
@@ -997,7 +655,7 @@ int main(int argc, char **argv)
 		gui.ain_name = want.audio_in;
 		gui.ain_keep = want.audio_in;
 		if (!want.card.empty())
-			gui.insert_card(want.card);
+			gui.insert_card(want.card, true);
 		for (int p = 0; p < mu2000::MIDI_PORTS; p++)
 			if (in_dev[p] == -2)
 				in_dev[p] = find_device(ui::midi_in::list(), want.in[p]);

@@ -92,6 +92,36 @@ using namespace ui;
 // Shows a PC window, warning when it cannot be done (defined below)
 void open_window(HWND hwnd, ui::pc_window &w);
 
+// gui.ini lives under %LOCALAPPDATA% (defined below, before main)
+std::string settings_file_path();
+
+// The file dialog behind the card menu. create=false opens, true saves
+std::string ask_card_path(HWND hwnd, bool create)
+{
+	wchar_t file[MAX_PATH] = {};
+	if (create)
+		wcscpy(file, L"smartmedia.img");
+	OPENFILENAMEW o{};
+	o.lStructSize = sizeof(o);
+	o.hwndOwner = hwnd;
+	o.lpstrFilter = L"SmartMedia の中身 (*.img)\0*.img\0すべて (*.*)\0*.*\0";
+	o.lpstrFile = file;
+	o.nMaxFile = MAX_PATH;
+	o.lpstrDefExt = L"img";
+	if (create) {
+		o.lpstrTitle = L"新しい SmartMedia の保存先";
+		o.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+		if (!GetSaveFileNameW(&o))
+			return {};
+	} else {
+		o.lpstrTitle = L"差す SmartMedia";
+		o.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+		if (!GetOpenFileNameW(&o))
+			return {};
+	}
+	return ui::to_utf8(file);
+}
+
 // The Windows front end: shared ui::app state and logic plus the Win32
 // window (double buffering, message translation). g_win is a pointer
 // because ui::app needs its bridge and MIDI ports at construction, which
@@ -113,15 +143,50 @@ public:
 	HDC     mem_dc = nullptr;
 	HBITMAP mem_bmp = nullptr;
 	int     mem_w = 0, mem_h = 0;
-	// MIDI port views (null until boot connects them to main()'s).
-	// ui::app only carries the ports main() owns; these views predate it
-	ui::midi_in  *midi[mu2000::MIDI_PORTS] = {};
-	ui::midi_out *mout = nullptr;      // MIDI THRU A
-	ui::midi_out *mout_b = nullptr;    // MIDI THRU B
-	ui::midi_out *mout_mu = nullptr;   // MIDI OUT (what the MU2000 sends out)
-	std::string last_error;            // choosing from a menu failed: why
+	// Choosing from a menu failed: shown at the end of the command
+	std::string last_error;
 
 	void open_window_by_kind(int kind) override;
+
+	// ui::app hooks: file dialogs, confirmations and error display are
+	// Win32's business, everything they decide is shared
+	std::string settings_path() const override { return settings_file_path(); }
+	void menu_error(const std::string &text) override { last_error = text; }
+	void menu_note(const std::string &text) override
+	{
+		MessageBoxW(hwnd, ui::to_wide(text).c_str(),
+		            L"S-MU2000", MB_OK | MB_ICONINFORMATION);
+	}
+	std::string ask_card_open_path() override
+	{
+		return ask_card_path(hwnd, false);
+	}
+	std::string ask_card_save_path() override
+	{
+		return ask_card_path(hwnd, true);
+	}
+	std::string ask_midi_file_path() override
+	{
+		wchar_t file[MAX_PATH] = {};
+		OPENFILENAMEW o{};
+		o.lStructSize = sizeof(o);
+		o.hwndOwner = hwnd;
+		o.lpstrFilter = L"MIDI ファイル (*.mid;*.midi)\0*.mid;*.midi\0すべて (*.*)\0*.*\0";
+		o.lpstrFile = file;
+		o.nMaxFile = MAX_PATH;
+		o.lpstrTitle = L"流す MIDI ファイル";
+		o.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+		if (!GetOpenFileNameW(&o))
+			return {};
+		return ui::to_utf8(file);
+	}
+	bool confirm_factory_reset() override
+	{
+		return MessageBoxW(hwnd,
+		                   L"MU2000 を工場出荷状態に戻して、電源を入れ直します。\n"
+		                   L"ユーティリティの設定や、覚えている音量・音色の設定はすべて消えます。",
+		                   L"S-MU2000", MB_OKCANCEL | MB_ICONWARNING | MB_DEFBUTTON2) == IDOK;
+	}
 };
 
 win_app *g_win = nullptr;
@@ -149,7 +214,7 @@ void apply_layout(const std::string &path, bool quiet)
 // 番号ではなく**名前**で覚える。USB の機器を挿し直すと番号がずれるので、
 // 番号で覚えると次に開いたとき別の機器に繋がってしまう。
 
-std::string settings_path()
+std::string settings_file_path()
 {
 	const char *base = std::getenv("LOCALAPPDATA");
 	if (!base || !*base)
@@ -163,48 +228,6 @@ std::string settings_path()
 
 // Reads the remembered ports into r. Missing keys leave r's defaults, so
 // callers start from a full struct and take what they need.
-void load_settings(ui::remembered &r)
-{
-	const std::string path = settings_path();
-	if (path.empty())
-		return;
-	settings_map kv;
-	if (!read_settings_file(path, kv))
-		return;
-	ui::apply_settings(kv, r);
-}
-
-void save_settings()
-{
-	if (g_win->keep_settings)                 // --nomidi。覚えている口を消さない
-		return;
-	const std::string path = settings_path();
-	if (path.empty())
-		return;
-	auto pick = [](const std::string &now, const std::string &keep) {
-		return (now.empty() ? keep : now);
-	};
-	// The rows themselves are shared (ui::collect_settings); only gathering
-	// this window's state stays here
-	ui::remembered r;
-	for (int p = 0; p < mu2000::MIDI_PORTS; p++)
-		r.in[p] = pick(g_win->in_name[p], g_win->in_keep[p]);
-	r.out       = pick(g_win->out_name,    g_win->out_keep);
-	r.out_b     = pick(g_win->out_name_b,  g_win->out_keep_b);
-	r.out_mu    = pick(g_win->out_name_mu, g_win->out_keep_mu);
-	r.audio_out = g_win->audio_name;
-	r.audio_in  = g_win->ain_name;
-	r.card      = g_win->card_path;
-	// パネルの VOLUME のつまみ。実機でも DAC の後ろのアナログのつまみで、
-	// firmware の RAM には入らないので、こちらで覚える
-	r.volume = g_win->br.gain();
-	r.fold34 = g_win->play.fold_extra_ports();
-	// 音の出口。digital（S/PDIF と同じ）か analog（直流を切る。src/analog_out.h）
-	if (g_win->eng)
-		r.analog = g_win->eng->analog.load();
-	write_settings_file(path, ui::collect_settings(r));
-}
-
 // ---- 口を選ぶ品書き
 
 // Menu command numbers, labels and builders are shared with gui_mac.cpp
@@ -216,63 +239,15 @@ void save_settings()
 // Only gathering this window's state (below) stays here.
 
 // What the shared builders show, from this window's state
-menu_state menu_snapshot()
-{
-	menu_state s;
-	s.midi_ins = ui::midi_in::list();
-	s.midi_outs = ui::midi_out::list();
-	s.audio_ins = ui::audio_in::list();
-	for (int p = 0; p < mu2000::MIDI_PORTS; p++)
-		s.in_dev[p] = g_win->in_dev[p];
-	s.out_dev = g_win->out_dev;
-	s.out_dev_b = g_win->out_dev_b;
-	s.out_dev_mu = g_win->out_dev_mu;
-	s.ain_name = g_win->ain_name;
-	s.card_path = g_win->card_path;
-	s.playing = g_win->play.playing();
-	s.play_name = g_win->play.name();
-	s.fold34 = g_win->play.fold_extra_ports();
-	s.ready = g_win->eng && g_win->eng->state.load() == 1;
-	s.native_fx = g_win->eng && g_win->eng->native_fx.load();
-	s.native_engine = g_win->eng && g_win->eng->native_engine.load();
-	return s;
-}
-
 void show_ain_menu(HWND hwnd, POINT screen)
 {
 	track_menu(hwnd, screen,
 	           render_menu(ui::menu_ain_only(ui::audio_in::list(), g_win->ain_name)));
 }
 
-// 録音デバイスを選ぶ。-1 は使わない
-void choose_ain(int dev)
-{
-	if (!g_win->ain)
-		return;
-	g_win->ain->stop();
-	g_win->last_error.clear();
-	if (dev < 0) {
-		g_win->ain_name.clear();
-	} else {
-		const auto names = ui::audio_in::list();
-		if (dev < int(names.size())) {
-			std::string err;
-			if (!g_win->ain->start(names[size_t(dev)], err)) {
-				g_win->last_error = err;
-				std::fprintf(stderr, "A/D INPUT: %s\n", err.c_str());
-			} else {
-				std::printf("A/D INPUT: %s（%s）\n", g_win->ain->device_name().c_str(), g_win->ain->format_line().c_str());
-				std::fflush(stdout);
-			}
-			g_win->ain_name = names[size_t(dev)];
-		}
-	}
-	save_settings();
-}
-
 void show_port_menu(HWND hwnd, POINT screen)
 {
-	track_menu(hwnd, screen, render_menu(ui::menu_ports(menu_snapshot())));
+	track_menu(hwnd, screen, render_menu(ui::menu_ports(g_win->menu_snapshot())));
 }
 
 // ---- PHONES のジャック。音の出口を選ぶ
@@ -287,251 +262,20 @@ void show_output_menu(HWND hwnd, POINT screen)
 
 // ---- カードの差し込み口。SmartMedia を差す・MIDI ファイルを流す
 
-// 書き換えたブロックをファイルへ書き戻す。写すときだけ音声の糸を止める
-void flush_card()
-{
-	if (!g_win->eng || g_win->card_path.empty())
-		return;
-	std::vector<smu2000::smartmedia::block> blocks;
-	{
-		const std::lock_guard<std::mutex> hold(g_win->eng->card_lock);
-		g_win->eng->mu.card().take_dirty_blocks(blocks);
-	}
-	std::string err;
-	if (!smu2000::smartmedia::write_blocks(g_win->card_path, blocks, err)) {
-		std::fprintf(stderr, "SmartMedia: %s\n", err.c_str());
-		std::fflush(stderr);
-	}
-}
-
-void eject_card()
-{
-	if (!g_win->eng)
-		return;
-	flush_card();
-	{
-		const std::lock_guard<std::mutex> hold(g_win->eng->card_lock);
-		g_win->eng->mu.card().eject();
-	}
-	if (!g_win->card_path.empty())
-		std::printf("SmartMedia を抜いた: %s\n", g_win->card_path.c_str());
-	std::fflush(stdout);
-	g_win->card_path.clear();
-}
-
-// ファイルの SmartMedia を差す。読むのは糸を止めずに済ませ、差し替えるときだけ止める
-bool insert_card(const std::string &path, bool quiet = false)
-{
-	if (!g_win->eng)
-		return false;
-	smu2000::smartmedia card;
-	std::string err;
-	if (!card.load(path, err)) {
-		if (!quiet)
-			g_win->last_error = err;
-		std::fprintf(stderr, "SmartMedia: %s\n", err.c_str());
-		return false;
-	}
-	eject_card();
-	{
-		const std::lock_guard<std::mutex> hold(g_win->eng->card_lock);
-		g_win->eng->mu.card() = std::move(card);
-	}
-	g_win->card_path = path;
-	std::printf("SmartMedia を差した: %s（%uMB）\n", path.c_str(), g_win->eng->mu.card().megabytes());
-	std::fflush(stdout);
-	return true;
-}
-
-std::string ask_card_path(HWND hwnd, bool create)
-{
-	wchar_t file[MAX_PATH] = {};
-	if (create)
-		wcscpy(file, L"smartmedia.img");
-	OPENFILENAMEW o{};
-	o.lStructSize = sizeof(o);
-	o.hwndOwner = hwnd;
-	o.lpstrFilter = L"SmartMedia の中身 (*.img)\0*.img\0すべて (*.*)\0*.*\0";
-	o.lpstrFile = file;
-	o.nMaxFile = MAX_PATH;
-	o.lpstrDefExt = L"img";
-	if (create) {
-		o.lpstrTitle = L"新しい SmartMedia の保存先";
-		o.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
-		if (!GetSaveFileNameW(&o))
-			return {};
-	} else {
-		o.lpstrTitle = L"差す SmartMedia";
-		o.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
-		if (!GetOpenFileNameW(&o))
-			return {};
-	}
-	return ui::to_utf8(file);
-}
-
-// 空の SmartMedia（物理の書式だけ）を作って差す。使う前に UTIL → CARD → Format で書式化する
-void new_card(HWND hwnd, u32 megabytes)
-{
-	const std::string path = ask_card_path(hwnd, true);
-	if (path.empty())
-		return;
-	smu2000::smartmedia card;
-	card.create(megabytes);
-	std::string err;
-	if (!card.save(path, err)) {
-		g_win->last_error = err;
-		return;
-	}
-	if (insert_card(path)) {
-		save_settings();
-		MessageBoxW(hwnd, L"空の SmartMedia を差しました。\n"
-		                  L"使う前に、本体の UTIL → CARD → Format で書式化してください。",
-		            L"S-MU2000", MB_OK | MB_ICONINFORMATION);
-	}
-}
-
 void show_card_menu(HWND hwnd, POINT screen)
 {
-	track_menu(hwnd, screen, render_menu(ui::menu_card(menu_snapshot())));
+	track_menu(hwnd, screen, render_menu(ui::menu_card(g_win->menu_snapshot())));
 }
 
-// MIDI ファイルを流す（品書きから選んだとき・窓に落とされたとき）。鳴っていれば止めて流し直す
-void play_midi_file(HWND hwnd, const std::string &path)
-{
-	std::string err;
-	if (!g_win->play.start(path, g_win->br, err)) {
-		const std::wstring w = ui::to_wide("開けない: " + err);
-		MessageBoxW(hwnd, w.c_str(), L"S-MU2000", MB_OK | MB_ICONWARNING);
-		return;
-	}
-	std::printf("再生: %s（%.1f 秒）\n", path.c_str(), g_win->play.length());
-	if (g_win->play.ports_used() > 2)
-		std::printf("  この曲は %d 口ぶん。C・D は未対応なので、口 3 以降は%s\n", g_win->play.ports_used(),
-		            g_win->play.fold_extra_ports() ? " A・B に重ねて鳴らす" : "鳴らさない");
-	std::fflush(stdout);
-}
-
-// 窓に落とされたファイル（エディタや一覧の窓から）。本体の窓は WM_DROPFILES で受ける
 void play_dropped_file(const std::wstring &path)
 {
-	play_midi_file(GetForegroundWindow(), ui::to_utf8(path.c_str()));
-}
-
-void choose_midi_file(HWND hwnd)
-{
-	wchar_t file[MAX_PATH] = {};
-	OPENFILENAMEW o{};
-	o.lStructSize = sizeof(o);
-	o.hwndOwner = hwnd;
-	o.lpstrFilter = L"MIDI ファイル (*.mid;*.midi)\0*.mid;*.midi\0すべて (*.*)\0*.*\0";
-	o.lpstrFile = file;
-	o.nMaxFile = MAX_PATH;
-	o.lpstrTitle = L"流す MIDI ファイル";
-	o.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
-	if (!GetOpenFileNameW(&o))
-		return;
-
-	play_midi_file(hwnd, ui::to_utf8(file));
-}
-
-// 覚えている設定を捨てて、電源を入れ直す
-void choose_factory_reset(HWND hwnd)
-{
-	if (!g_win->eng || g_win->eng->state.load() != 1)
-		return;
-	if (MessageBoxW(hwnd,
-	                L"MU2000 を工場出荷状態に戻して、電源を入れ直します。\n"
-	                L"ユーティリティの設定や、覚えている音量・音色の設定はすべて消えます。",
-	                L"S-MU2000", MB_OKCANCEL | MB_ICONWARNING | MB_DEFBUTTON2) != IDOK)
-		return;
-	g_win->play.stop();
-	g_win->join_reboot();
-	g_win->reboot = std::thread([] { g_win->eng->factory_reset(); });
-}
-
-// 品書きで選ばれたものを開く。開けなかったら「使わない」に戻す
-// keep が true なのは起動したとき。開けなくても、覚えていた名前を残す
-bool choose_in(int port, int dev, bool keep = false)
-{
-	if (port < 0 || port >= mu2000::MIDI_PORTS || !g_win->midi[port])
-		return false;
-	if (!keep)
-		g_win->in_keep[port].clear();
-	std::string err;
-	g_win->last_error.clear();
-	if (!g_win->midi[port]->open(dev, err)) {
-		g_win->last_error = err;
-		std::fprintf(stderr, "%s: %s\n", ui::IN_LABELS[port], err.c_str());
-		g_win->midi[port]->open(-1, err);
-		dev = -1;
+	// Outside a menu command, so a failure shows straight away rather than
+	// through last_error at the end of WM_COMMAND
+	if (!g_win->play_song(ui::to_utf8(path.c_str())) && !g_win->last_error.empty()) {
+		const std::wstring w = ui::to_wide(g_win->last_error);
+		MessageBoxW(GetForegroundWindow(), w.c_str(), L"S-MU2000", MB_OK | MB_ICONWARNING);
+		g_win->last_error.clear();
 	}
-	g_win->in_dev[port]  = g_win->midi[port]->is_open() ? dev : -1;
-	g_win->in_name[port] = g_win->midi[port]->device_name();
-	save_settings();
-	return g_win->last_error.empty();
-}
-
-// keep が true なのは起動したとき。開けなくても、覚えていた名前を残す
-bool choose_out(int dev, bool keep = false)
-{
-	if (!g_win->mout)
-		return false;
-	if (!keep)
-		g_win->out_keep.clear();
-	std::string err;
-	g_win->last_error.clear();
-	if (!g_win->mout->open(dev, err)) {
-		g_win->last_error = err;
-		std::fprintf(stderr, "MIDI 出力: %s\n", err.c_str());
-		g_win->mout->open(-1, err);
-		dev = -1;
-	}
-	g_win->out_dev  = g_win->mout->is_open() ? dev : -1;
-	g_win->out_name = g_win->mout->device_name();
-	save_settings();
-	return g_win->last_error.empty();
-}
-
-// keep が true なのは起動したとき。開けなくても、覚えていた名前を残す
-bool choose_out_mu(int dev, bool keep = false)
-{
-	if (!g_win->mout_mu)
-		return false;
-	if (!keep)
-		g_win->out_keep_mu.clear();
-	std::string err;
-	g_win->last_error.clear();
-	if (!g_win->mout_mu->open(dev, err)) {
-		g_win->last_error = err;
-		std::fprintf(stderr, "MIDI 出力（本体の OUT）: %s\n", err.c_str());
-		g_win->mout_mu->open(-1, err);
-		dev = -1;
-	}
-	g_win->out_dev_mu  = g_win->mout_mu->is_open() ? dev : -1;
-	g_win->out_name_mu = g_win->mout_mu->device_name();
-	save_settings();
-	return g_win->last_error.empty();
-}
-
-// keep が true なのは起動したとき。開けなくても、覚えていた名前を残す
-bool choose_out_b(int dev, bool keep = false)
-{
-	if (!g_win->mout_b)
-		return false;
-	if (!keep)
-		g_win->out_keep_b.clear();
-	std::string err;
-	g_win->last_error.clear();
-	if (!g_win->mout_b->open(dev, err)) {
-		g_win->last_error = err;
-		std::fprintf(stderr, "MIDI 出力 B: %s\n", err.c_str());
-		g_win->mout_b->open(-1, err);
-		dev = -1;
-	}
-	g_win->out_dev_b  = g_win->mout_b->is_open() ? dev : -1;
-	g_win->out_name_b = g_win->mout_b->device_name();
-	save_settings();
-	return g_win->last_error.empty();
 }
 
 void ensure_backing(HDC dc, int w, int h)
@@ -587,11 +331,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		                 [&](ui::pc_window &w) { open_window(hwnd, w); });
 		InvalidateRect(hwnd, nullptr, FALSE);
 		// SmartMedia に書いたものを 2 秒ごとにファイルへ書き戻す（抜いたとき・閉じたときも）
-		static DWORD last_card = 0;
-		if (GetTickCount() - last_card > 2000) {
-			last_card = GetTickCount();
-			flush_card();
-		}
+		g_win->card_tick();
 		// MIDI の輪などで溢れて捨てたものがあれば、1 秒に 1 回だけ知らせる
 		static DWORD last = 0;
 		if (g_win->eng && GetTickCount() - last > 1000) {
@@ -617,8 +357,11 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		wchar_t path[MAX_PATH * 4] = {};
 		const bool got = DragQueryFileW(drop, 0, path, UINT(sizeof(path) / sizeof(path[0]))) > 0;
 		DragFinish(drop);
-		if (got)
-			play_midi_file(hwnd, ui::to_utf8(path));
+		if (got && !g_win->play_song(ui::to_utf8(path)) && !g_win->last_error.empty()) {
+			const std::wstring w = ui::to_wide(g_win->last_error);
+			MessageBoxW(hwnd, w.c_str(), L"S-MU2000", MB_OK | MB_ICONWARNING);
+			g_win->last_error.clear();
+		}
 		return 0;
 	}
 
@@ -720,47 +463,9 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 	case WM_COMMAND: {
 		const UINT id = LOWORD(wp);
 		g_win->last_error.clear();
-		bool in_done = false;
-		for (int p = 0; p < mu2000::MIDI_PORTS && !in_done; p++) {
-			const UINT none = ID_IN_NONE + p * ID_IN_STRIDE, base = ID_IN_BASE + p * ID_IN_STRIDE;
-			if (id == none)                            { choose_in(p, -1); in_done = true; }
-			else if (id >= base && id < base + 256)    { choose_in(p, int(id - base)); in_done = true; }
-		}
-		if (in_done)                     {}
-		else if (id == ID_OUT_NONE)      choose_out(-1);
-		else if (id >= ID_OUT_BASE && id < ID_OUT_BASE + 256) choose_out(int(id - ID_OUT_BASE));
-		else if (id == ID_OUTB_NONE)     choose_out_b(-1);
-		else if (id >= ID_OUTB_BASE && id < ID_OUTB_BASE + 256) choose_out_b(int(id - ID_OUTB_BASE));
-		else if (id == ID_OUTMU_NONE)    choose_out_mu(-1);
-		else if (id >= ID_OUTMU_BASE && id < ID_OUTMU_BASE + 256) choose_out_mu(int(id - ID_OUTMU_BASE));
-		else if (id == ID_AIN_NONE)      choose_ain(-1);
-		else if (id >= ID_AIN_BASE && id < ID_AIN_BASE + 256) choose_ain(int(id - ID_AIN_BASE));
-		else if (id >= ID_CARD_NEW16 && id <= ID_CARD_NEW128) new_card(hwnd, 16u << (id - ID_CARD_NEW16));
-		else if (id == ID_CARD_OPEN) {
-			const std::string path = ask_card_path(hwnd, false);
-			if (!path.empty() && insert_card(path))
-				save_settings();
-		}
-		else if (id == ID_CARD_EJECT) { eject_card(); save_settings(); }
-		else if (id == ID_PLAY_FILE) choose_midi_file(hwnd);
-		else if (id == ID_STOP_FILE) g_win->play.stop();
-		else if (id == ID_PORTS34_FOLD || id == ID_PORTS34_DROP) {
-			g_win->play.set_fold_extra_ports(id == ID_PORTS34_FOLD);
-			save_settings();
-		}
-		else if (id == ID_NATIVE_FX)
-			g_win->eng->want_native_fx.store(g_win->eng->native_fx.load() ? 0 : 2);
-		else if (id == ID_NATIVE_ENGINE)
-			g_win->eng->want_native_engine.store(g_win->eng->native_engine.load() ? 0 : 1);
-		else if (id == ID_FACTORY) choose_factory_reset(hwnd);
-		else if (id == ID_PC_EDITOR) open_window(hwnd, g_win->pc);
-		else if (id == ID_OVERVIEW) open_window(hwnd, g_win->list);
-		else if ((id == ID_OUTPUT_DIGITAL || id == ID_OUTPUT_ANALOG) && g_win->eng) {
-			g_win->eng->analog.store(id == ID_OUTPUT_ANALOG);
-			std::printf("音の出口: %s\n", id == ID_OUTPUT_ANALOG ? "アナログ（直流を切る）" : "デジタル");
-			std::fflush(stdout);
-			save_settings();
-		}
+		// The dispatch is shared (ui::app::menu_chosen); failures land in
+		// last_error through menu_error and show below
+		g_win->menu_chosen(int(id));
 		if (!g_win->last_error.empty()) {
 			const std::wstring w = ui::to_wide(g_win->last_error);
 			MessageBoxW(hwnd, w.c_str(), L"S-MU2000", MB_OK | MB_ICONWARNING);
@@ -1102,18 +807,12 @@ int main(int argc, char **argv)
 	if (out_opts.factory)
 		std::printf("工場出荷状態で起動する（覚えていた設定は終わるときに上書きされる）\n");
 	g_win->layout_path = layout_path;
-	for (int p = 0; p < mu2000::MIDI_PORTS; p++)
-		g_win->midi[p] = &midi_ports[p];
-	g_win->mout   = &mout;
-	g_win->mout_b = &mout_b;
-	g_win->mout_mu = &mout_mu;
 	g_win->panel.resize(win_w, win_h);
 	apply_layout(layout_path, false);
 	g_win->panel.resize(win_w, win_h);
 	{
 		// VOLUME のつまみは前に閉じたときの位置から
-		ui::remembered r;
-		load_settings(r);
+		ui::remembered r = ui::app::load_remembered(settings_file_path());
 		br.set_gain(r.volume);
 		eng.analog.store(r.analog);
 		if (r.analog)
@@ -1158,12 +857,11 @@ int main(int argc, char **argv)
 		eng.publish();
 
 		// 前に選んだ口を名前で探す。--midi / --midiout があればそちらが勝つ
-		ui::remembered want;
-		load_settings(want);
+		ui::remembered want = ui::app::load_remembered(settings_file_path());
 		g_win->ain_name = want.audio_in;
 		// 前に差していた SmartMedia。ファイルが無くなっていたら差さない（覚えている名前も消える）
 		if (!want.card.empty())
-			insert_card(want.card, true);
+			g_win->insert_card(want.card, true);
 		// --audio があればそちらが勝つ。無ければ前に選んだもの
 		g_win->audio_name = out_opts.audio_dev ? std::string(out_opts.audio_dev) : want.audio_out;
 		for (int p = 0; p < mu2000::MIDI_PORTS; p++)
@@ -1182,10 +880,10 @@ int main(int argc, char **argv)
 		g_win->out_keep_b  = want.out_b;
 		g_win->out_keep_mu = want.out_mu;
 		for (int p = 0; p < mu2000::MIDI_PORTS; p++)
-			choose_in(p, in_dev[p], true);
-		choose_out(mout_dev, true);
-		choose_out_b(moutb_dev, true);
-		choose_out_mu(moutmu_dev, true);
+			g_win->choose_in(p, in_dev[p], true);
+		g_win->choose_out(mout_dev, true);
+		g_win->choose_out_b(moutb_dev, true);
+		g_win->choose_out_mu(moutmu_dev, true);
 		// 開けなかった口は、覚えていた名前も出す（選び直すまで覚えている）
 		auto show = [](const char *label, const std::string &now, const std::string &keep) {
 			if (!now.empty())
@@ -1227,7 +925,7 @@ int main(int argc, char **argv)
 			else
 				std::printf("A/D INPUT: なし（%s）\n", aerr.c_str());
 		}
-		save_settings();
+		g_win->save_settings();
 		// --play が付いていれば、鳴り始めたところで流し出す
 		if (!play_path.empty()) {
 			std::string perr;
@@ -1275,8 +973,8 @@ int main(int argc, char **argv)
 	if (boot_thread.joinable())
 		boot_thread.join();
 	g_win->join_reboot();
-	flush_card();      // 音はもう止まっている。SmartMedia に書いたものを残す
-	save_settings();   // VOLUME のつまみの位置
+	g_win->flush_card();      // 音はもう止まっている。SmartMedia に書いたものを残す
+	g_win->save_settings();   // VOLUME のつまみの位置
 	// 音はもう止まっている。起動できていたときだけ残す
 	eng.settle_for_save();
 	if (eng.state.load() == 1 && !smu2000::nvram::save(eng.mu))
