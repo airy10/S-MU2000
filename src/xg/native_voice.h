@@ -504,6 +504,15 @@ struct slot_regs {
 	void set(int reg, u16 value) { v[reg] = value; write |= u64(1) << reg; }
 };
 
+// **フィルタの第 2 段（レジスタ 0x02。上 4bit の 8 がハイパス）**。実機（0x12AFCE）は要素の
+// byte82（ドラムは記録の byte20）を 16 倍し、**パートの HPF（0A pp 20）の 24 ×（値 − 64）を足して**、
+// 0-0x7FF に収める。GrandPno（byte82 = 0）と DistGtr（0x180）で HPF を 4 通り振り、ドラムの
+// パートでも振って、実機の書いた値と全部一致した（0x60 → 0x300、0x7F → 0x5E8・0x768、低いと 0）
+inline u16 filter2_reg(int byte82, int hpf = 64)
+{
+	return u16(0x8000 | u16(std::clamp(byte82 * 16 + 24 * (hpf - 64), 0, 0x7ff)));
+}
+
 // 分かっていない所に置く値。**実機を鳴らして測った、素直な音色のときの値**で、
 // これは「式が分かっていない」という印でもある（doc/native-engine.md の 6.6）
 struct defaults {
@@ -1850,7 +1859,7 @@ inline slot_regs drum_note(const u8 *rom, const u8 *rec, int att,
 		r.set(0x00, u16(0x1000 | u16(c0)));
 	}
 	r.set(0x01, 0xffff);
-	r.set(0x02, u16(0x8000 | u16(std::min(0x7ff, int(rec[20]) * 16))));
+	r.set(0x02, filter2_reg(rec[20]));
 	r.set(0x03, d.post);
 	r.set(0x04, u16(u16(drum_rec_idx(rec, 12, reso) >> 2) << 11));
 	r.set(0x05, d.lfo_amp);
@@ -1994,7 +2003,7 @@ inline slot_regs build_note(const u8 *rom, const u8 *elem, int note, int att,
 	// 0x800 の下駄を履かせ、0x800-0xFFF に収めてから下 11bit を取る。
 	// つまり素直に byte82 * 16 で、0x7FF で頭打ち（DistGtr の 0x180、
 	// Kitayama の 0x570 が実機と一致した）
-	r.set(0x02, u16(0x8000 | u16(std::min(0x7ff, int(elem[82]) * 16))));
+	r.set(0x02, filter2_reg(elem[82]));
 	r.set(0x03, d.post);
 	// フィルタの第 2 パラメータ（共振）。byte35 から強さぶんを引いて（byte81）、
 	// 1 ビット落として 5bit にする（0x12806A）。18 音色 × 強さ 3 通りで一致
