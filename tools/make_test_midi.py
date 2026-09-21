@@ -257,6 +257,65 @@ def case_at():
     return [track(seq(ev))], 6.5
 
 
+def case_assign():
+    """**つまみの割り当て**（6 つ組）を鳴らしながら振る。
+
+    XG は「どのつまみが、音程・切る高さ・音量・LFO の音程/フィルタ/音量の
+    どれをどれだけ動かすか」を**パートごとに 6 つ組で**持っている。
+    native はここが既定から外れているパートの音を firmware に丸投げして
+    いたが、**LFO のフィルタ変調の深さ（5 番目）だけは式が分かった**ので
+    自分で鳴らす（6.191・6.192）。
+
+    ここが壊れると、モジュレーションやアフタータッチで音色を変える
+    打ち込み（珍しくない）で音が変わらない・二重に鳴る・消える。
+
+      08 pp 21  モジュレーション → LFO のフィルタ変調（native が鳴らす）
+      08 pp 1E  モジュレーション → 切る高さ（firmware に任せる）
+      08 pp 4F  アフタータッチ → 音量（firmware に任せる）
+      08 pp 53  PAT → 音程（firmware に任せる）
+    """
+    ev = head()
+    ev += [(1.0, b'\xc0\x30')]                       # Strings（伸びる音）
+    ev += note(0, 60, 100, 1.2, 1.0)                 # 1 音目。ここで写し取る
+    # --- LFO のフィルタ変調の深さ。こちらで鳴らせる
+    ev += [(2.4, xg([0x08, 0x00, 0x21, 0x40]))]
+    ev += note(0, 62, 100, 2.6, 1.4)
+    ev += [(3.0, b'\xb0\x01\x64')]                  # CC1 = 100（鳴っている音に掛かる）
+    ev += [(3.6, b'\xb0\x01\x14')]                  # CC1 = 20
+    ev += [(4.2, xg([0x08, 0x00, 0x21, 0x00]))]      # 既定に戻す
+    ev += [(4.3, b'\xb0\x01\x00')]
+    # --- 切る高さ。まだ firmware に任せる
+    ev += [(4.6, xg([0x08, 0x00, 0x1e, 0x50]))]
+    ev += note(0, 64, 100, 4.8, 1.2)
+    ev += [(5.2, b'\xb0\x01\x64')]
+    ev += [(6.1, xg([0x08, 0x00, 0x1e, 0x40]))]      # 既定に戻す
+    ev += [(6.2, b'\xb0\x01\x00')]
+    # --- アフタータッチ → 音量
+    ev += [(6.4, xg([0x08, 0x00, 0x4f, 0x50]))]
+    ev += note(0, 65, 100, 6.6, 1.0)
+    ev += [(7.0, b'\xd0\x64')]
+    ev += [(7.8, xg([0x08, 0x00, 0x4f, 0x40]))]
+    ev += [(7.9, b'\xd0\x00')]
+    # --- PAT → 音程
+    ev += [(8.0, xg([0x08, 0x00, 0x53, 0x50]))]
+    ev += note(0, 67, 100, 8.2, 1.0)
+    ev += [(8.6, b'\xa0\x43\x64')]
+    ev += [(9.4, xg([0x08, 0x00, 0x53, 0x40]))]
+    # --- モジュレーション → LFO の音程（既定は 10。6.198）
+    ev += [(9.6, xg([0x08, 0x00, 0x20, 0x40]))]
+    ev += note(0, 60, 100, 9.8, 1.6)
+    ev += [(10.2, b'\xb0\x01\x64')]
+    ev += [(11.0, b'\xb0\x01\x00')]
+    ev += [(11.4, xg([0x08, 0x00, 0x20, 0x0a]))]
+    # --- モジュレーション → LFO の音量（6.199）
+    ev += [(11.6, xg([0x08, 0x00, 0x22, 0x40]))]
+    ev += note(0, 60, 100, 11.8, 1.6)
+    ev += [(12.2, b'\xb0\x01\x64')]
+    ev += [(13.0, b'\xb0\x01\x00')]
+    ev += [(13.4, xg([0x08, 0x00, 0x22, 0x00]))]
+    return [track(seq(ev))], 14.0
+
+
 def case_sxparam():
     """エフェクトの**パラメータ**を鳴らしながら流す曲。種類は頭で 1 回決めるだけ。
     実機は種類を変えるとき MEG のプログラムを書き直して 176-212ms 掛かるが、
@@ -764,18 +823,22 @@ def case_drumnrpn():
     `drums` は SysEx の形（3n rr nn）で同じ所を触るが、**NRPN の形**は
     ここまで 1 度も送っていなかった。実際の XG の打ち込みはこちらをよく使う。
 
-    NRPN MSB が種類、LSB が鍵の番号、CC6 が値:
-      14 高さ（粗）・15 高さ（細）・16 音量・18 パン・19 リバーブ送り・1A コーラス送り"""
+    **NRPN の番号は SysEx（`3n rr pp`）と並びが違う**（6.180）:
+      14 切る高さ・15 共振・16 包絡線の立ち上がり・17 減衰・
+      18 高さ（粗）・19 高さ（細）・1A 音量・1C パン・1D リバーブ送り
+
+    14-17 は**記録のバイトをずらす**だけで、同じ値を SysEx で
+    書いても実機は計算し直さない。だから口の側で MIDI を覚える"""
     ev = head()
     t = 1.0
     for i, k in enumerate((36, 38, 42)):              # 素の音（ここで写し取る）
         ev += note(9, k, 110, t + i * 0.3, 0.1)
     t = 2.1
-    # 鍵 36 の高さを上げ、音量を下げ、左へ振り、リバーブを増やす
+    # 鍵 36 の切る高さ・立ち上がり・高さ・細かい高さを動かす
     for msb, val in ((0x14, 64 + 10), (0x16, 80), (0x18, 20), (0x19, 120)):
         ev += spread(t, nrpn_note(msb, 36, val))
         t += 0.06
-    # 鍵 38 は高さだけ下げる
+    # 鍵 38 は切る高さだけ下げる
     ev += spread(t, nrpn_note(0x14, 38, 64 - 8))
     t += 0.3
     for i, k in enumerate((36, 38, 42, 36)):
@@ -786,6 +849,15 @@ def case_drumnrpn():
         ev += spread(t, nrpn_note(msb, 36, val))
         t += 0.06
     ev += note(9, 36, 110, t + 0.3, 0.1)
+    t += 0.9
+    # **共振（15）と減衰（17）**も振る（6.180）
+    for msb, val in ((0x15, 96), (0x17, 32)):
+        ev += spread(t, nrpn_note(msb, 42, val))
+        t += 0.06
+    ev += note(9, 42, 110, t + 0.3, 0.1)
+    t += 0.9
+    ev += spread(t, nrpn_note(0x17, 42, 96))
+    ev += note(9, 42, 110, t + 0.3, 0.1)
     return [track(seq(ev))], t + 1.8
 
 
@@ -1118,6 +1190,26 @@ def case_drumrcv():
     return [track(seq(ev))], 9.5
 
 
+def case_longtone():
+    """**長く伸ばす音**（6.175）。弦・木管・金管は鍵を押してすぐには揺れず、
+    遅れのあと 20ms ごとにビブラートの深さがせり上がる。ここまでの試験は
+    短い音と揺れない音色ばかりで、この軸が丸ごと抜けていた。
+    ビブラートの遅れ・せり上がり・音量側の揺れが壊れるとここで出る。
+
+    * Violin   byte14 = 6（表引きでないと 1 ずれる）
+    * AltoSax  遅れの式が当てはまらない 3 つのうちの 1 つ
+    * Clarinet byte13 = 0（1 歩で止まる所まで行く）
+    * FrHorn   音程ではなく**音量**の揺れ（0x05）
+    """
+    ev = head()
+    t = 1.0
+    for prog in (40, 65, 71, 60):
+        ev += [(t - 0.1, bytes([0xc0, prog]))]
+        ev += note(0, 60, 100, t, 2.5)
+        t += 3.0
+    return [track(seq(ev))], t + 0.3
+
+
 CASES = {
     "piano":   case_piano,
     "chord":   case_chord,
@@ -1130,6 +1222,7 @@ CASES = {
     "egcc":    case_egcc,
     "porta":   case_porta,
     "at":      case_at,
+    "assign":  case_assign,
     "sxparam": case_sxparam,
     "pedals":  case_pedals,
     "partsx":  case_partsx,
@@ -1154,6 +1247,7 @@ CASES = {
     "fxchange": case_fxchange,
     "dialloop": case_dialloop,
     "panrnd": case_panrnd,
+    "longtone": case_longtone,
     "meter": case_meter,
     "filtcc": case_filtcc,
     "keyrange": case_keyrange,
