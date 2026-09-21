@@ -66,9 +66,11 @@ inline int eg_rate_cc_add(int base, int cc)
 	if (cc < 0 || cc == 64)
 		return base;
 	const int c = cc > 127 ? 127 : cc;
-	const int v = c < 64 ? base + (67 - c) / 4
-	                     : base - (c - 64) * 7 / 16;
-	return v < 0 ? 0 : (v > 63 ? 63 : v);
+	// **頭打ちは鍵の補正を足したあと**（6.212）。実機（`0x127338`）は
+	// `v += 声の塊 +109` してから 0-63 に収めるので、ここで先に収めると
+	// byte75 が 47 より大きい音色で CC75 を下げたときにずれる
+	return c < 64 ? base + (67 - c) / 4
+	              : base - (c - 64) * 7 / 16;
 }
 
 // **立ち上がりのつまみ（CC73）は減衰 1（0x07）も動かす**（6.157）。
