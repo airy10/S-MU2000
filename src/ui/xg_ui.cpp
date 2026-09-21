@@ -82,24 +82,44 @@ const xg_snapshot *g_current_ram = nullptr;
 namespace {
 bool g_hint_bar = false;
 std::string g_hint;
-std::string g_hidden;
+std::vector<std::string> g_values;               // begin_values から集めている点の字
+bool g_collect = false;
 }
 
-void begin_hint_bar() { g_hint_bar = true; g_hint.clear(); g_hidden.clear(); }
+void begin_hint_bar() { g_hint_bar = true; g_hint.clear(); }
 void end_hint_bar() { g_hint_bar = false; }
 bool hint_bar() { return g_hint_bar; }
 const std::string &hint_text() { return g_hint; }
 
-void hidden_value(const char *text)
+void begin_values()
 {
-	if (!g_hint_bar)
-		return;
-	if (!g_hidden.empty())
-		g_hidden += "   ";
-	for (const char *c = text; *c; c++)
-		g_hidden += *c == '\n' ? ' ' : *c;       // 2 行の字も 1 行に
+	g_values.clear();
+	g_collect = true;
 }
-const std::string &hidden_values() { return g_hidden; }
+
+std::vector<std::string> end_values()
+{
+	g_collect = false;
+	return std::move(g_values);
+}
+
+void shape_value(const char *text)
+{
+	if (!g_collect)
+		return;
+	std::string line;
+	for (const char *c = text;; c++) {          // 2 行の字は 2 行に分ける
+		if (*c == '\n' || !*c) {
+			if (!line.empty())
+				g_values.push_back(line);
+			line.clear();
+			if (!*c)
+				break;
+		} else {
+			line += *c;
+		}
+	}
+}
 
 void hint(const char *fmt, ...)
 {
@@ -339,6 +359,26 @@ const xg::param &P(const char *key)
 	return *p;
 }
 
+std::string value_text(const char *key, int v)
+{
+	const xg::param &p = P(key);
+	if (std::strstr(key, "eq") && std::strstr(key, "freq"))
+		return eq::hz_text(v) + " Hz";
+	if (!std::strncmp(key, "master_eq.q", 11)) {
+		char buf[16];
+		std::snprintf(buf, sizeof(buf), "%.1f", v / 10.0);
+		return buf;
+	}
+	return xg::format(p, v);
+}
+
+std::string param_line(const char *key, int part, xg::model &m)
+{
+	const xg::param &p = P(key);
+	int v = 0;
+	return std::string(p.label) + " : " + (m.get(p, part, v) ? value_text(key, v) : std::string("--"));
+}
+
 bool param_slider(const char *key, int part, xg::model &m, bridge &br, const char *label)
 {
 	ImGui::PushID(key);
@@ -353,18 +393,7 @@ bool param_slider(const char *key, int part, xg::model &m, bridge &br, const cha
 		return false;
 	}
 	// 書式の % は SliderInt の書式として読まれないよう重ねる
-	const bool hz = std::strstr(key, "eq") && std::strstr(key, "freq");
-	const bool q = !std::strncmp(key, "master_eq.q", 11);
-	std::string shown;
-	if (hz) {
-		shown = eq::hz_text(v) + " Hz";
-	} else if (q) {
-		char buf[16];
-		std::snprintf(buf, sizeof(buf), "%.1f", v / 10.0);
-		shown = buf;
-	} else {
-		shown = xg::format(p, v);
-	}
+	const std::string shown = value_text(key, v);
 	std::string text;
 	for (char c : shown) {
 		if (c == '%')

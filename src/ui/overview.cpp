@@ -171,10 +171,9 @@ static void point_label(ImDrawList *dl, ImVec2 p, const char *text, bool above, 
 	const float fs = ImGui::GetFontSize() * 0.75f;      // 点の字は本文より小さく
 	ImFont *font = ImGui::GetFont();
 	const ImVec2 ts = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, text);
-	if (ts.x + 4.0f > b.x - a.x || ts.y + 2.0f > b.y - a.y) {
-		hidden_value(text);                       // 窓が狭くて入らない字は出さず、下の帯に出す
-		return;
-	}
+	shape_value(text);                            // 出せても出せなくても、区画の値の一覧に
+	if (ts.x + 4.0f > b.x - a.x || ts.y + 2.0f > b.y - a.y)
+		return;                                   // 窓が狭くて入らない字は出さない
 	auto clamp_x =[&](float x) { return std::clamp(x, a.x + 2.0f, std::max(a.x + 2.0f, b.x - ts.x - 2.0f)); };
 	float x = clamp_x(p.x - ts.x * 0.5f);
 	float y = above ? p.y - fs * 0.7f - ts.y : p.y + fs * 0.7f;
@@ -208,7 +207,6 @@ static void point_label(ImDrawList *dl, ImVec2 p, const char *text, bool above, 
 			}
 		}
 		if (best >= 1000) {
-			hidden_value(text);                   // 点かほかの字にかかってしまうなら、下の帯に
 			return;
 		}
 		x = bx;
