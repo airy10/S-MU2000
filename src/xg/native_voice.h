@@ -87,6 +87,11 @@ inline int eg_dec1_cc(int base, int cc)
 	return cap < base ? cap : base;
 }
 constexpr u32 DECAY_TAB  = 0x1F4E38;   // 減衰の速さ（128 バイト）
+// **離しは別の表**（6.212）。途中までは減衰の表と同じ並びだが、
+// 速い側（目盛り 48 以上）だけ違う（減衰 95 98 100 102 104 104 108 108 112… /
+// 離し 95 95 96 96 96 96 101 101 104…）。DECAY_TAB を引いていたので、CC72 を
+// 下げ切ったときだけこちらの離しが速すぎた（Strings で 0xEC 対 0xE5）
+constexpr u32 REL_TAB    = 0x1F4EB8;   // 離しの速さ（128 バイト）
 constexpr u32 VEL_CURVE  = 0x1E5E5E;   // 強さの曲線（128 バイトの行が並ぶ。行 0 はそのまま）
 // **つまみの割り当て「音量」の表**（6.195。実機 0x12A782）。
 // |深さ - 64| を索引に引いて、値と掛けて 8 びったものを
@@ -1327,7 +1332,10 @@ inline int reso_level(const u8 *elem, int vel, int part_res = 64)
 // 違うから**：Strings1 は byte76 = 29 で つまみ 90、GrandPno は 31 で 86。
 // どちらも +112 = 3 で説明がつく
 constexpr u32 REL_RATE_CC = 0x1E54E4;   // 離しのつまみ（上げる側）の表
-constexpr int REL_RATE_OFF = 3;         // ボイスの塊 +112（測った値）
+constexpr int REL_RATE_OFF = 1;         // ボイスの塊 +112
+// **+112 は 1**（6.212）。前は 3 としていたが、実機のワーク RAM を
+// 読むと 1 だった（声の塊 +112 そのもの）。3 だとつまみ 88 以上で
+// 目盛りが 1 つ分速くなる（Strings も GrandPno も）
 
 // **立ち上がりの表の引き方**（実機の `0x1272DE`）。
 // 目盛りを 2 倍する前に **0 は 4 に直す**。
@@ -1362,7 +1370,7 @@ inline int rel_rate_cc(const u8 *rom, int base, int cc)
 inline u16 release_reg(const u8 *rom, const u8 *elem, int note, int att,
                        int cc_rel = 64)
 {
-	const int r = rom[DECAY_TAB + rate_scale(
+	const int r = rom[REL_TAB + rate_scale(
 	                  rel_rate_cc(rom, int(elem[76]), cc_rel), rate_key_corr(elem, note))];
 	return u16(((0x80 | (r & 0x7f)) << 8) | (att & 0xff));
 }
