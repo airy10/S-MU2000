@@ -201,7 +201,7 @@ public:
 		char status[320] = {};
 		if (out && out->produced())
 			std::snprintf(status, sizeof(status),
-			              "発音 %d/128  CPU %.0f%%  最悪 %.1f ms  枯渇 %llu   IN: %s   OUT: %s"
+			              "発音 %d/128  CPU %.0f%%  最悪 %.1f ms  遅れ %llu   IN: %s   OUT: %s"
 			              "   （MIDI IN A のジャックか右クリックで口を選ぶ）",
 			              s.voices_master + s.voices_slave,
 			              out->cpu_percent(), out->worst_ms(),
