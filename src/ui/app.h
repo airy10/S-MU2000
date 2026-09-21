@@ -991,11 +991,17 @@ public:
 	// the backend counted (WASAPI late(), CoreAudio starved())
 	void print_exit_stats(u64 drops)
 	{
-		if (out && out->produced())
+		if (out && out->produced()) {
 			std::printf("CPU %.1f%%、1 回の最悪 %.2f ms、間に合わなかった %llu 回\n",
 			            out->cpu_percent(), out->worst_ms(),
 			            (unsigned long long)drops);
+			print_audio_details();
+		}
 	}
+
+	// Backend details for the exit line (device format on WASAPI,
+	// hog mode on CoreAudio). Nothing shared to say: each side says its own
+	virtual void print_audio_details() = 0;
 
 	// ---- per-platform acts (thin shells implement these)
 

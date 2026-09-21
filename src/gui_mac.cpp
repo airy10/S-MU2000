@@ -112,8 +112,6 @@ public:
 	    ui::midi_out &tha, ui::midi_out &thb, ui::midi_out &muo)
 	    : ui::app(b, mi, tha, thb, muo) {}
 
-	std::string layout_path;
-
 	// ---- mac_app
 
 	void draw(void *cg, int w, int h) override
@@ -259,6 +257,11 @@ public:
 	void open_window_by_kind(int kind) override
 	{
 		open_editor_window(*ui::window_for_kind(kind, list, pc, fx, shapes, master));
+	}
+
+	void print_audio_details() override
+	{
+		std::printf("独り占め: %s\n", out->exclusive() ? "取れた" : "取れなかった");
 	}
 
 	// A file dropped on the window is played, which is what gui.cpp's

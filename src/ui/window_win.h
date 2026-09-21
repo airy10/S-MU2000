@@ -121,6 +121,11 @@ public:
 
 	void open_window_by_kind(int kind) override;
 
+	void print_audio_details() override
+	{
+		std::printf("%s\n%s\n", out->format_line().c_str(), out->latency_line().c_str());
+	}
+
 	// ui::app hooks: file dialogs, confirmations and error display are
 	// Win32's business (ui/window_win.h), everything they decide is shared
 	std::string settings_path() const override { return settings_file_path(); }

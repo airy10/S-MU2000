@@ -117,9 +117,9 @@ int main(int argc, char **argv)
 	static ui::bridge br;
 	static ui::midi_in  midi_ports[mu2000::MIDI_PORTS];
 	static ui::midi_out mout, mout_b, mout_mu;
-	static win_app app(br, midi_ports, mout, mout_b, mout_mu);
-	g_win = &app;
-	g_win->keep_settings = a.nomidi;
+	static win_app gui(br, midi_ports, mout, mout_b, mout_mu);
+	g_win = &gui;
+	gui.keep_settings = a.nomidi;
 
 	// 絵だけ欲しい場合。ROM が無くても中身が空の画面は出せる
 	if (!a.shot_path.empty() && (a.dir.empty() || !a.boot_for_shot)) {
@@ -147,11 +147,11 @@ int main(int argc, char **argv)
 	}
 
 	static engine eng(br, midi_ports[0]);
-	g_win->wire_engine(eng, eng_opts);
-	g_win->eng = &eng;
-	if (!g_win->load_machine(eng, a))
+	gui.wire_engine(eng, eng_opts);
+	gui.eng = &eng;
+	if (!gui.load_machine(eng, a))
 		return 1;
-	const int shot = g_win->run_boot_shot(eng, br, a, win_opts);
+	const int shot = gui.run_boot_shot(eng, br, a, win_opts);
 	if (shot >= 0)
 		return shot;
 	// ---- 窓を出す
@@ -180,19 +180,19 @@ int main(int argc, char **argv)
 	DragAcceptFiles(hwnd, TRUE);
 	ui::pc_window::set_drop_handler(play_dropped_file);
 
-	g_win->eng  = &eng;
-	g_win->setup_for_window(a, win_opts, out_opts.factory);
+	gui.eng  = &eng;
+	gui.setup_for_window(a, win_opts, out_opts.factory);
 
 	eng.publish();
 	ShowWindow(hwnd, SW_SHOW);
-	g_win->open_startup_windows(win_opts);
+	gui.open_startup_windows(win_opts);
 	UpdateWindow(hwnd);
 
 	// 起動は別スレッド。終わったら音を出し始める
 	static ui::audio_out out;
-	g_win->out = &out;
+	gui.out = &out;
 	static ui::audio_in ain;
-	g_win->ain = &ain;
+	gui.ain = &ain;
 	eng.ain = &ain;
 	std::thread boot_thread([&] {
 		if (!eng.boot()) {
@@ -201,24 +201,24 @@ int main(int argc, char **argv)
 			return;
 		}
 		// 起動が終わってから入れる（起動には firmware が要る）
-		g_win->apply_native_engine(eng, eng_opts);
+		gui.apply_native_engine(eng, eng_opts);
 		eng.state.store(1);
 		eng.publish();
 
 		// 前に選んだ口を名前で探す。--midi / --midiout があればそちらが勝つ
-		g_win->open_remembered_ports(a, out_opts);
+		gui.open_remembered_ports(a, out_opts);
 
 		std::string err;
 
-		if (!g_win->start_audio(a.latency, out_opts.exclusive))
+		if (!gui.start_audio(a.latency, out_opts.exclusive))
 			return;
 		std::printf("音声の出口: %s\n%s\n", out.device_name().c_str(),
 		            out.format_line().c_str());
 		// A/D INPUT。前に選んだ録音デバイスがあれば開く（開けなくても名前は覚えておく）
-		g_win->start_ad();
+		gui.start_ad();
 		// --play が付いていれば、鳴り始めたところで流し出す
 		if (!a.play_path.empty())
-			g_win->play_song(a.play_path);
+			gui.play_song(a.play_path);
 		std::printf("鳴らしている（待ち時間 %.1f ms、MMCSS %s）\n",
 		            1000.0 * out.buffer_frames() / RATE,
 		            out.mmcss() ? "登録できた" : "登録できない（途切れやすい）");
@@ -233,8 +233,7 @@ int main(int argc, char **argv)
 
 	if (boot_thread.joinable())
 		boot_thread.join();
-	g_win->shutdown();
-	g_win->print_exit_stats(out.late());
-	std::printf("%s\n%s\n", out.format_line().c_str(), out.latency_line().c_str());
+	gui.shutdown();
+	gui.print_exit_stats(out.late());
 	return 0;
 }
