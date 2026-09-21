@@ -1,5 +1,10 @@
 # Linux GUI porting plan (SDL3 + Cairo)
 
+> **Not maintained by the repository owner.** The Linux GUI and plug-ins were contributed by
+> spessasus in PR #33. The maintainer does not use Linux and **cannot test, support, or take
+> responsibility for them**. Use at your own risk; reports and fixes from Linux users are welcome.
+> （作者は Linux を使っておらず、この部分の動作確認・保守・責任は負えない。自己責任で。）
+
 Goal: `build/gui` on Linux — the same front-panel window, port menus, card
 slot, MIDI file drop/play, PC editor windows (F2/F3), `--shot`, and then real
 X11 editor views in the VST3/CLAP plug-ins. The engine half is already shared

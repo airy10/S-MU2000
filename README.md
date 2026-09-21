@@ -291,6 +291,15 @@ Windows は MSYS2 / MinGW-w64 の g++、macOS は Apple の clang++、Linux は 
 
 ### Linux で作る
 
+> **Linux の画面とプラグインについて（PR [#33](https://github.com/tarboh/S-MU2000/pull/33)）**
+> Linux の `gui`・VST3・CLAP は spessasus さんの寄稿で、作者は Linux を使っておらず、
+> 動作を確かめることも、面倒を見ることも、**責任を取ることもできない**。使うのは自己責任で。
+> 不具合の報告や直しは、Linux を使っている人からの issue・PR を歓迎する。
+>
+> **Linux GUI and plug-ins (PR #33).** These were contributed by spessasus. The maintainer does not use
+> Linux and **cannot test, support, or take responsibility for them**. Use them at your own risk.
+> Reports and fixes from Linux users are welcome.
+
 Debian/Ubuntu では次を、Arch ではその下のを入れる。
 
 ```

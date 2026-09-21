@@ -1,5 +1,10 @@
 # Linux GUI + plug-ins
 
+> **Not maintained by the repository owner.** The Linux GUI and plug-ins were contributed by
+> spessasus in PR #33. The maintainer does not use Linux and **cannot test, support, or take
+> responsibility for them**. Use at your own risk; reports and fixes from Linux users are welcome.
+> （作者は Linux を使っておらず、この部分の動作確認・保守・責任は負えない。自己責任で。）
+
 The headless core (tools, `live`) is upstream's: [doc/linux.md](linux.md)
 (issue #25) covers the platform setup, `build-linux/`, and ALSA audio/MIDI.
 This file covers what sits on top: the SDL3 window (`build-linux/gui`) and
