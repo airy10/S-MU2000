@@ -52,6 +52,11 @@ enum plug_key {
 	PLUG_KEY_AUDITION,
 	PLUG_KEY_SELECT,
 	PLUG_KEY_SAMPLING_MODE,
+	// Not panel buttons: these open the PC windows, the way F3 and F2 do
+	// in gui.exe. The view turns them into plug_window::open_* instead of
+	// a mu2000::button
+	PLUG_KEY_LIST,
+	PLUG_KEY_EDITOR,
 };
 
 // A real window on the host's platform, holding the panel
@@ -85,6 +90,11 @@ public:
 	// right-click menu. Called from the GUI thread at the panel's repaint
 	// rate; does nothing while no window is visible
 	virtual void pc_frame(::xg::model &, const ::ui::xg_snapshot &, ::ui::bridge &) {}
+
+	// Open one of those windows from a key (F3 / F2). Platforms without
+	// PC windows leave these alone
+	virtual void open_list() {}
+	virtual void open_editor() {}
 };
 
 // The platform type string this build answers to: kPlatformTypeHWND on

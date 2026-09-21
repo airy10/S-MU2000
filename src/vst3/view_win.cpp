@@ -82,6 +82,9 @@ int plug_key_of(WPARAM vk)
 	case 'Z': return PLUG_KEY_AUDITION;
 	case 'X': return PLUG_KEY_SELECT;
 	case 'M': return PLUG_KEY_SAMPLING_MODE;
+	// gui.exe と同じ割り当て。パネルのボタンではなく窓を開く
+	case VK_F3: return PLUG_KEY_LIST;
+	case VK_F2: return PLUG_KEY_EDITOR;
 	default: break;
 	}
 	return PLUG_KEY_NONE;
@@ -102,6 +105,8 @@ public:
 	void card_menu(int x, int y) override;
 	void alert(const std::string &text) override;
 	void pc_frame(::xg::model &m, const ::ui::xg_snapshot &ram, ::ui::bridge &br) override;
+	void open_list() override { open_pc(m_list); }
+	void open_editor() override { open_pc(m_editor); }
 
 private:
 	static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp);

@@ -319,6 +319,16 @@ void plug_view::wheel(int x, int y, int steps)
 
 void plug_view::key(int code, bool down)
 {
+	// 窓を開くキーはパネルのボタンでは無いので、押したときだけ見る
+	if (code == PLUG_KEY_LIST || code == PLUG_KEY_EDITOR) {
+		if (down && m_window) {
+			if (code == PLUG_KEY_LIST)
+				m_window->open_list();
+			else
+				m_window->open_editor();
+		}
+		return;
+	}
 	bool ok = false;
 	const mu2000::button b = button_of(code, ok);
 	if (ok)
