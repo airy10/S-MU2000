@@ -69,8 +69,8 @@ inline void load_model(xg::model &m, const xg_snapshot &ram, u64 now_ms)
 	for (int p = 0; p < XG_PARTS; p++) {
 		m.load(xg::pack(0x08, u8(p), 0x00), ram.parts[p], xg::ram::PART_XG_SIZE, now_ms);
 		m.load(xg::pack(0x08, u8(p), xg::ram::PART_EQ_XG), ram.parts[p] + xg::ram::PART_EQ_RAM, xg::ram::PART_EQ_SIZE, now_ms);
-		m.load(xg::pack(0x08, u8(p), xg::ram::PART_PORTA_XG), ram.parts[p] + xg::ram::PART_PORTA_RAM,
-		       xg::ram::PART_PORTA_SIZE, now_ms);
+		m.load(xg::pack(0x08, u8(p), xg::ram::PART_EXT_XG), ram.parts[p] + xg::ram::PART_EXT_RAM,
+		       xg::ram::PART_EXT_SIZE, now_ms);
 		m.load(xg::pack(xg::ram::PART_HPF_HI, u8(p), xg::ram::PART_HPF_XG), ram.parts[p] + xg::ram::PART_HPF_RAM, 1, now_ms);
 	}
 	for (int n = 0; n < 4; n++) {
@@ -94,8 +94,8 @@ inline const u8 *locate_byte(const xg_snapshot &ram, u8 hi, u8 mid, u8 lo)
 			return ram.parts[mid] + lo;
 		if (lo >= xg::ram::PART_EQ_XG && lo < xg::ram::PART_EQ_XG + xg::ram::PART_EQ_SIZE)
 			return ram.parts[mid] + xg::ram::PART_EQ_RAM + (lo - xg::ram::PART_EQ_XG);
-		if (lo >= xg::ram::PART_PORTA_XG && lo < xg::ram::PART_PORTA_XG + xg::ram::PART_PORTA_SIZE)
-			return ram.parts[mid] + xg::ram::PART_PORTA_RAM + (lo - xg::ram::PART_PORTA_XG);
+		if (lo >= xg::ram::PART_EXT_XG && lo < xg::ram::PART_EXT_XG + xg::ram::PART_EXT_SIZE)
+			return ram.parts[mid] + xg::ram::PART_EXT_RAM + (lo - xg::ram::PART_EXT_XG);
 		return nullptr;
 	}
 	if (hi == xg::ram::PART_HPF_HI && mid < XG_PARTS && lo == xg::ram::PART_HPF_XG)
@@ -186,10 +186,8 @@ inline std::vector<u8> setup_messages(const xg_snapshot &ram)
 		const u8 *eq = ram.parts[p] + xg::ram::PART_EQ_RAM;
 		for (int k : { 0, 1, 4, 5 })
 			change(0x08, u8(p), u8(xg::ram::PART_EQ_XG + k), eq + k, 1);
-		// ポルタメント・ピッチ EG・HPF も 1 つずつのパラメータチェンジで
-		const u8 *porta = ram.parts[p] + xg::ram::PART_PORTA_RAM;
-		for (u32 k = 0; k < xg::ram::PART_PORTA_SIZE; k++)
-			change(0x08, u8(p), u8(xg::ram::PART_PORTA_XG + k), porta + k, 1);
+		// 41-6E（スケールチューニング〜ベロシティの範囲）は塊のダンプで、HPF は 1 つだけ
+		bulk(0x08, u8(p), u8(xg::ram::PART_EXT_XG), ram.parts[p] + xg::ram::PART_EXT_RAM, int(xg::ram::PART_EXT_SIZE));
 		change(xg::ram::PART_HPF_HI, u8(p), xg::ram::PART_HPF_XG, ram.parts[p] + xg::ram::PART_HPF_RAM, 1);
 	}
 	return out;
@@ -289,10 +287,10 @@ inline std::vector<u8> setup_diff_messages(const xg_snapshot &ram, const xg_snap
 			if (now[lo] != was[lo])
 				change(0x08, u8(p), u8(lo), now + lo, 1);
 		}
-		for (u32 k = 0; k < xg::ram::PART_PORTA_SIZE; k++) {
-			const u32 at = xg::ram::PART_PORTA_RAM + k;
+		for (u32 k = 0; k < xg::ram::PART_EXT_SIZE; k++) {
+			const u32 at = xg::ram::PART_EXT_RAM + k;
 			if (now[at] != was[at])
-				change(0x08, u8(p), u8(xg::ram::PART_PORTA_XG + k), now + at, 1);
+				change(0x08, u8(p), u8(xg::ram::PART_EXT_XG + k), now + at, 1);
 		}
 		if (now[xg::ram::PART_HPF_RAM] != was[xg::ram::PART_HPF_RAM])
 			change(xg::ram::PART_HPF_HI, u8(p), xg::ram::PART_HPF_XG, now + xg::ram::PART_HPF_RAM, 1);

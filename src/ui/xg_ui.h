@@ -93,7 +93,8 @@ inline constexpr part_group PART_GROUPS[] = {
 	{ "音色",             { "part.bank_msb", "part.bank_lsb", "part.program", "part.mode", "part.element_reserve" } },
 	{ "音量と送り",       { "part.volume", "part.pan", "part.dry_level", "part.reverb_send", "part.chorus_send", "part.variation_send" } },
 	{ "受信と発音",       { "part.rcv_channel", "part.mono_poly", "part.key_assign", "part.note_low", "part.note_high",
-	                        "part.note_shift", "part.detune", "part.vel_depth", "part.vel_offset" } },
+	                        "part.note_shift", "part.detune", "part.vel_depth", "part.vel_offset",
+	                        "part.vel_limit_low", "part.vel_limit_high" } },
 	{ "フィルタと EG",    { "part.cutoff", "part.resonance", "part.hpf_cutoff", "part.attack", "part.decay", "part.release" } },
 	{ "ピッチ EG",        { "part.peg_init_level", "part.peg_attack_time", "part.peg_rel_level", "part.peg_rel_time" } },
 	{ "ポルタメント",     { "part.porta_switch", "part.porta_time" } },
@@ -101,6 +102,10 @@ inline constexpr part_group PART_GROUPS[] = {
 	{ "パートの EQ",      { "part.eq_bass_gain", "part.eq_bass_freq", "part.eq_treble_gain", "part.eq_treble_freq" } },
 	{ "モジュレーション", { "part.mw_pitch", "part.mw_filter", "part.mw_amp", "part.mw_lfo_pmod", "part.mw_lfo_fmod", "part.mw_lfo_amod" } },
 	{ "ピッチベンド",     { "part.bend_pitch", "part.bend_filter", "part.bend_amp", "part.bend_lfo_pmod", "part.bend_lfo_fmod", "part.bend_lfo_amod" } },
+	{ "チャンネルアフタータッチ", { "part.cat_pitch", "part.cat_filter", "part.cat_amp", "part.cat_lfo_pmod", "part.cat_lfo_fmod", "part.cat_lfo_amod" } },
+	{ "ポリアフタータッチ", { "part.pat_pitch", "part.pat_filter", "part.pat_amp", "part.pat_lfo_pmod", "part.pat_lfo_fmod", "part.pat_lfo_amod" } },
+	{ "AC1",              { "part.ac1_cc", "part.ac1_pitch", "part.ac1_filter", "part.ac1_amp", "part.ac1_lfo_pmod", "part.ac1_lfo_fmod", "part.ac1_lfo_amod" } },
+	{ "AC2",              { "part.ac2_cc", "part.ac2_pitch", "part.ac2_filter", "part.ac2_amp", "part.ac2_lfo_pmod", "part.ac2_lfo_fmod", "part.ac2_lfo_amod" } },
 };
 
 // 値の棒 1 本。表示は層の書式（xg::format）で、ダブルクリックか Ctrl+クリックで数を打てる。

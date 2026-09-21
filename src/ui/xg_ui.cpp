@@ -881,6 +881,20 @@ const help_text HELP[] = {
 	{ "part.peg_rel_time", {
 		"ピッチ EG のリリース。鍵盤を離してから、リリースレベルの音程へ移るまでの時間",
 		"Pitch EG release time: how long the pitch takes to reach the release level after key-off." } },
+	{ "part.vel_limit_low", {
+		"このパートが鳴る強さ（ベロシティ）の下限。これより弱く弾いた音は鳴らない",
+		"Lowest velocity this part plays. Softer notes are not played." } },
+	{ "part.vel_limit_high", {
+		"このパートが鳴る強さ（ベロシティ）の上限。これより強く弾いた音は鳴らない。\n"
+		"同じチャンネルの 2 つのパートで範囲を分けると、強さで音色を切り替えられる",
+		"Highest velocity this part plays. Harder notes are not played.\n"
+		"Splitting the range between two parts on the same channel switches voices by velocity." } },
+	{ "part.ac1_cc", {
+		"AC1 に使うコントロールチェンジの番号（0-95）。下の AC1 の効き先がこの CC で動く",
+		"Control change number used as AC1 (0-95). The AC1 settings below respond to it." } },
+	{ "part.ac2_cc", {
+		"AC2 に使うコントロールチェンジの番号（0-95）。下の AC2 の効き先がこの CC で動く",
+		"Control change number used as AC2 (0-95). The AC2 settings below respond to it." } },
 	{ "part.porta_switch", {
 		"ポルタメント（CC65）。ON で、次の音へ音程が滑らかに移る。ドラムのパートでは使えない",
 		"Portamento (CC65). When ON, the pitch glides into the next note. Not available on drum parts." } },
@@ -985,12 +999,49 @@ void ensure_loaded()
 		load_settings();
 }
 
+// 操作の源（モジュレーションホイール・ピッチベンド・アフタータッチ・AC1・AC2）ごとに 6 つずつ並ぶ
+// 「効き先」の説明は、源と効き先の 2 つの表から組み立てる（part.ac1_filter なら AC1 × フィルタ）
+const char *source_help(const char *name)
+{
+	struct part_of { const char *key; const char *ja; const char *en; };
+	static const part_of SOURCES[] = {
+		{ "part.mw_",   "モジュレーションホイール（CC1）", "The modulation wheel (CC1)" },
+		{ "part.bend_", "ピッチベンド",                     "Pitch bend" },
+		{ "part.cat_",  "チャンネルアフタータッチ（鍵盤を押し込む強さ。チャンネルに 1 つ）",
+		                "Channel aftertouch (pressure on the keys, one value per channel)" },
+		{ "part.pat_",  "ポリアフタータッチ（鍵ごとの押し込む強さ）", "Polyphonic aftertouch (pressure per key)" },
+		{ "part.ac1_",  "AC1（AC1 CC No で決めたコントロールチェンジ）", "AC1 (the control change chosen by AC1 CC No)" },
+		{ "part.ac2_",  "AC2（AC2 CC No で決めたコントロールチェンジ）", "AC2 (the control change chosen by AC2 CC No)" },
+	};
+	static const part_of TARGETS[] = {
+		{ "pitch",    "で音程を動かす幅。±24 半音", " moves the pitch by this many semitones (±24)." },
+		{ "filter",   "でフィルタのカットオフを動かす量。＋なら上げるほど開き、−なら上げるほど閉じる",
+		              " moves the filter cutoff by this much. With + raising it opens the filter, with - it closes it." },
+		{ "amp",      "で音量を動かす量。＋なら上げるほど大きく、−なら上げるほど小さく", " changes the volume by this much. With + raising it gets louder, with - quieter." },
+		{ "lfo_pmod", "でビブラート（音程の揺れ）を深くする量", " adds this much vibrato (pitch wobble)." },
+		{ "lfo_fmod", "でフィルタの揺れ（ワウ）を深くする量", " adds this much filter wobble." },
+		{ "lfo_amod", "でトレモロ（音量の揺れ）を深くする量", " adds this much tremolo (volume wobble)." },
+	};
+	static std::string text;
+	for (const part_of &s : SOURCES) {
+		const size_t n = std::strlen(s.key);
+		if (std::strncmp(name, s.key, n))
+			continue;
+		for (const part_of &t : TARGETS)
+			if (!std::strcmp(name + n, t.key)) {
+				text = g_lang == 1 ? std::string(s.en) + t.en : std::string(s.ja) + t.ja;
+				return text.c_str();
+			}
+	}
+	return nullptr;
+}
+
 const char *find_help(const char *name)
 {
 	for (const help_text &h : HELP)
 		if (!std::strcmp(h.name, name))
 			return h.text[g_lang] ? h.text[g_lang] : h.text[0];
-	return nullptr;
+	return source_help(name);
 }
 
 } // namespace

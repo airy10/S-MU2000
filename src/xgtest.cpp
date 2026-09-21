@@ -413,6 +413,9 @@ int main(int argc, char **argv)
 			set({ 0x08, part, 0x6c, 0x22 });
 			set({ 0x0a, part, 0x20, 0x55 - part });
 			set({ 0x08, part, 0x72, 0x46 });
+			set({ 0x08, part, 0x43, 0x50 });            // スケールチューニング・AC1・ベロシティの範囲
+			set({ 0x08, part, 0x5b, 0x30 + part });
+			set({ 0x08, part, 0x6d, 0x20 });
 			set({ 0x08, part, 0x76, 0x10 });
 		}
 		set({ 0x08, 0x09, 0x07, 0x04 });                // パート 10 を DRUMS3
@@ -505,8 +508,8 @@ int main(int argc, char **argv)
 					cmp(from.effect + i, to.effect + i, 1, "エフェクトの RAM +", -1, i);
 			for (int p = 0; p < XG_PARTS; p++) {
 				cmp(from.parts[p], to.parts[p], xg::ram::PART_XG_SIZE, "08", p, 0);
-				cmp(from.parts[p] + xg::ram::PART_PORTA_RAM, to.parts[p] + xg::ram::PART_PORTA_RAM,
-				    xg::ram::PART_PORTA_SIZE, "08", p, xg::ram::PART_PORTA_XG);
+				cmp(from.parts[p] + xg::ram::PART_EXT_RAM, to.parts[p] + xg::ram::PART_EXT_RAM,
+				    xg::ram::PART_EXT_SIZE, "08", p, xg::ram::PART_EXT_XG);
 				cmp(from.parts[p] + xg::ram::PART_HPF_RAM, to.parts[p] + xg::ram::PART_HPF_RAM, 1, "0A", p, xg::ram::PART_HPF_XG);
 				for (int k : { 0, 1, 4, 5 })
 					cmp(from.parts[p] + xg::ram::PART_EQ_RAM + k, to.parts[p] + xg::ram::PART_EQ_RAM + k, 1, "08", p,

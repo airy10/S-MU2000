@@ -93,10 +93,12 @@ constexpr u32 PART_XG_SIZE = 0x29;  // 08 pp 00-28
 constexpr u32 PART_SCALE_XG  = 0x41;
 constexpr u32 PART_SCALE_RAM = 0x3a;
 constexpr u32 PART_SCALE_SIZE = 12;
-// **ポルタメントとピッチ EG**（08 pp 67-6C）。ワーク RAM では塊の +0x60 から 6 バイト
-constexpr u32 PART_PORTA_XG   = 0x67;
-constexpr u32 PART_PORTA_RAM  = 0x60;
-constexpr u32 PART_PORTA_SIZE = 6;
+// **08 pp 41-6E**（スケールチューニング・アフタータッチ・AC1・AC2・ポルタメント・ピッチ EG・
+// ベロシティの範囲）。ワーク RAM では塊の +0x3A から、XG の番地の順にそのまま 46 バイト。
+// 1 つずつ書いて RAM の変わった所で確かめた（41 → +3A、4D → +46、59 → +52、67 → +60、6E → +67）
+constexpr u32 PART_EXT_XG   = 0x41;
+constexpr u32 PART_EXT_RAM  = 0x3a;
+constexpr u32 PART_EXT_SIZE = 0x2e;
 // **HPF の切る高さ**（0A pp 20。パートの塊の番地は 08 ではなく 0A）。塊の +0x78
 constexpr u32 PART_HPF_HI  = 0x0a;
 constexpr u32 PART_HPF_XG  = 0x20;
@@ -178,13 +180,8 @@ inline bool locate(u32 addr, u32 &off)
 		off = part_base(mid) + lo;
 		return true;
 	}
-	if (hi == 0x08 && mid < 32 && lo >= PART_SCALE_XG &&
-	    lo < PART_SCALE_XG + PART_SCALE_SIZE) {
-		off = part_base(mid) + PART_SCALE_RAM + (lo - PART_SCALE_XG);
-		return true;
-	}
-	if (hi == 0x08 && mid < 32 && lo >= PART_PORTA_XG && lo < PART_PORTA_XG + PART_PORTA_SIZE) {
-		off = part_base(mid) + PART_PORTA_RAM + (lo - PART_PORTA_XG);
+	if (hi == 0x08 && mid < 32 && lo >= PART_EXT_XG && lo < PART_EXT_XG + PART_EXT_SIZE) {
+		off = part_base(mid) + PART_EXT_RAM + (lo - PART_EXT_XG);
 		return true;
 	}
 	if (hi == PART_HPF_HI && mid < 32 && lo == PART_HPF_XG) {
