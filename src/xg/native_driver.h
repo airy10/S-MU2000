@@ -1187,6 +1187,8 @@ public:
 		           int(b[ram::PART_EQ_LFREQ]), int(b[ram::PART_EQ_HFREQ]));
 	}
 	int part_bri(int part) const  { return m_ram ? int(m_ram[ram::part_base(part) + 0x18]) : 64; }
+	// パートの塊の 1 バイト（無ければ 64）
+	int part_ram(int part, u32 off) const { return m_ram ? int(m_ram[ram::part_base(part) + off]) : 64; }
 	// パートの HPF（0A pp 20。64 が音色のまま）
 	int part_hpf(int part) const  { return m_ram ? int(m_ram[ram::part_base(part) + ram::PART_HPF_RAM]) : 64; }
 	int part_res(int part) const  { return m_ram ? int(m_ram[ram::part_base(part) + 0x19]) : 64; }
@@ -2804,7 +2806,7 @@ public:
 			                                  + assign_cents(part, note),
 			                                  pvel, pc.atk, pc.dec,
 			                                  pc.vrate, pc.vdep, wnote, note,
-			                                  pc.soft);
+			                                  pc.soft, part_ram(part, 0x62), part_ram(part, 0x63));
 			if (c->synth)
 				apply_part_eq(sr, part);
 			// 音程の包絡線の行き先（byte31）。初めの高さと同じなら書かない

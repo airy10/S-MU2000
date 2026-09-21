@@ -684,6 +684,20 @@ inline int peg_cents(const u8 *elem, int level, int vel)
 	return d > 0 ? v : -v;
 }
 
+// **パートの初めの高さ**（08 pp 69）のずらし。要素の高さ（0-127）に足すのではなく、
+// **目盛りを ±半オクターブ（byte21 = 1）に固定して別に音程へ直し、足す**。
+// SquareLd（素の高さ 0 ＝ -256）で +63 が +256、GrandPno（素 64）で +63 が +512 と、
+// どちらも実機の書いた 0x10 に一致（6.214）
+inline int part_peg_cents(int value)
+{
+	if (value == 64)
+		return 0;
+	u8 unit[84] = {};
+	unit[21] = 1;                 // 目盛り: ±半オクターブ
+	unit[22] = 64;                // 強さは効かせない
+	return peg_cents(unit, value, 100);
+}
+
 // 速さの**鍵追従**（実機の `0x12BC72`）。byte24 が深さ、byte25 が折れ点。
 // SquareLd（byte24=62・byte25=60）は鍵 60 で 63（即到達）、鍵 72 で 61、
 // 鍵 84 で 60 になり、実機とぴったり合った
@@ -1966,7 +1980,8 @@ inline slot_regs build_note(const u8 *rom, const u8 *elem, int note, int att,
                             const defaults &d = defaults(), int cents_extra = 0,
                             int vel = 100, int cc_atk = 64, int cc_dec = 64,
                             int cc_vrate = 64, int cc_vdep = 64, int wnote = -1,
-                            int knote = -1, bool soft = false)
+                            int knote = -1, bool soft = false,
+                            int part_peg_init = 64, int part_peg_atk = 64)
 {
 	slot_regs r;
 	// **移調・ノートシフト・粗調は「鍵の曲線」には効かない**（6.172）。
@@ -2039,9 +2054,17 @@ inline slot_regs build_note(const u8 *rom, const u8 *elem, int note, int att,
 	r.set(0x0a, u16(((((elem[9] ? 0x40 : 0) | (lrate & 0x3f)) << 8))
 	                | u16(plfo & 0xff)));
 	// 音程の包絡線。速さが 127（即到達）のときだけ初めの高さは byte31 を使う
-	const int prate = peg_rate_reg(rom, elem, kn, vel, 64, cc_atk);
+	// **パートのピッチ EG**（XG の 08 pp 69・6A ＝ ワーク RAM の +0x62・+0x63。6.214）。
+	// アタックの時間は、素の速さの目盛りを**立ち上がりのつまみと同じ表**（eg_rate_cc）で
+	// 動かす: 64 より上は表の値で頭打ち（遅く）、下は足す（速く。63 で止まる）。
+	// だから素が即到達（63）の音色では、下げても何も変わらない。
+	// 初めの高さは素の byte30 にずらし量を足す
+	const int praw = part_peg_atk == 64 ? int(elem[26]) : eg_rate_cc(rom, int(elem[26]), part_peg_atk);
+	const int prate = peg_rate_reg_raw(rom, elem, praw, kn, vel, 64, cc_atk);
 	r.set(0x0b, u16(prate << 8));
-	r.set(0x10, peg_reg(rom, peg_cents(elem, prate == 127 ? elem[31] : elem[30], vel), elem));
+	r.set(0x10, peg_reg(rom, prate == 127 ? peg_cents(elem, elem[31], vel)
+	                                      : peg_cents(elem, elem[30], vel) + part_peg_cents(part_peg_init),
+	                   elem));
 
 	// --- 包絡線（doc/native-engine.md の 6.3・6.4）
 	//

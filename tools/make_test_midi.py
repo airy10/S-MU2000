@@ -1499,6 +1499,28 @@ def case_xgpeg():
     return [track(seq(ev))], t + 1.0
 
 
+def case_xgpegatk():
+    """**音程の包絡線の出だし**（XG の `08 pp 69`・`6A` ＝ ワーク RAM の +0x62・+0x63。6.214）。
+
+    xgpeg は離し（6B・6C）だけで、出だしの 2 つは native が読んでいなかった
+    （鍵を押すときに 64 を渡していた）。アタックの時間は素の速さを立ち上がりのつまみと
+    同じ表で動かすので、素が即到達（63）の GrandPno では 64 より上でだけ効く。
+    SquareLd は素の速さが鍵で動く音色。
+    """
+    ev = head()
+    ev += [(1.0, bytes([0xc0, 0])), (1.0, bytes([0xc1, 80]))]     # GrandPno / SquareLd
+    ev += note(0, 60, 100, 1.2, 0.5)                  # 1 音目。ここで写し取る
+    ev += note(1, 60, 100, 1.8, 0.5)
+    t = 2.6
+    for init, atk in ((0x7f, 0x60), (0x00, 0x50), (0x60, 0x30), (0x20, 0x7f), (0x40, 0x40)):
+        for ch in (0, 1):
+            ev += [(t, xg([0x08, ch, 0x69, init])), (t, xg([0x08, ch, 0x6a, atk]))]
+        ev += note(0, 62, 100, t + 0.2, 0.5)
+        ev += note(1, 62, 100, t + 0.8, 0.5)
+        t += 1.4
+    return [track(seq(ev))], t + 1.0
+
+
 def case_xghpf():
     """**パートの HPF**（`0A pp 20`。パートの塊の番地は 08 ではなく 0A）。
 
@@ -1625,6 +1647,7 @@ CASES = {
     "ctlrest": case_ctlrest,
     "xgpeg":   case_xgpeg,
     "xghpf":   case_xghpf,
+    "xgpegatk": case_xgpegatk,
     "xgsys":   case_xgsys,
 }
 
