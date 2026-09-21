@@ -1764,7 +1764,11 @@ private:
 		int v = int(base & 0xfff);
 		if (now >= 0 && now != 64)
 			v += nv::bright_shift(now);
-		v = v < 0 ? 0 : (v > 0xfff ? 0xfff : v);
+		// **頭は 0x7ff**（6.212）。実機は0x800 の下騄を履いたまま
+		// 0xfff で止めるので、こちらでは0x7ff で止めるのと同じ。
+		// 0xfff で止めていたので、明るさを上げて共振も深いと（`cutoff_cap` が
+		// 通らない）`0xa3f` のような 12 ビットの値を書いて、音が丸ごと壊れていた
+		v = v < 0 ? 0 : (v > 0x7ff ? 0x7ff : v);
 		// **LFO の揺れはここ**（6.189）。実機（0x127E82）も
 		// 鍵の追従を足して頭打ちしたあと、頭打ちの前に足す。
 		//
@@ -3397,8 +3401,14 @@ private:
 		const int rate = nv::peg_rate_reg_raw(m_rom, e, raw, s.keynote, s.pvel,
 		                                      64, rel < 0 ? 64 : rel);
 		m_poke(u32(i) * 64 + 0x0b, u16(rate << 8));
+		// **行き先は byte34 にパートの +0x64 を足す**（6.212）。
+		// XG の `08 pp 6B`。見ていなかったので、そこを動かした曲で
+		// 離したあとの音程が丸ごと違っていた
+		int lv = int(e[34]) + (int(b[0x64]) - 64);
+		if (lv < 0) lv = 0;
+		if (lv > 127) lv = 127;
 		m_poke(u32(i) * 64 + 0x10,
-		       nv::peg_reg(m_rom, nv::peg_cents(e, int(e[34]), s.pvel), e));
+		       nv::peg_reg(m_rom, nv::peg_cents(e, lv, s.pvel), e));
 	}
 
 	void peg_advance(int i)
