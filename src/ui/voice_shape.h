@@ -191,6 +191,27 @@ inline amp_line amp_run(const u8 *rom, const u8 *el, const u8 *part, float keyof
 	int mode = (atk & 0xff) ? 0 : 1;            // 0 立ち上がり、1 減衰 1、2 減衰 2、3 離し
 	double ms = 0;
 	line.pts.push_back({ 0, att_db(level) });
+	// 立ち上がりは、減衰量 512 ごとの帯で速さが決まる（`(減衰量 >> 9) << 2`）。はじめの方は
+	// 1 サンプルで 127 も進むので、128 サンプルずつでは一跳びで着いてしまう。帯ごとに
+	// 平均の歩幅で割って、着くまでの時間を出す
+	if (mode == 0) {
+		double samples = 0;
+		while (level > 0) {
+			const int k = int(level) >> 9;
+			const double lo = k ? double(k * 512 - 1) : 0.0;     // この帯を抜けたところ
+			samples += (level - lo) / avg_step((atk >> 8) + (k << 2));
+			level = lo;
+			ms = samples / RATE * 1000.0;
+			if (ms >= limit_ms)
+				break;
+			line.pts.push_back({ float(ms), att_db(level) });
+		}
+		if (level <= 0) {
+			level = 0;
+			mode = 1;
+			line.attack_ms = float(ms);
+		}
+	}
 	int last_mode = mode;
 	int since = 0;
 	while (ms < limit_ms) {
