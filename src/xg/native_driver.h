@@ -115,6 +115,10 @@ public:
 		bool hard = false;              // オールサウンドオフで切った（離しを最速に）
 		u32 inst = 0;                   // 何回目の押しか（同じ鍵を重ねたとき用）
 		u64 fnext = 0;                  // つぎに 1 段進める時刻
+		// **サンプル＆ホールドの音程**（6.206）
+		u64 sh_next = ~u64(0);          // つぎの 20ms の刻み
+		int sh_cnt = 0;                 // 残りの刻み（0 なら無し）
+		int sh_off = 0;                 // いまのずらし
 		// **音程の包絡線の行き先**。実機はキーオンの直後にこれを書いて、
 		// あとはチップに任せる（doc/native-engine.md の 6.68）。
 		// 0xffff は「書くものが無い」の印
@@ -464,6 +468,14 @@ public:
 		int live = 0;
 		for (int i = 0; i < SLOTS; i++) {
 			slot_use &s = m_slot[i];
+			// **サンプル＆ホールドの音程**（6.206）は、押していても
+			// 離していても同じに回る。実機はスロットを使い回すまで
+			// 止めないので、ここで止めると乱数の列がずれる
+			// 止め時は実測で決めた。実機は離してから 145ms 後は引くが、
+			// 675ms 後には止めている（スロットを空けている）
+			if (s.on || (s.rel && clock - s.rel_at <= SH_TAIL))
+				if (sh_tick(i, clock, next))
+					live++;          // 見回りを止めない
 			// **写し取りが無くても包絡線は動かす**（`SMU2000_CUT_EXACT=1` のとき）。
 			// 式だけで `0x00` を出せるようになったので、録画は要らない（6.72）
 			if (!s.cal && !(nv::cut_exact() && fenv_on() && s.elem)
@@ -580,6 +592,8 @@ public:
 				if (s.fnext < next)
 					next = s.fnext;
 			}
+			// **サンプル＆ホールドの音程**（6.206）。20ms ごとに刻みを
+			// 削って、なくなったら乱数を引いて音程をずらす
 			// **遅れて掛かるビブラート**（6.175）。20ms ごとに
 			// 遅れを 1 づつ削って、無くなったら深さを 1 歩ずつ上げる
 			if (s.vdly > 0 || s.vcnt < s.vtgt) {
@@ -1617,6 +1631,30 @@ private:
 		        : u64(s64(s.tstart + dly + at0 + skip) + EG_LAG);
 	}
 
+	// **サンプル＆ホールドの音程の1 刻み**（6.206）。
+	// 20ms ごとに刻みを削って、なくなったら乱数を引いて音程をずらす。
+	// **押している間も離しの間も同じに回る**（止めると乱数の列がずれる）
+	bool sh_tick(int i, u64 clock, u64 &next)
+	{
+		slot_use &s = m_slot[i];
+		if (s.sh_cnt <= 0 || !s.elem)
+			return false;
+		bool drew = false;
+		while (clock >= s.sh_next) {
+			if (--s.sh_cnt <= 0) {
+				s.sh_off = nv::sh_pitch_off(rnd_next(), s.elem);
+				s.sh_cnt = nv::sh_ticks(s.elem);
+				drew = true;
+			}
+			s.sh_next += 2 * FENV_TICK;
+		}
+		if (drew && s.wave)
+			m_poke(u32(i) * 64 + 0x11, pitch_of(s));
+		if (s.sh_next < next)
+			next = s.sh_next;
+		return true;
+	}
+
 	// **フィルタ側 LFO の 1 刻み**（6.189・6.192）。押しているあいだも
 	// 離しのあいだも同じに回る。入れ忘れていたときは、離したとたん
 	// 揺れが止まって、切る高さが古いぶんだけずれたまま固まっていた
@@ -1761,7 +1799,7 @@ private:
 		                     nv::bend_cents(pc.bend, pc.range) + nv::elem_tune(s.elem)
 		                     + part_fine_cents(s.part)
 		                     + part_scale_cents(s.part, s.note) + nv::glide_cents(s.glide)
-		                     + assign_cents(s.part, s.keynote),
+		                     + assign_cents(s.part, s.keynote) + s.sh_off,
 		                     nv::key_pivot(s.elem));
 	}
 
@@ -2271,14 +2309,20 @@ private:
 	// **Rnd の乱数を 1 つ進める**（6.147）。種はワーク RAM にあって、
 	// 実機の firmware と同じ場所・同じ式なので、実機モードと行き来しても
 	// 列が途切れない。要素 1 つにつき 1 回進む
-	int pan_rnd_draw()
+	// **乱数を 1 つ進める**。種はワーク RAM にあって、実機（0x12B06C）と
+	// 同じ式なので、実機モードと行き来しても列が途切れない。
+	// **引く回数と順が実機と同じで無いと値がずれる**
+	int rnd_next()
 	{
 		if (!m_ramw || !m_ram)
-			return 64;
+			return 128;
 		u8 &x = m_ramw[ram::PAN_RND];
 		x = u8(0xb3 * x + 0x11);
-		return int(x >> 1);
+		return int(x);
 	}
+
+	// パンの Rnd（6.147）。要素 1 つにつき 1 回進む
+	int pan_rnd_draw() { return rnd_next() >> 1; }
 
 	// パンのレジスタ（写し取った値からの差ぶんで動かす）
 	// **そのパートはインサーションを通るか**（6.161）。バリエーションを
@@ -2535,11 +2579,15 @@ public:
 	// 式だけでレジスタを組み、つまみの基準は既定の位置に置く
 	// （`nv::default_cal`）。まだ式で出せない所（パート EQ・ミキサ）は
 	// 実測の定数のままなので、そこを詰めるための足場でもある
-	static bool nocal_mode()
+	// 環境変数のほかに、プラグインからも入れられる
+	// （`plugin.ini` の `nocal=1`。鳴らし始める前に呼ぶこと）
+	static void set_nocal(bool on) { nocal_flag() = on ? 1 : 0; }
+	static int &nocal_flag()
 	{
-		static const bool v = std::getenv("SMU2000_NOCAL") != nullptr;
+		static int v = std::getenv("SMU2000_NOCAL") ? 1 : 0;
 		return v;
 	}
+	static bool nocal_mode() { return nocal_flag() != 0; }
 
 	// 合成の写し。要素ごとに 1 つずつ要る（中身は同じ）ので使い回す。
 	// **大きさは変えない**。スロットは `slot_use::cal` でこの中を指すので、
@@ -2647,6 +2695,19 @@ public:
 			su.note = pnote;                 // 鳴らす鍵（移調ぶんを足したもの）
 			if (fenv_on() && (c || nv::cut_exact())) {
 				fenv_start(su, pvel);
+				// **サンプル＆ホールドの音程**（6.206）。初めの刻みは 4、
+				// そのあとは `0x40 - byte11` ごとに乱数を引く
+				su.sh_off = 0;
+				su.sh_cnt = 0;
+				su.sh_next = ~u64(0);
+				if (el && nv::sh_lfo(el)) {
+					su.sh_cnt  = 4;
+					su.sh_next = su.fnext + FENV_TICK;
+				}
+				// **LFO の初めの位相も乱数**（byte10 が 0 の要素だけ）。
+				// 引く回数を実機に合わせるので、位相を使わなくても引く
+				if (el && nv::lfo_rnd_phase(el))
+					su.lph = u32(rnd_next()) & 0x7fff;
 			}
 			if (c || (nv::cut_exact() && fenv_on()) || m_peg_peek) {
 				m_traj = true;
@@ -3435,6 +3496,8 @@ private:
 	// 離したあと、つまみの動きを追い続ける長さ。いちばん遅い離しでも
 	// これだけあれば鳴り終わる（それ以上はスロットを取り直しているはず）
 	static constexpr u64 REL_FOLLOW = 44100 * 8;
+	// **サンプル＆ホールドを離したあとも回す長さ**（6.206）
+	static constexpr u64 SH_TAIL = 44100 / 4;
 	// 実機の包絡線は 441 サンプル（10ms）の格子で進む
 	static constexpr u64 FENV_TICK = 441;
 	u32 m_eg_phase = 0;

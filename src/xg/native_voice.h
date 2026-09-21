@@ -552,6 +552,22 @@ inline int velocity_att(const u8 *rom, int vel, int curve = 0)
 	return rom[LEVEL_TAB + u32(i & 0x7f)];
 }
 
+// **サンプル＆ホールドの音程**（6.206。実機 0x1299E2）。
+// `elem[9] == 2` の要素だけ。符号つきの乱数を半分にして byte14 を掛け、
+// 4 で割ったものを `0x11` に**そのまま足す**（セントには直さない）
+inline bool sh_lfo(const u8 *elem) { return int(elem[9]) >= 2; }
+inline int  sh_ticks(const u8 *elem)
+{
+	const int n = 0x40 - int(elem[11]);
+	return n < 1 ? 1 : n;
+}
+inline int  sh_pitch_off(int rnd, const u8 *elem)
+{
+	return ((s8(u8(rnd)) >> 1) * int(elem[14])) >> 2;
+}
+// 鍵を押すたびに LFO の初めの位相を乱数で決める要素（実機 0x12AD2E）
+inline bool lfo_rnd_phase(const u8 *elem) { return elem[10] == 0; }
+
 // その要素の強さの曲線の行（byte68）
 inline int vel_curve_of(const u8 *elem) { return int(elem[68]); }
 

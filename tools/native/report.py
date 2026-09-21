@@ -113,9 +113,25 @@ def regs(tf, tn):
     bad = collections.Counter()
     ncmp = 0
     lags = collections.Counter()
-    for i in range(min(len(fw), len(nv))):
-        at_f, af = fw[i]
-        at_n, an = nv[i]
+    # **時刻で結び付ける**（6.206）。番号順だと、片方だけ
+    # レジスタを 1 本も書かない押鍵があるとそこから先が
+    # 全部ずれる（regdiff.py と同じ）
+    TOL = 300                      # これ以上離れたものは別の打と見る
+    pairs = []
+    fi = ni = 0
+    while fi < len(fw) and ni < len(nv):
+        d = nv[ni][0] - fw[fi][0]
+        if abs(d) <= TOL:
+            pairs.append((fi, ni))
+            fi += 1
+            ni += 1
+        elif d < 0:
+            ni += 1                # native の方が早い
+        else:
+            fi += 1                # 実機の方が早い
+    for fi, ni in pairs:
+        at_f, af = fw[fi]
+        at_n, an = nv[ni]
         lags[at_n - at_f] += 1
         fs, ns = sorted(af), sorted(an)
 
@@ -140,7 +156,7 @@ def regs(tf, tn):
                 if r in e and d[r] != e[r]:
                     bad[r] += 1
             ncmp += 1
-    return bad, ncmp, lags, len(fw), len(nv)
+    return bad, ncmp, lags, len(fw), len(pairs)
 
 
 def main():
