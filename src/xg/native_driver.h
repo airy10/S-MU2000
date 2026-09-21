@@ -303,8 +303,20 @@ public:
 	// では正しく、実際に起動させると 141 サンプルずれていた。6.118）。
 	// タイマの書き込みは 1 か所に集まり、鍵のぶんは散らばるので、
 	// **いちばん数の多い位相**を取る
+	// **10ms の印から学べたら、それだけを信じる**（6.209）。
+	// 写し取りの最中の `0x00` は鍵を押したときにも書かれるうえ、
+	// native の口では firmware の時間が伸びているので目が合わない。
+	// 混ぜていたせいで、写し取りをする道だけ位相が
+	// 218 サンプル（半目）ずれていた
 	void set_eg_phase(u32 sample)
 	{
+		// **一度決まったらもう動かさない**（6.209）。数え続けていたので、
+		// 写し取りの最中に firmware が書いた`0x00`（firmware の時間は
+		// native の口では伸びている）があとから追い越して、
+		// 写し取りをする道だけ位相が242 → 24 にずれていた。
+		// ベンドも包絡線も滑りもこの格子に乗るので、影響は広い
+		if (m_eg_have)
+			return;
 		const u32 p = sample % FENV_TICK;
 		if (m_eg_hits[p] == 0xffff)
 			return;
@@ -1322,8 +1334,11 @@ public:
 		// **モノ / ポリ**（6.125）。モノのパートは、つぎの鍵を押すと
 		// 前の音を**離す**（実機は古いスロットへ離しの `0x09` を書く）。
 		// 入れるまでは前の音が鳴り続けて、重なったぶん 0.8dB 大きかった
-		case 0x7e: p.mono = true; return true;
-		case 0x7f: p.mono = false; return true;
+		// **モノ・ポリの切り替えも鍵を離す**（6.208）。MIDI の決めで
+		// CC124-127 はどれもオールノートオフを兼ねる。
+		// 実機で確かめたところ、4 つとも CC123 と同じだけ音が止まる
+		case 0x7e: p.mono = true; all_off(part); return true;
+		case 0x7f: p.mono = false; all_off(part); return true;
 		case 0x05: p.porta_time = value; return true;     // ポルタメントの速さ
 		case 0x41: p.porta_on = value >= 64; return true; // ポルタメント 入切
 		case 0x54: p.porta_src = value & 0x7f; return true;   // 滑り出す鍵を指定
@@ -1394,6 +1409,10 @@ public:
 			all_off(part, true);
 			return false;
 		case 0x7b:                             // CC123 オールノートオフ
+			all_off(part);
+			return false;
+		case 0x7c:                             // CC124 オムニオフ
+		case 0x7d:                             // CC125 オムニオン
 			all_off(part);
 			return false;
 		default: {
@@ -1869,15 +1888,20 @@ private:
 		return b[1] == 64 && b[2] == 64 && !b[3] && !b[4] && !b[5];
 	}
 
-	// モノのパートで、いま鳴っている別の鍵を離す
+	// モノのパートで、いま鳴っている別の鍵を離す。
+	// **付け替えの離しは 0xD9**（キーアサインがシングルのときと同じ。6.208）。
+	// 音色の離しの速さを使っていたので、弦のような尾の長い
+	// 音色でこちらだけ前の鍵が鳴り続けていた（48・0・80・10・56 の
+	// 5 音色で確かめて、どれも 0xD9）
 	void mono_cut(int part, int except)
 	{
 		int keys[SLOTS];
 		int n = 0;
 		for (int i = 0; i < SLOTS; i++) {
-			const slot_use &s = m_slot[i];
+			slot_use &s = m_slot[i];
 			if (!s.on || s.part != part || s.keynote == except)
 				continue;
+			s.single_cut = true;
 			bool seen = false;
 			for (int k = 0; k < n; k++)
 				if (keys[k] == s.keynote)
