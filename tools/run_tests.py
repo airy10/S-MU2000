@@ -111,6 +111,14 @@ class Report:
         self.rows = []
         self.bad = 0
 
+    def say(self, line):
+        """試験の途中の 1 行（NG の中身など）"""
+        print(line)
+
+    def merge(self, other):
+        self.rows += other.rows
+        self.bad += other.bad
+
     def add(self, name, ok, note=""):
         self.rows.append((name, ok, note))
         if not ok:
@@ -126,6 +134,16 @@ class Report:
             print("  %d 件食い違った。意図した変更なら --update で指紋を焼き直す" % self.bad)
         else:
             print("  全部そろっている")
+
+
+class Buffered(Report):
+    """同時に回す段のための控え。結果の行も途中の行も溜めておき、段の順に後で出す"""
+    def __init__(self):
+        super().__init__()
+        self.lines = []
+
+    def say(self, line):
+        self.lines.append(line)
 
 
 def step_verify(rep, update):
@@ -454,7 +472,7 @@ def step_xg(rep, roms):
         note += "（build/tests/xgtest.log）"
         for l in lines:
             if l.strip().startswith("NG"):
-                print("   " + l.strip())
+                rep.say("   " + l.strip())
     rep.add("xg", rc == 0, note)
 
 
@@ -474,7 +492,7 @@ def step_sampling(rep, roms):
         note += "（build/tests/samptest.log）"
         for l in lines:
             if l.startswith("NG"):
-                print("   " + l.strip())
+                rep.say("   " + l.strip())
     rep.add("sampling", rc == 0, note)
 
 
@@ -846,32 +864,36 @@ def main():
     step_jit_off(rep, roms, cases)
 
     print()
-    print("== 5. スレーブを別の糸で回しても同じ音か")
-    step_threading(rep, roms, first)
-
+    # **5-10 は同時に回す**。どれも 1-2 本の render か道具を順に回すだけで、作業の
+    # ファイルの名前も段ごとに別。1 本ずつだと合わせて 76 秒、同時なら長い段 1 つぶん。
+    # 結果と途中の行は段ごとに控えておき、下で段の順に出す
+    steps = [("== 5. スレーブを別の糸で回しても同じ音か", lambda r: step_threading(r, roms, first))]
     if not a.only:
-        print()
-        print("== 6. パラメータの層を firmware に読み返させる")
-        step_xg(rep, roms)
-
-        print()
-        print("== 7. サンプリング（録音して試聴する）")
-        step_sampling(rep, roms)
-
-        print()
-        print("== 8. パネル（native の口でもボタンと液晶が効くか）")
-        step_panel(rep, roms)
-        step_meter(rep, roms)
-        step_screen(rep, roms)
-        step_dial(rep, roms, cases)
-
-        print()
-        print("== 9. USB の口（プラグインの既定）")
-        step_usb(rep, roms, cases)
-
-        print()
-        print("== 10. 2 回目の音（写し取りが済んだ状態）")
-        step_warm(rep, roms, cases)
+        steps += [
+            ("== 6. パラメータの層を firmware に読み返させる", lambda r: step_xg(r, roms)),
+            ("== 7. サンプリング（録音して試聴する）", lambda r: step_sampling(r, roms)),
+            ("== 8. パネル（native の口でもボタンと液晶が効くか）",
+             lambda r: (step_panel(r, roms), step_meter(r, roms), step_screen(r, roms),
+                        step_dial(r, roms, cases))),
+            ("== 9. USB の口（プラグインの既定）", lambda r: step_usb(r, roms, cases)),
+            ("== 10. 2 回目の音（写し取りが済んだ状態）", lambda r: step_warm(r, roms, cases)),
+        ]
+    subs = [Buffered() for _ in steps]
+    if JOBS <= 1:
+        for (_, fn), sub in zip(steps, subs):
+            fn(sub)
+    else:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=len(steps)) as ex:
+            for f in [ex.submit(fn, sub) for (_, fn), sub in zip(steps, subs)]:
+                f.result()
+    for i, ((title, _), sub) in enumerate(zip(steps, subs)):
+        if i:
+            print()
+        print(title)
+        for line in sub.lines:
+            print(line)
+        rep.merge(sub)
 
     rep.show()
     return 1 if rep.bad else 0
