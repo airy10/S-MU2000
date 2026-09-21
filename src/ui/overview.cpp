@@ -427,7 +427,7 @@ void overview::cell(const column &c, int part, xg::model &m, const xg_snapshot &
 			ImGui::EndPopup();
 		}
 		if (nv != v && p) {
-			br.send(m.set(*p, at, nv));
+			drag_send(br, m.set(*p, at, nv));
 			text = xg::format(*p, nv);
 		} else if (nv != v && cc_num >= 0) {
 			const u8 cc[3] = { u8(0xb0 | (cc_slot & 15)), u8(cc_num), u8(nv) };
@@ -715,7 +715,7 @@ void overview::peg_cell(int part, xg::model &m, bridge &br, float w, float h, bo
 		auto send = [&](const xg::param &p, int v, int nv) {
 			nv = std::clamp(nv, p.min, p.max);
 			if (nv != v)
-				br.send(m.set(p, part, nv));
+				drag_send(br, m.set(p, part, nv));
 		};
 		const ImVec2 mp = io.MousePos;
 		if (grab == 0)
@@ -848,7 +848,7 @@ void overview::eg_cell(int part, xg::model &m, bridge &br, float w, float h, boo
 			int nv = std::clamp(int(std::lround(64 + 24 * std::log2(want / (unit * 0.5f)))), p.min, p.max);
 			(void)cur;
 			if (nv != v)
-				br.send(m.set(p, part, nv));
+				drag_send(br, m.set(p, part, nv));
 		};
 		const float mx = io.MousePos.x;
 		if (grab == 0) apply(pa, va, la, (mx - x0) / squeeze);
@@ -884,7 +884,7 @@ void overview::eg_cell(int part, xg::model &m, bridge &br, float w, float h, boo
 					li++;
 				const shape::amp_line &L = ls[li];
 				// ディケイ: 立ち上がりの後、伸ばしている音量に落ち着くまで（離さずに回す。2 秒で打ち切り）
-				const shape::amp_line held = shape::amp_run(v.rom, xg::nv::element(v.rom, v.rec, int(li)), v.blk, -1.0f, 2000.0f);
+				const shape::amp_line held = shape::amp_run(v.rom, xg::nv::element(v.rom, v.rec, int(li)), v.blk, -1.0f, L.attack_ms + 2000.0f);   // 立ち上がりの後 2 秒まで
 				const float dec_end = held.pts.back().ms;
 				float rel_ms = 0;
 				for (const shape::pt &p : L.pts)
@@ -903,7 +903,7 @@ void overview::eg_cell(int part, xg::model &m, bridge &br, float w, float h, boo
 					boxes.line(pts[i], pts[i + 1]);
 				std::snprintf(s, sizeof(s), "Attack : %s (%.0f ms)", xg::format(pa, va).c_str(), L.attack_ms);
 				point_label(dl, pts[1], s, false, a, b, &boxes);
-				std::snprintf(s, sizeof(s), dec_end >= 1990.0f ? "Decay : %s (2000+ ms)" : "Decay : %s (%.0f ms)",
+				std::snprintf(s, sizeof(s), dec_end >= L.attack_ms + 1990.0f ? "Decay : %s (2000+ ms)" : "Decay : %s (%.0f ms)",
 				              xg::format(pd, vd).c_str(), dec_ms);
 				point_label(dl, pts[2], s, false, a, b, &boxes);
 				std::snprintf(s, sizeof(s), "Release : %s (%.0f ms)", xg::format(pr, vr).c_str(), rel_ms);
@@ -983,15 +983,15 @@ void overview::filter_cell(int part, xg::model &m, bridge &br, float w, float h,
 		if (grab == 1) {
 			const int nh = std::clamp(int(std::lround((fx - x0) / span * 127.0f - HPF_BASE + 64.0f)), ph.min, ph.max);
 			if (nh != vh)
-				br.send(m.set(ph, part, nh));
+				drag_send(br, m.set(ph, part, nh));
 		} else {
 			const int nc = std::clamp(int(std::lround((fx - x0) / span * 127.0f)), pc.min, pc.max);
 			const float db = DB_TOP - (fy - top) / (bottom - top) * (DB_TOP - DB_BOTTOM);
 			const int nq = std::clamp(int(std::lround(64 + db * 16.0f / 6.0206f)), pq.min, pq.max);
 			if (nc != vc)
-				br.send(m.set(pc, part, nc));
+				drag_send(br, m.set(pc, part, nc));
 			if (nq != vq)
-				br.send(m.set(pq, part, nq));
+				drag_send(br, m.set(pq, part, nq));
 		}
 	}
 
@@ -1173,8 +1173,8 @@ int eq_plot(const char *id, eq_band *bands, int n, xg::model &m, bridge &br, flo
 		const int nf = index_near(t, b.freq->min, b.freq->max);
 		const float db = -((io.MousePos.y + gy) - (top + bottom) * 0.5f) / ((bottom - top) * 0.5f) * DB;
 		const int ng = std::clamp(int(std::lround(64 + db)), b.gain->min, b.gain->max);
-		if (nf != b.vf) br.send(m.set(*b.freq, b.part, nf));
-		if (ng != b.vg) br.send(m.set(*b.gain, b.part, ng));
+		if (nf != b.vf) drag_send(br, m.set(*b.freq, b.part, nf));
+		if (ng != b.vg) drag_send(br, m.set(*b.gain, b.part, ng));
 	}
 	// ホイールで Q。カーソルに一番近い帯
 	const int hot = !edit ? -1 : hovered && !active ? nearest() : grab;
@@ -1183,7 +1183,7 @@ int eq_plot(const char *id, eq_band *bands, int n, xg::model &m, bridge &br, flo
 		if (io.MouseWheel != 0.0f) {
 			const eq_band &b = bands[hot];
 			const int nq = std::clamp(b.vq + (io.MouseWheel > 0 ? 1 : -1) * (io.KeyCtrl ? 10 : 2), b.q->min, b.q->max);
-			if (nq != b.vq) br.send(m.set(*b.q, b.part, nq));
+			if (nq != b.vq) drag_send(br, m.set(*b.q, b.part, nq));
 		}
 	}
 
@@ -1338,12 +1338,12 @@ void overview::vib_cell(int part, xg::model &m, bridge &br, float w, float h, bo
 		const float fx = io.MousePos.x + gx, fy = io.MousePos.y + gy;
 		if (grab == 0) {
 			const int nl = value((fx - x0) / unit, pl);
-			if (nl != vl) br.send(m.set(pl, part, nl));
+			if (nl != vl) drag_send(br, m.set(pl, part, nl));
 		} else {
 			const int nr = value(unit * 0.8f / std::max(1.0f, (fx - xd) * 4.0f), pr);
 			const int nd = value((mid - fy) / (half * 0.45f), pd);
-			if (nr != vr) br.send(m.set(pr, part, nr));
-			if (nd != vd) br.send(m.set(pd, part, nd));
+			if (nr != vr) drag_send(br, m.set(pr, part, nr));
+			if (nd != vd) drag_send(br, m.set(pd, part, nd));
 		}
 	}
 

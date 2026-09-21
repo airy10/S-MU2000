@@ -7,6 +7,7 @@
 #include "fx_icons.h"
 
 #include "imgui.h"
+#include "imgui_internal.h"   // SetKeyOwner（棒が矢印キーをもらう）
 
 #include <algorithm>
 #include <cstdarg>
@@ -111,6 +112,55 @@ void hint(const char *fmt, ...)
 		g_hint = buf;
 	else
 		ImGui::SetItemTooltip("%s", buf);
+}
+
+// ---- マウスで動かしている間の送信の間引き
+namespace {
+struct drag_msg { std::string key; std::vector<u8> bytes; };
+std::vector<drag_msg> g_drag;                       // 送っていない分（番地ごとに最新だけ）
+std::chrono::steady_clock::time_point g_drag_sent;
+constexpr auto DRAG_EVERY = std::chrono::milliseconds(60);   // 画面は 30 コマ／秒。2 コマに 1 回くらい
+
+// 同じ行き先かを見分ける印。パラメータチェンジは番地まで、CC は番号まで
+std::string drag_key(const std::vector<u8> &b)
+{
+	size_t n = b.size();
+	if (!b.empty() && b[0] == 0xf0)
+		n = std::min<size_t>(n, 7);             // F0 43 1n 4C 上 中 下
+	else if (!b.empty() && (b[0] & 0xf0) == 0xb0)
+		n = std::min<size_t>(n, 2);             // Bn 番号
+	return std::string(b.begin(), b.begin() + std::ptrdiff_t(n));
+}
+
+void drag_send_now(bridge &br)
+{
+	for (drag_msg &d : g_drag)
+		br.send(std::move(d.bytes));
+	g_drag.clear();
+	g_drag_sent = std::chrono::steady_clock::now();
+}
+} // namespace
+
+void drag_send(bridge &br, std::vector<u8> bytes)
+{
+	if (bytes.empty())
+		return;
+	const std::string key = drag_key(bytes);
+	auto it = std::find_if(g_drag.begin(), g_drag.end(), [&](const drag_msg &d) { return d.key == key; });
+	if (it != g_drag.end())
+		it->bytes = std::move(bytes);
+	else
+		g_drag.push_back({ key, std::move(bytes) });
+	drag_flush(br);
+}
+
+void drag_flush(bridge &br)
+{
+	if (g_drag.empty())
+		return;
+	// ボタンを離したらすぐ。押している間は間を空けて
+	if (!ImGui::IsMouseDown(ImGuiMouseButton_Left) || std::chrono::steady_clock::now() - g_drag_sent >= DRAG_EVERY)
+		drag_send_now(br);
 }
 
 void set_current_ram(const xg_snapshot *ram) { g_current_ram = ram; }
@@ -322,9 +372,23 @@ bool param_slider(const char *key, int part, xg::model &m, bridge &br, const cha
 		text += c;
 	}
 	int nv = v;
-	const bool changed = ImGui::SliderInt(label ? label : p.label, &nv, p.min, p.max, text.c_str()) && nv != v;
+	ImGui::SliderInt(label ? label : p.label, &nv, p.min, p.max, text.c_str());
+	// ← → で 1 つずつ（Shift で 10）。カーソルが載っている棒か、ほかに載っていなければ最後に触った棒
+	const bool typing = ImGui::GetIO().WantTextInput;
+	if (!typing && (ImGui::IsItemHovered() || (ImGui::IsItemFocused() && !ImGui::IsAnyItemHovered()))) {
+		// キーはこの棒がもらう（ImGui のキーボード移動で、隣の部品へ移らないように）
+		const ImGuiID id = ImGui::GetItemID();
+		ImGui::SetKeyOwner(ImGuiKey_LeftArrow, id);
+		ImGui::SetKeyOwner(ImGuiKey_RightArrow, id);
+		const int step = ImGui::GetIO().KeyShift ? 10 : 1;
+		if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow, ImGuiInputFlags_Repeat, id))
+			nv = std::max(p.min, nv - step);
+		if (ImGui::IsKeyPressed(ImGuiKey_RightArrow, ImGuiInputFlags_Repeat, id))
+			nv = std::min(p.max, nv + step);
+	}
+	const bool changed = nv != v;
 	if (changed)
-		br.send(m.set(p, part, nv));
+		drag_send(br, m.set(p, part, nv));      // ドラッグ中は間引く。キーや数の打ち込みはすぐ送られる
 	help_tip(key);
 	ImGui::PopID();
 	return changed;

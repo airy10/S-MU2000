@@ -57,6 +57,11 @@ const std::string &hint_text();
 void hidden_value(const char *text);
 const std::string &hidden_values();
 
+// マウスで動かしている値の送信。押している間は 60 ms に 1 回、行き先ごとに最新の値だけ送り、
+// 離したらすぐ送る（毎コマ送ると直列が詰まって反応が遅れる）。窓の持ち主は毎コマ描いた後に drag_flush を呼ぶ
+void drag_send(bridge &br, std::vector<u8> bytes);
+void drag_flush(bridge &br);
+
 // 今のコマの RAM の写し。窓が描く前に置き、絵（音色の中身を読むもの）が読む
 void set_current_ram(const xg_snapshot *ram);
 const xg_snapshot *current_ram();
