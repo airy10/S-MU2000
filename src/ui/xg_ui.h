@@ -53,6 +53,9 @@ bool hint_bar();
 // 説明を出す。帯があれば帯へ、無ければ直前の部品のツールチップへ（printf の書式）
 void hint(const char *fmt, ...);
 const std::string &hint_text();
+// 絵の中に入り切らず出さなかった点の字。帯のある窓では帯に並べて出す
+void hidden_value(const char *text);
+const std::string &hidden_values();
 
 // 今のコマの RAM の写し。窓が描く前に置き、絵（音色の中身を読むもの）が読む
 void set_current_ram(const xg_snapshot *ram);

@@ -81,12 +81,24 @@ const xg_snapshot *g_current_ram = nullptr;
 namespace {
 bool g_hint_bar = false;
 std::string g_hint;
+std::string g_hidden;
 }
 
-void begin_hint_bar() { g_hint_bar = true; g_hint.clear(); }
+void begin_hint_bar() { g_hint_bar = true; g_hint.clear(); g_hidden.clear(); }
 void end_hint_bar() { g_hint_bar = false; }
 bool hint_bar() { return g_hint_bar; }
 const std::string &hint_text() { return g_hint; }
+
+void hidden_value(const char *text)
+{
+	if (!g_hint_bar)
+		return;
+	if (!g_hidden.empty())
+		g_hidden += "   ";
+	for (const char *c = text; *c; c++)
+		g_hidden += *c == '\n' ? ' ' : *c;       // 2 行の字も 1 行に
+}
+const std::string &hidden_values() { return g_hidden; }
 
 void hint(const char *fmt, ...)
 {

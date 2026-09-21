@@ -142,29 +142,77 @@ static void fixed_point(ImDrawList *dl, ImVec2 p, float r)
 }
 
 // 点のそばの字。上に置けなければ下に。枠（a-b）からはみ出さないよう寄せる
-// 点のそばの文字。avoid に既に描いた文字の枠を渡すと、重ならないところまで上（下）へずらす。
-// 描いた枠を avoid に足す
+// 文字を避けさせるもの。点（まわりの四角）、線、先に置いた文字の枠
 struct label_box { ImVec2 lo, hi; };
+struct label_avoid {
+	std::vector<label_box> boxes;                 // 点と、置いた文字
+	std::vector<std::pair<ImVec2, ImVec2>> segs;  // 線
+	void point(ImVec2 p, float r) { boxes.push_back({ ImVec2(p.x - r, p.y - r), ImVec2(p.x + r, p.y + r) }); }
+	void line(ImVec2 p, ImVec2 q) { segs.push_back({ p, q }); }
+};
+
+// 線分が四角にかかる長さの目安（線の上を刻んで数える）
+static int seg_hits(ImVec2 p, ImVec2 q, ImVec2 lo, ImVec2 hi)
+{
+	int n = 0;
+	for (int i = 0; i <= 24; i++) {
+		const float t = float(i) / 24.0f;
+		const float x = p.x + (q.x - p.x) * t, y = p.y + (q.y - p.y) * t;
+		n += x >= lo.x && x <= hi.x && y >= lo.y && y <= hi.y;
+	}
+	return n;
+}
+
+// 避けるものを渡すと、点のまわりの置き場所（上下、中央・右寄せ・左寄せ、離れる幅）を順に試して、
+// 点・線・ほかの文字にいちばんかからないところに置く。置いた枠を避けるものに足す
 static void point_label(ImDrawList *dl, ImVec2 p, const char *text, bool above, ImVec2 a, ImVec2 b,
-                        std::vector<label_box> *avoid = nullptr)
+                        label_avoid *avoid = nullptr)
 {
 	const float fs = ImGui::GetFontSize();
 	const ImVec2 ts = ImGui::CalcTextSize(text);
+	if (ts.x + 4.0f > b.x - a.x || ts.y + 2.0f > b.y - a.y) {
+		hidden_value(text);                       // 窓が狭くて入らない字は出さず、下の帯に出す
+		return;
+	}
+	auto clamp_x =[&](float x) { return std::clamp(x, a.x + 2.0f, std::max(a.x + 2.0f, b.x - ts.x - 2.0f)); };
+	float x = clamp_x(p.x - ts.x * 0.5f);
 	float y = above ? p.y - fs * 0.7f - ts.y : p.y + fs * 0.7f;
 	if (y < a.y) y = p.y + fs * 0.7f;
 	if (y + ts.y > b.y) y = p.y - fs * 0.7f - ts.y;
-	const float x = std::clamp(p.x - ts.x * 0.5f, a.x + 2.0f, std::max(a.x + 2.0f, b.x - ts.x - 2.0f));
 	if (avoid) {
-		const bool up = y < p.y;
-		for (bool moved = true; moved;) {
-			moved = false;
-			for (const label_box &o : *avoid)
-				if (x - 2 < o.hi.x && x + ts.x + 2 > o.lo.x && y - 1 < o.hi.y && y + ts.y + 1 > o.lo.y) {
-					y = up ? o.lo.y - ts.y - 2 : o.hi.y + 2;
-					moved = true;
+		auto cost = [&](float cx, float cy) {
+			const ImVec2 lo(cx - 2, cy - 1), hi(cx + ts.x + 2, cy + ts.y + 1);
+			if (lo.y < a.y || hi.y > b.y)
+				return 1 << 20;
+			int c = 0;
+			for (const label_box &o : avoid->boxes)
+				if (lo.x < o.hi.x && hi.x > o.lo.x && lo.y < o.hi.y && hi.y > o.lo.y)
+					c += 1000;
+			for (const auto &s : avoid->segs)
+				c += seg_hits(s.first, s.second, lo, hi) * 10;
+			return c;
+		};
+		int best = 1 << 30;
+		float bx = x, by = y;
+		const float xs[3] = { clamp_x(p.x - ts.x * 0.5f), clamp_x(p.x + fs * 0.5f), clamp_x(p.x - ts.x - fs * 0.5f) };
+		for (int k = 0; k < 16 && best > 0; k++) {
+			const float off = fs * (0.5f + 0.35f * float(k));
+			for (int side = 0; side < 2 && best > 0; side++) {
+				const bool up = (side == 0) == above;
+				const float cy = up ? p.y - off - ts.y : p.y + off;
+				for (float cx : xs) {
+					const int c = cost(cx, cy) + k;          // 近いほどよい
+					if (c < best) { best = c; bx = cx; by = cy; }
 				}
+			}
 		}
-		avoid->push_back({ ImVec2(x - 2, y - 1), ImVec2(x + ts.x + 2, y + ts.y + 1) });
+		if (best >= 1000) {
+			hidden_value(text);                   // 点かほかの字にかかってしまうなら、下の帯に
+			return;
+		}
+		x = bx;
+		y = by;
+		avoid->boxes.push_back({ ImVec2(x - 2, y - 1), ImVec2(x + ts.x + 2, y + ts.y + 1) });
 	}
 	dl->AddRectFilled(ImVec2(x - 2, y - 1), ImVec2(x + ts.x + 2, y + ts.y + 1), IM_COL32(0, 0, 0, 150), 3.0f);
 	dl->AddText(ImVec2(x, y), IM_COL32(245, 245, 235, 255), text);
@@ -712,12 +760,19 @@ void overview::peg_cell(int part, xg::model &m, bridge &br, float w, float h, bo
 				char s[80];
 				const ImVec2 a(pos.x, pos.y), b(pos.x + w, pos.y + h);
 				std::snprintf(s, sizeof(s), "Init : %s (%+.0f cent)", xg::format(pi, vi).c_str(), L.pts.front().cents);
-				std::vector<label_box> boxes;
+				label_avoid boxes;
+				for (int i = 0; i < 5; i++)
+					boxes.point(pts[i], r + 2.0f);
+				for (int i = 0; i < 4; i++)
+					boxes.line(pts[i], pts[i + 1]);
 				point_label(dl, pts[0], s, yi > mid, a, b, &boxes);
 				std::snprintf(s, sizeof(s), "Attack : %s (%.0f ms)", xg::format(pa, va).c_str(), atk_ms);
 				point_label(dl, pts[1], s, true, a, b, &boxes);
 				std::snprintf(s, sizeof(s), "Release : %s / %s (%.0f ms, %+.0f cent)", xg::format(pr, vr).c_str(),
 				              xg::format(pl, vl).c_str(), rel_ms, L.pts.back().cents);
+				if (ImGui::CalcTextSize(s).x > w - fs * 0.5f)      // 狭い窓では詰めて書く
+					std::snprintf(s, sizeof(s), "Rel %s/%s (%.0fms %+.0fc)", xg::format(pr, vr).c_str(),
+					              xg::format(pl, vl).c_str(), rel_ms, L.pts.back().cents);
 				point_label(dl, pts[3], s, true, a, b, &boxes);     // 離しは点の上に
 			}
 		}
@@ -840,13 +895,18 @@ void overview::eg_cell(int part, xg::model &m, bridge &br, float w, float h, boo
 				const float dec_ms = std::max(0.0f, dec_end - L.attack_ms);
 				char s[64];
 				const ImVec2 a(pos.x, pos.y), b(pos.x + w, pos.y + h);
+				label_avoid boxes;
+				for (int i = 0; i < 5; i++)
+					boxes.point(pts[i], r + 2.0f);
+				for (int i = 0; i < 4; i++)
+					boxes.line(pts[i], pts[i + 1]);
 				std::snprintf(s, sizeof(s), "Attack : %s (%.0f ms)", xg::format(pa, va).c_str(), L.attack_ms);
-				point_label(dl, pts[1], s, false, a, b);
+				point_label(dl, pts[1], s, false, a, b, &boxes);
 				std::snprintf(s, sizeof(s), dec_end >= 1990.0f ? "Decay : %s (2000+ ms)" : "Decay : %s (%.0f ms)",
 				              xg::format(pd, vd).c_str(), dec_ms);
-				point_label(dl, pts[2], s, false, a, b);
+				point_label(dl, pts[2], s, false, a, b, &boxes);
 				std::snprintf(s, sizeof(s), "Release : %s (%.0f ms)", xg::format(pr, vr).c_str(), rel_ms);
-				point_label(dl, pts[4], s, true, a, b);
+				point_label(dl, pts[4], s, true, a, b, &boxes);
 			}
 		}
 	} else {
@@ -1002,13 +1062,17 @@ void overview::filter_cell(int part, xg::model &m, bridge &br, float w, float h,
 				};
 				char s[96];
 				const ImVec2 a(pos.x, pos.y), b(pos.x + w, pos.y + h);
-				std::snprintf(s, sizeof(s), "Cutoff : %s (%s)  Reso : %s", xg::format(pc, vc).c_str(),
+				std::snprintf(s, sizeof(s), "Cutoff : %s (%s)\nReso : %s", xg::format(pc, vc).c_str(),
 				              hz_text(lpf_hz).c_str(), xg::format(pq, vq).c_str());
-				point_label(dl, ImVec2(xc, yq), s, true, a, b);
+				label_avoid boxes;
+				boxes.point(ImVec2(xc, yq), r + 2.0f);
+				if (known_h)
+					boxes.point(ImVec2(xh, yh), r + 2.0f);
+				point_label(dl, ImVec2(xc, yq), s, true, a, b, &boxes);
 				if (known_h) {
 					std::snprintf(s, sizeof(s), L.hpf ? "HPF : %s (%s)" : "HPF : %s (掛かっていない)",
 					              xg::format(ph, vh).c_str(), hz_text(hpf_hz).c_str());
-					point_label(dl, ImVec2(xh, yh), s, false, a, b);
+					point_label(dl, ImVec2(xh, yh), s, false, a, b, &boxes);
 				}
 			}
 		}
@@ -1306,11 +1370,15 @@ void overview::vib_cell(int part, xg::model &m, bridge &br, float w, float h, bo
 				const shape::vib_line &L = lead_line(ls);
 				char s[96];
 				const ImVec2 a(pos.x, pos.y), b(pos.x + w, pos.y + h);
-				std::snprintf(s, sizeof(s), "Rate : %s (%.2f Hz)  Depth : %s (±%.0f cent)", xg::format(pr, vr).c_str(),
+				std::snprintf(s, sizeof(s), "Rate : %s (%.2f Hz)\nDepth : %s (±%.0f cent)", xg::format(pr, vr).c_str(),
 				              L.hz, xg::format(pd, vd).c_str(), L.depth_cents);
-				point_label(dl, crest, s, true, a, b);
+				label_avoid boxes;
+				boxes.point(ImVec2(x0, mid), r + 2.0f);
+				boxes.point(ImVec2(xd, mid), r + 2.0f);
+				boxes.point(crest, r + 2.0f);
+				point_label(dl, crest, s, true, a, b, &boxes);
 				std::snprintf(s, sizeof(s), "Delay : %s (%.0f ms)", xg::format(pl, vl).c_str(), L.delay_ms);
-				point_label(dl, ImVec2(xd, mid), s, false, a, b);
+				point_label(dl, ImVec2(xd, mid), s, false, a, b, &boxes);
 			}
 		}
 		dl->PopClipRect();

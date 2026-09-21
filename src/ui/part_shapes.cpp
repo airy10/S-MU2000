@@ -20,24 +20,44 @@ namespace {
 // パートは口 A-D の 64（C・D は実機では USB だけの口）
 constexpr int PARTS = XG_PARTS;
 
-// 「グラフ ○ つまみ」の切り替え。右寄せで描き、押されたら true
-bool mode_toggle(const char *id, bool knobs)
+// 「グラフ ○ つまみ」の切り替え。見出しの行の右端に描き、押されたら true。
+// 見出しと並べて入らなければ字を外して切り替えだけにし、それでも入らなければ見出しを切る
+bool title_toggle(const char *title, const char *id, bool knobs)
 {
 	const float fs = ImGui::GetFontSize();
 	const char *l = "グラフ", *r = "つまみ";
 	const float lw = ImGui::CalcTextSize(l).x, rw = ImGui::CalcTextSize(r).x;
 	const float th = fs * 0.9f, tw = th * 1.8f, gap = fs * 0.3f;
-	const float total = lw + gap + tw + gap + rw;
-	ImGui::SameLine(std::max(ImGui::GetCursorPosX(), ImGui::GetWindowContentRegionMax().x - total));
-	const ImVec2 p = ImGui::GetCursorScreenPos();
-	const bool pressed = ImGui::InvisibleButton(id, ImVec2(total, ImGui::GetTextLineHeight()));
-	hint("クリックで、絵で触る（グラフ）か値の棒で触る（つまみ）かを切り替える");
+	const float room = ImGui::GetContentRegionAvail().x;
+	const float title_w = ImGui::CalcTextSize(title).x;
+	const bool words = title_w + fs + lw + gap + tw + gap + rw <= room;
+	const float total = words ? lw + gap + tw + gap + rw : tw;
+	const ImVec2 start = ImGui::GetCursorScreenPos();
+	const float line_h = ImGui::GetTextLineHeight();
+	// 見出し（切り替えにかからないところまで）
 	ImDrawList *dl = ImGui::GetWindowDrawList();
+	const float title_room = std::max(0.0f, room - total - fs * 0.5f);
+	dl->PushClipRect(start, ImVec2(start.x + title_room, start.y + line_h), true);
+	dl->AddText(start, ImGui::GetColorU32(ImGuiCol_Text), title);
+	dl->PopClipRect();
+	ImGui::Dummy(ImVec2(title_room, line_h));
+	if (ImGui::IsItemHovered() && title_w > title_room)
+		hint("%s", title);
+	ImGui::SameLine(0, 0);
+	ImGui::SetCursorScreenPos(ImVec2(start.x + room - total, start.y));
+	const ImVec2 p = ImGui::GetCursorScreenPos();
+	const bool pressed = ImGui::InvisibleButton(id, ImVec2(total, line_h));
+	hint(knobs ? "いまは「つまみ」（値の棒で触る）。クリックで「グラフ」（絵で触る）に切り替える"
+	           : "いまは「グラフ」（絵で触る）。クリックで「つまみ」（値の棒で触る）に切り替える");
 	const ImU32 on = ImGui::GetColorU32(ImGuiCol_Text), off = ImGui::GetColorU32(ImGuiCol_TextDisabled);
-	dl->AddText(p, knobs ? off : on, l);
-	dl->AddText(ImVec2(p.x + lw + gap * 2 + tw, p.y), knobs ? on : off, r);
-	const float ty = p.y + (ImGui::GetTextLineHeight() - th) * 0.5f;
-	const ImVec2 a(p.x + lw + gap, ty), b(a.x + tw, ty + th);
+	float sx = p.x;
+	if (words) {
+		dl->AddText(p, knobs ? off : on, l);
+		dl->AddText(ImVec2(p.x + lw + gap * 2 + tw, p.y), knobs ? on : off, r);
+		sx += lw + gap;
+	}
+	const float ty = p.y + (line_h - th) * 0.5f;
+	const ImVec2 a(sx, ty), b(sx + tw, ty + th);
 	dl->AddRectFilled(a, b, ImGui::GetColorU32(ImGui::IsItemHovered() ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg), th * 0.5f);
 	const float kx = knobs ? b.x - th * 0.5f : a.x + th * 0.5f;
 	dl->AddCircleFilled(ImVec2(kx, ty + th * 0.5f), th * 0.38f, ImGui::GetColorU32(ImGuiCol_SliderGrabActive));
@@ -54,10 +74,13 @@ void panel(const char *id, const char *title, float w, float h, int part, xg::mo
 		ImGui::EndChild();
 		return;
 	}
-	ImGui::TextUnformatted(title);
 	const bool knobs = index < 0 || shapes_knobs(index);
-	if (index >= 0 && mode_toggle("##mode", knobs))
+	ImGui::PushFont(nullptr, fs * 0.8f);      // 見出しは小さめに
+	if (index < 0)
+		ImGui::TextUnformatted(title);
+	else if (title_toggle(title, "##mode", knobs))
 		set_shapes_knobs(index, !knobs);
+	ImGui::PopFont();
 	if (!knobs) {
 		// 絵だけ。区画の残りを全部使う
 		const ImVec2 avail = ImGui::GetContentRegionAvail();
@@ -157,8 +180,8 @@ void part_shapes::draw(xg::model &m, const xg_snapshot &ram, bridge &br)
 	const ImVec2 avail = ImGui::GetContentRegionAvail();
 	// 音色を選ぶ面は、左に分類・右に音色とバンク違いの 2 列（xgui::program_pane）
 	const float pane_w = std::min(fs * 26.0f, avail.x * 0.5f);
-	// 下の説明の帯（3 行ぶん）を残す
-	const float bar_h = ImGui::GetTextLineHeightWithSpacing() * 3.0f + st.WindowPadding.y * 2.0f;
+	// 下の説明の帯（4 行ぶん。入り切らなかった字の行と、説明の 3 行）を残す
+	const float bar_h = ImGui::GetTextLineHeightWithSpacing() * 4.0f + st.WindowPadding.y * 2.0f;
 	const float body_h = std::max(fs * 8.0f, avail.y - bar_h - st.ItemSpacing.y);
 
 	if (ImGui::BeginChild("voicepane", ImVec2(pane_w, body_h)))
@@ -227,6 +250,13 @@ void part_shapes::draw(xg::model &m, const xg_snapshot &ram, bridge &br)
 
 	// ---- 説明の帯。カーソルを載せた絵・値・名前の説明（無ければ使い方のひとこと）
 	if (ImGui::BeginChild("hint", ImVec2(0, 0), ImGuiChildFlags_Borders)) {
+		// 絵に入り切らなかった点の字は、いつもここの頭に
+		const std::string &hv = hidden_values();
+		if (!hv.empty()) {
+			ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255, 214, 120, 255));
+			ImGui::TextWrapped("%s", hv.c_str());
+			ImGui::PopStyleColor();
+		}
 		const std::string &t = hint_text();
 		if (t.empty())
 			ImGui::TextDisabled("絵の点や値、名前にカーソルを載せると、ここに説明が出る");
