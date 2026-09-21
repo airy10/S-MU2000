@@ -246,35 +246,13 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		return 0;
 
 	case WM_TIMER: {
-		// パラメータの層: 音源の返事を読み、見えている面の読み返しを頼む
-		g_win->panel.tick(g_win->br);
-		// PC の窓（一覧の上の帯）に CPU の負荷を出すため
-		if (g_win->out && g_win->out->produced())
-			g_win->br.set_cpu(float(g_win->out->cpu_percent()));
-		// いまどちらの口で鳴らしているか（F4 で切り替わる）を一覧の帯へ
-		g_win->br.set_engine(g_win->eng ? g_win->eng->native_engine.load() : -1);
+		// The window's timer work is shared (ui::app::poll); only driving
+		// the PC editor windows stays here (different window types)
+		g_win->poll();
 		ui::pc_frame_all(g_win->list, g_win->pc, g_win->fx, g_win->shapes, g_win->master,
 		                 g_win->panel.xg(), g_win->panel.ram(), g_win->br,
 		                 [&](ui::pc_window &w) { ui::win_open_window(hwnd, w); });
 		InvalidateRect(hwnd, nullptr, FALSE);
-		// SmartMedia に書いたものを 2 秒ごとにファイルへ書き戻す（抜いたとき・閉じたときも）
-		g_win->card_tick();
-		// MIDI の輪などで溢れて捨てたものがあれば、1 秒に 1 回だけ知らせる
-		static DWORD last = 0;
-		if (g_win->eng && GetTickCount() - last > 1000) {
-			last = GetTickCount();
-			const u64 drops = g_win->eng->guard_a.dropped() + g_win->eng->guard_b.dropped() +
-			                  g_win->eng->mu.midi_dropped();
-			if (drops != g_win->reported_drops) {
-				std::fprintf(stderr,
-				             "MIDI が多すぎるので捨てた: THRU A %llu / THRU B %llu / 受信 %llu バイト"
-				             "（MIDI の輪ができていないか確かめる）\n",
-				             (unsigned long long)g_win->eng->guard_a.dropped(),
-				             (unsigned long long)g_win->eng->guard_b.dropped(),
-				             (unsigned long long)g_win->eng->mu.midi_dropped());
-				g_win->reported_drops = drops;
-			}
-		}
 		return 0;
 	}
 

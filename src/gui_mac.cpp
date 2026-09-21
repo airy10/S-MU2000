@@ -125,20 +125,13 @@ public:
 
 	void draw(void *cg, int w, int h) override
 	{
-		// The window's timer is where this has to happen: it touches the bridge,
-		// so it must not run on the audio thread (same as gui.cpp's WM_TIMER)
-		panel.tick(br);
-		// the CPU load for the PC windows (the overview's top strip)
-		if (out && out->produced())
-			br.set_cpu(float(out->cpu_percent()));
-		// いまどちらの口で鳴らしているか（F4 で切り替わる）を一覧の帯へ。
-		// Windows 側は gui.cpp の WM_TIMER で同じことを書く
-		br.set_engine(eng ? eng->native_engine.load() : -1);
+		// The window's timer work is shared (ui::app::poll: panel tick,
+		// CPU/engine publishing, card flush, drop reports); only driving
+		// the PC editor windows stays here (different window types)
+		poll();
 		// the PC editor windows, where the Windows side has its WM_TIMER
 		ui::pc_frame_all(list, pc, fx, shapes, master, panel.xg(), panel.ram(), br,
 		                 [&](ui::pc_window &w) { open_editor_window(w); });
-		card_tick();
-		report_drops();
 
 		// The view's context is already top-left, y down, so the shared
 		// painter (ui::app::paint_into) takes it as it stands.
@@ -160,12 +153,9 @@ public:
 
 	bool mouse_down(int x, int y, bool right) override
 	{
-		if (lcd_only)
-			return false;
 		// Decided and acted in the base; the window only reports whether
 		// a popup follows (its infra then asks context_menu for the items)
-		const mouse_out o = do_mouse_down(x, y, right);
-		return o.show_menu || o.opened_window;
+		return press_at(x, y, right);
 	}
 
 	void mouse_drag(int x, int y) override
@@ -302,32 +292,7 @@ public:
 		play_song(path);
 	}
 
-	// A MIDI loop (THRU fed back into an IN) overflows the guards. gui.cpp says
-	// so once a second rather than once a block; the same here, from the window's
-	// timer rather than from the paint
-	void report_drops()
-	{
-		if (!eng)
-			return;
-		const u64 now = smu2000::perf_ticks() * 1000 / smu2000::perf_freq();
-		if (now - last_drop_report < 1000)
-			return;
-		last_drop_report = now;
-		const u64 drops = eng->guard_a.dropped() + eng->guard_b.dropped() +
-		                  eng->mu.midi_dropped();
-		if (drops == reported_drops)
-			return;
-		reported_drops = drops;
-		std::fprintf(stderr,
-		             "MIDI が多すぎるので捨てた: THRU A %llu / THRU B %llu / 受信 %llu バイト"
-		             "（MIDI の輪ができていないか確かめる）\n",
-		             (unsigned long long)eng->guard_a.dropped(),
-		             (unsigned long long)eng->guard_b.dropped(),
-		             (unsigned long long)eng->mu.midi_dropped());
-	}
-
 private:
-	u64 last_drop_report = 0;          // when the MIDI drops were last said out loud
 };
 
 

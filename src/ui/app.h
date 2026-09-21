@@ -268,6 +268,17 @@ public:
 		panel.release(br);
 	}
 
+	// A press all the way through, for windows whose infra asks only
+	// whether a popup follows (the press state still feeds drag/up).
+	// True when a popup follows
+	bool press_at(int x, int y, bool right)
+	{
+		if (lcd_only)
+			return false;
+		const mouse_out o = do_mouse_down(x, y, right);
+		return o.show_menu || o.opened_window;
+	}
+
 	bool do_wheel(int x, int y, int steps)
 	{
 		if (lcd_only || !steps)
@@ -426,6 +437,42 @@ public:
 			return;
 		last_flush = now;
 		flush_card();
+	}
+
+	// A MIDI loop (THRU fed back into an IN) overflows the guards. Said out
+	// loud once a second, from the window's timer rather than the paint
+	void report_drops()
+	{
+		if (!eng)
+			return;
+		const u64 now = smu2000::perf_ticks() * 1000 / smu2000::perf_freq();
+		if (now - last_drop_report < 1000)
+			return;
+		last_drop_report = now;
+		const u64 drops = eng->guard_a.dropped() + eng->guard_b.dropped() +
+		                  eng->mu.midi_dropped();
+		if (drops == reported_drops)
+			return;
+		reported_drops = drops;
+		std::fprintf(stderr,
+		             "MIDI が多すぎるので捨てた: THRU A %llu / THRU B %llu / 受信 %llu バイト"
+		             "（MIDI の輪ができていないか確かめる）\n",
+		             (unsigned long long)eng->guard_a.dropped(),
+		             (unsigned long long)eng->guard_b.dropped(),
+		             (unsigned long long)eng->mu.midi_dropped());
+	}
+
+	// The window's timer work, both sides: feed the panel, publish CPU and
+	// engine state for the PC windows, flush the card file, report drops.
+	// Opening/drawing the PC windows stays per side (different window types)
+	void poll()
+	{
+		panel.tick(br);
+		if (out && out->produced())
+			br.set_cpu(float(out->cpu_percent()));
+		br.set_engine(eng ? eng->native_engine.load() : -1);
+		card_tick();
+		report_drops();
 	}
 
 	void eject_card()
@@ -667,6 +714,7 @@ protected:
 	}
 
 	u64 last_flush = 0;                // card file last written back
+	u64 last_drop_report = 0;          // MIDI drops last said out loud
 	bool pressed = false;            // a panel press is in flight (drag/up)
 };
 
