@@ -23,7 +23,7 @@
 #include "ui/part_shapes.h"
 #include "ui/pc_editor.h"
 #include "ui/pc_host.h"
-#include "ui/pc_window_mac.h"
+#include "ui/pc_window.h"
 #include "ui/xg_ui.h"
 
 #include <algorithm>

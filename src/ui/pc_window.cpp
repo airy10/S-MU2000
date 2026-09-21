@@ -1,6 +1,7 @@
 // license:BSD-3-Clause
 
 #include "pc_window.h"
+#include "text.h"
 
 #include "imgui.h"
 #include "backends/imgui_impl_dx11.h"
@@ -297,7 +298,7 @@ LRESULT CALLBACK pc_window::proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
 		const bool got = DragQueryFileW(drop, 0, path, UINT(std::size(path))) > 0;
 		DragFinish(drop);
 		if (got && s_drop)
-			s_drop(path);
+			s_drop(to_utf8(path));
 		return 0;
 	}
 	}

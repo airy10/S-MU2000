@@ -23,7 +23,7 @@
 // side presents the swap chain with no wait, and so does this: the gui timer
 // decides the pace.
 
-#include "pc_window_mac.h"
+#include "ui/pc_window.h"
 
 #import <Cocoa/Cocoa.h>
 #import <Metal/Metal.h>
@@ -40,23 +40,10 @@
 
 namespace ui {
 
-using drop_fn = void (*)(const std::string &);
-
-static drop_fn &drop_handler()
-{
-	static drop_fn fn = nullptr;
-	return fn;
-}
-
-void pc_window::set_drop_handler(drop_fn fn)
-{
-	drop_handler() = fn;
-}
-
 void pc_window_drop_file(const std::string &path)
 {
-	if (drop_handler())
-		drop_handler()(path);
+	if (pc_window::s_drop)
+		pc_window::s_drop(path);
 }
 
 } // namespace ui

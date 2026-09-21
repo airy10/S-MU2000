@@ -53,6 +53,22 @@ inline std::vector<tool_item> window_bar_items()
 	         { "マスター", BAR_MASTER } };
 }
 
+class pc_window;   // ui/pc_window.h (one class, two hosts)
+
+// Which PC window a toolbar id names. One place so no front end maps one
+// button to a different window
+inline pc_window *window_for_kind(int kind, pc_window &list, pc_window &editor,
+                                  pc_window &fx, pc_window &shapes, pc_window &master)
+{
+	switch (kind) {
+	case BAR_EDITOR: return &editor;
+	case BAR_FX:     return &fx;
+	case BAR_SHAPES: return &shapes;
+	case BAR_MASTER: return &master;
+	default:         return &list;
+	}
+}
+
 class toolbar
 {
 public:

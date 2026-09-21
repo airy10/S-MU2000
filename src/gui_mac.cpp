@@ -49,12 +49,13 @@
 #include "ui/part_shapes.h"
 #include "ui/pc_editor.h"
 #include "ui/pc_host.h"
-#include "ui/pc_window_mac.h"
+#include "ui/pc_window.h"
 #include "ui/player.h"
 #include "ui/png.h"
 #include "ui/shot.h"
 #include "ui/app.h"
 #include "ui/toolbar.h"
+#include "ui/tool_args.h"
 #include "ui/keymap.h"
 #include "ui/options.h"
 #include "ui/settings.h"
@@ -110,14 +111,6 @@ public:
 	gui_app(ui::bridge &b, ui::midi_in *mi,
 	    ui::midi_out &tha, ui::midi_out &thb, ui::midi_out &muo)
 	    : ui::app(b, mi, tha, thb, muo) {}
-
-	// The PC editor windows. Same contents as on Windows; only the window is
-	// AppKit + Metal (ui/pc_window_mac.mm). F2 / F3 or right-click opens them
-	ui::pc_window pc{ std::make_unique<ui::pc_editor>() };    // PC editor (F2 or right-click)
-	ui::pc_window list{ std::make_unique<ui::overview>() };   // overview (F3 or right-click)
-	ui::pc_window fx{ std::make_unique<ui::fx_editor>() };    // insertion settings (double-click in the overview)
-	ui::pc_window shapes{ std::make_unique<ui::part_shapes>() };  // part voice (double-click a VIB/FILTER/EG/EQ cell in the overview)
-	ui::pc_window master{ std::make_unique<ui::master_editor>() }; // master (double-click the MASTER row in the overview)
 
 	std::string layout_path;
 
@@ -265,23 +258,7 @@ public:
 
 	void open_window_by_kind(int kind) override
 	{
-		if (kind == ui::BAR_LIST)         open_editor_window(list);
-		else if (kind == ui::BAR_EDITOR)  open_editor_window(pc);
-		else if (kind == ui::BAR_SHAPES)  open_editor_window(shapes);
-		else if (kind == ui::BAR_FX)      open_editor_window(fx);
-		else if (kind == ui::BAR_MASTER)  open_editor_window(master);
-	}
-
-	void set_layout(const std::string &path)
-	{
-		layout_path = path;
-		panel.lay() = ui::layout();
-		std::string err;
-		if (!path.empty() && !panel.lay().load(path, err))
-			std::printf("配置: %s を開けない。組み込みの配置を使う\n", path.c_str());
-		if (!err.empty())
-			std::fprintf(stderr, "%s", err.c_str());
-		panel.resize(panel.width(), panel.height());
+		open_editor_window(*ui::window_for_kind(kind, list, pc, fx, shapes, master));
 	}
 
 	// A file dropped on the window is played, which is what gui.cpp's
@@ -315,129 +292,30 @@ int main(int argc, char **argv)
 {
 	smu2000::init_console_utf8();
 
-	std::string dir, shot_path, dump_layout, play_path;
-	std::string layout_path;
+	ui::tool_args a;
+	a.latency = 30;
 	ui::window_options win_opts;     // --editor/--lcd etc., shared (ui/options.h)
-	// MIDI IN A-D. -2 unset (use the remembered one) / -1 unused
-	int in_dev[mu2000::MIDI_PORTS] = { -2, -2, -2, -2 };
-	// Start as the machine does with HOST SELECT = USB, which is what makes ports
-	// C and D usable. --host-midi turns it off (the DIN ports A and B only)
-	bool usb_host = true;
 	ui::engine_options eng_opts;     // --fast-midi/--native-fx*, shared (ui/options.h)
-	int mout_dev = -2;
-	int moutb_dev = -2;
-	int moutmu_dev = -2;               // the machine's own MIDI OUT
-	int latency = 30;
 	ui::output_options out_opts;
-	int win_w = 1000, win_h = 400;
-	bool size_given = false;
-	bool grid = false;
-	bool boot_for_shot = false;
-	bool nomidi = false;               // --nomidi: open and remember no MIDI port
-	std::string shot_mid;
-	double shot_secs = 0.0;
 
-	for (int i = 1; i < argc; i++) {
-		if (!std::strcmp(argv[i], "--list")) {
-			const auto ins = ui::midi_in::list();
-			std::printf("MIDI 入力（--midi 番号 / 画面からも選べる）:\n");
-			for (size_t k = 0; k < ins.size(); k++)
-				std::printf("  %zu: %s\n", k, ins[k].c_str());
-			if (ins.empty())
-				std::printf("  （なし）\n");
-			const auto outs = ui::midi_out::list();
-			std::printf("MIDI 出力（--midiout 番号 / 受けたものをそのまま外へ）:\n");
-			for (size_t k = 0; k < outs.size(); k++)
-				std::printf("  %zu: %s\n", k, outs[k].c_str());
-			if (outs.empty())
-				std::printf("  （なし）\n");
-			// Same as gui.cpp: the names --audio takes are matched as substrings
-			const auto aouts = ui::audio_out::list();
-			std::printf("音声の出口（--audio に名前の一部）:\n");
-			for (size_t k = 0; k < aouts.size(); k++)
-				std::printf("  %zu: %s\n", k, aouts[k].c_str());
-			const auto ains = ui::audio_in::list();
-			std::printf("A/D INPUT（録音デバイス。画面から選ぶ）:\n");
-			for (size_t k = 0; k < ains.size(); k++)
-				std::printf("  %zu: %s\n", k, ains[k].c_str());
-			if (ains.empty())
-				std::printf("  （なし）\n");
-			return 0;
-		}
-		else if (!std::strcmp(argv[i], "--midi") && i + 1 < argc) in_dev[0] = std::atoi(argv[++i]);
-		else if (!std::strcmp(argv[i], "--midi-b") && i + 1 < argc) in_dev[1] = std::atoi(argv[++i]);
-		else if (!std::strcmp(argv[i], "--midi-c") && i + 1 < argc) in_dev[2] = std::atoi(argv[++i]);
-		else if (!std::strcmp(argv[i], "--midi-d") && i + 1 < argc) in_dev[3] = std::atoi(argv[++i]);
-		else if (!std::strcmp(argv[i], "--usb")) usb_host = true;
-		else if (!std::strcmp(argv[i], "--host-midi")) usb_host = false;
-		else if (!std::strcmp(argv[i], "--midiout") && i + 1 < argc) mout_dev = std::atoi(argv[++i]);
-		else if (!std::strcmp(argv[i], "--midiout-b") && i + 1 < argc) moutb_dev = std::atoi(argv[++i]);
-		else if (!std::strcmp(argv[i], "--midiout-mu") && i + 1 < argc) moutmu_dev = std::atoi(argv[++i]);
-		else if (ui::consume_engine_option(argv[i], eng_opts)) {}
-		else if (!std::strcmp(argv[i], "--nomidi")) {
-			// Nothing is opened and nothing is remembered: this is for tests,
-			// which must leave the real settings file the way they found it.
-			// The app itself is made further down, so the flag is carried there
-			for (int &d : in_dev) d = -1;
-			mout_dev = moutb_dev = moutmu_dev = -1;
-			nomidi = true;
-		}
-		else if (!std::strcmp(argv[i], "--latency") && i + 1 < argc) latency = std::atoi(argv[++i]);
-		else if (ui::consume_output_option(argv, argc, i, out_opts)) {}
-		else if (ui::consume_window_option(argv[i], win_opts)) {}
-		else if (!std::strcmp(argv[i], "--shot") && i + 1 < argc) shot_path = argv[++i];
-		else if (!std::strcmp(argv[i], "--boot")) boot_for_shot = true;
-		else if (!std::strcmp(argv[i], "--grid")) grid = true;
-		else if (!std::strcmp(argv[i], "--layout") && i + 1 < argc) layout_path = argv[++i];
-		else if (!std::strcmp(argv[i], "--play") && i + 1 < argc) play_path = argv[++i];
-		else if (!std::strcmp(argv[i], "--dump-layout") && i + 1 < argc) dump_layout = argv[++i];
-		else if (!std::strcmp(argv[i], "--mid") && i + 2 < argc) {
-			shot_mid = argv[++i];
-			shot_secs = std::atof(argv[++i]);
-			boot_for_shot = true;
-		}
-		else if (!std::strcmp(argv[i], "--size") && i + 1 < argc) {
-			if (std::sscanf(argv[++i], "%dx%d", &win_w, &win_h) != 2) { win_w = 1000; win_h = 400; }
-			size_given = true;
-		}
-		else if (dir.empty()) dir = argv[i];
-	}
-	if (win_opts.lcd_only && !size_given) {
-		win_w = 898;
-		win_h = 290;
-	}
-
-	// Without --layout, look through the usual places in order
-	if (layout_path.empty())
-		layout_path = ui::layout::find_default();
-
-	if (!dump_layout.empty()) {
-		ui::layout l;
-		std::string lerr;
-		if (!layout_path.empty())
-			l.load(layout_path, lerr);
-		if (!l.save(dump_layout)) {
-			std::fprintf(stderr, "%s に書けない\n", dump_layout.c_str());
-			return 1;
-		}
-		std::printf("いまの配置を書き出した: %s\n", dump_layout.c_str());
-		std::printf("直したら --layout で渡すか、窓で F5 を押す\n");
-		return 0;
-	}
+	// The flags are shared (ui/tool_args.h); only a.latency above stays per side
+	const int parsed = ui::parse_tool_args(argc, argv, a, eng_opts, out_opts, win_opts);
+	if (parsed >= 0)
+		return parsed;
 
 	static ui::bridge br;
 	static ui::midi_in  midi_ports[mu2000::MIDI_PORTS];
 	static ui::midi_out mout, mout_b, mout_mu;
 
 	// Picture only. An empty screen can be drawn even without any ROMs.
-	if (!shot_path.empty() && (dir.empty() || !boot_for_shot)) {
+	if (!a.shot_path.empty() && (a.dir.empty() || !a.boot_for_shot)) {
 		ui::snapshot s;
 		std::snprintf(s.message, sizeof(s.message), "S-MU2000");
 		br.publish(s);
-		return ui::write_shot(shot_path, win_w, win_h, br, grid, win_opts.lcd_only, layout_path);
+		return ui::write_shot(a.shot_path, a.win_w, a.win_h, br, a.grid, win_opts.lcd_only, a.layout_path);
 	}
 
-	if (dir.empty()) {
+	if (a.dir.empty()) {
 		std::fprintf(stderr,
 			"使い方: gui <rom ディレクトリ> [--midi 番号] [--midi-b 番号] [--midi-c 番号] [--midi-d 番号]"
 			" [--midiout 番号] [--midiout-b 番号] [--midiout-mu 番号]"
@@ -464,7 +342,7 @@ int main(int argc, char **argv)
 	eng.mout_b = &mout_b;
 	eng.mout_mu = &mout_mu;
 	eng.mout = &mout;
-	if (!eng.load(dir)) {
+	if (!eng.load(a.dir)) {
 		std::fprintf(stderr, "%s\n", eng.message.c_str());
 		return 1;
 	}
@@ -478,12 +356,12 @@ int main(int argc, char **argv)
 	//
 	// Decided before any boot: reset() keys the host-present message on this,
 	// and the --shot boot below returns early. Same move as gui.cpp.
-	eng.mu.set_usb_host(usb_host);
-	std::printf(usb_host ? "MIDI は USB の口（A-D の 64 パート）\n"
+	eng.mu.set_usb_host(a.usb_host);
+	std::printf(a.usb_host ? "MIDI は USB の口（A-D の 64 パート）\n"
 	                     : "--host-midi: DIN の口 A・B だけ（パート 1-32）\n");
 
 	// Picture only, but taken after boot so the LCD has something on it
-	if (!shot_path.empty()) {
+	if (!a.shot_path.empty()) {
 		if (!eng.boot()) { std::fprintf(stderr, "%s\n", eng.message.c_str()); return 1; }
 		eng.state.store(1);
 
@@ -495,16 +373,16 @@ int main(int argc, char **argv)
 		}
 
 		// The level meters need signal, so stream MIDI first when one was given
-		if (!shot_mid.empty()) {
+		if (!a.shot_mid.empty()) {
 			std::vector<smf::event> evs;
 			std::string err;
-			if (!smf::load(shot_mid, evs, err)) {
+			if (!smf::load(a.shot_mid, evs, err)) {
 				std::fprintf(stderr, "%s\n", err.c_str());
 			} else {
-				std::printf("MIDI %zu 件を %.1f 秒ぶん流す\n", evs.size(), shot_secs);
+				std::printf("MIDI %zu 件を %.1f 秒ぶん流す\n", evs.size(), a.shot_secs);
 				size_t at = 0;
 				s32 l, r;
-				for (size_t i = 0; i < size_t(shot_secs * RATE); i++) {
+				for (size_t i = 0; i < size_t(a.shot_secs * RATE); i++) {
 					const double now = double(i) / RATE;
 					while (at < evs.size() && evs[at].time <= now) {
 						for (u8 b : evs[at].bytes)
@@ -517,7 +395,7 @@ int main(int argc, char **argv)
 		}
 
 		eng.publish();
-		return ui::write_shot(shot_path, win_w, win_h, br, grid, win_opts.lcd_only, layout_path);
+		return ui::write_shot(a.shot_path, a.win_w, a.win_h, br, a.grid, win_opts.lcd_only, a.layout_path);
 	}
 
 	// ---- Put the window up
@@ -526,7 +404,7 @@ int main(int argc, char **argv)
 	g_gui = &gui;
 	// a MIDI file dropped on any window plays (the panel, the editor, the overview)
 	ui::pc_window::set_drop_handler(play_dropped_file);
-	gui.keep_settings = nomidi;
+	gui.keep_settings = a.nomidi;
 	gui.eng = &eng;
 	gui.state = &eng.state;
 	gui.lcd_only = win_opts.lcd_only;
@@ -535,9 +413,10 @@ int main(int argc, char **argv)
 		gui.bar.set_items(ui::window_bar_items());
 		gui.panel.set_top_inset(ui::toolbar::HEIGHT);
 	}
-	gui.panel.resize(win_w, win_h);
-	gui.set_layout(layout_path);
-	gui.panel.resize(win_w, win_h);
+	gui.panel.resize(a.win_w, a.win_h);
+	gui.layout_path = a.layout_path;
+	gui.apply_layout(a.layout_path, false);
+	gui.panel.resize(a.win_w, a.win_h);
 
 	// Only the window uses the remembered settings: --shot has to give the same
 	// picture every time
@@ -572,11 +451,11 @@ int main(int argc, char **argv)
 		if (!want.card.empty())
 			gui.insert_card(want.card, true);
 		for (int p = 0; p < mu2000::MIDI_PORTS; p++)
-			if (in_dev[p] == -2)
-				in_dev[p] = find_device(ui::midi_in::list(), want.in[p]);
-		if (mout_dev == -2)  mout_dev   = find_device(ui::midi_out::list(), want.out);
-		if (moutb_dev == -2)  moutb_dev  = find_device(ui::midi_out::list(), want.out_b);
-		if (moutmu_dev == -2) moutmu_dev = find_device(ui::midi_out::list(), want.out_mu);
+			if (a.in_dev[p] == -2)
+				a.in_dev[p] = find_device(ui::midi_in::list(), want.in[p]);
+		if (a.mout_dev == -2)  a.mout_dev   = find_device(ui::midi_out::list(), want.out);
+		if (a.moutb_dev == -2)  a.moutb_dev  = find_device(ui::midi_out::list(), want.out_b);
+		if (a.moutmu_dev == -2) a.moutmu_dev = find_device(ui::midi_out::list(), want.out_mu);
 
 		// A port that is not there yet keeps its name in the settings
 		for (int p = 0; p < mu2000::MIDI_PORTS; p++)
@@ -585,10 +464,10 @@ int main(int argc, char **argv)
 		gui.out_keep_b  = want.out_b;
 		gui.out_keep_mu = want.out_mu;
 		for (int p = 0; p < mu2000::MIDI_PORTS; p++)
-			gui.choose_in(p, in_dev[p], true);
-		gui.choose_out(mout_dev, true);
-		gui.choose_out_b(moutb_dev, true);
-		gui.choose_out_mu(moutmu_dev, true);
+			gui.choose_in(p, a.in_dev[p], true);
+		gui.choose_out(a.mout_dev, true);
+		gui.choose_out_b(a.moutb_dev, true);
+		gui.choose_out_mu(a.moutmu_dev, true);
 		// Show the name that was remembered when the port could not be opened,
 		// so it is visible that the choice was not lost
 		auto show = [](const char *label, const std::string &now, const std::string &keep) {
@@ -631,7 +510,7 @@ int main(int argc, char **argv)
 		eng.publish();
 
 		std::string err;
-		if (!out.start(latency, [](s16 *o, u32 n) { eng.fill(o, n); }, err, out_opts.exclusive,
+		if (!out.start(a.latency, [](s16 *o, u32 n) { eng.fill(o, n); }, err, out_opts.exclusive,
 		               gui.audio_name)) {
 			std::fprintf(stderr, "音声: %s\n", err.c_str());
 			eng.message = "音声デバイスを開けない";
@@ -663,8 +542,8 @@ int main(int argc, char **argv)
 			std::printf("独り占め: %s\n", out.exclusive() ? "取れた" : "取れなかった");
 		gui.save_settings();
 		// With --play, start streaming as soon as it begins to sound
-		if (!play_path.empty())
-			gui.play_song(play_path);
+		if (!a.play_path.empty())
+			gui.play_song(a.play_path);
 		std::printf("鳴らしている（待ち時間 %.1f ms、%s）\n",
 		            1000.0 * out.buffer_frames() / RATE,
 		            out.mmcss() ? "CoreAudio の実時間スレッド"
@@ -684,7 +563,7 @@ int main(int argc, char **argv)
 	if (win_opts.open_master && !win_opts.lcd_only)
 		gui.open_editor_window(gui.master);
 
-	ui::run_window(gui, "S-MU2000", win_w, win_h);
+	ui::run_window(gui, "S-MU2000", a.win_w, a.win_h);
 
 	// tell the editor windows we are closing (unmute the overview, restore its
 	// receive channels, ...). The audio thread drains what we sent, so pause

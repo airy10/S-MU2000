@@ -19,6 +19,7 @@
 
 #include <atomic>
 #include <cstdio>
+#include <memory>
 #include <string>
 #include <thread>
 
@@ -26,9 +27,15 @@
 #include "ui/audio_out.h"
 #include "ui/bridge.h"
 #include "ui/engine.h"
+#include "ui/fx_editor.h"
 #include "ui/keymap.h"
+#include "ui/master_editor.h"
 #include "ui/menu.h"
+#include "ui/overview.h"
 #include "ui/panel.h"
+#include "ui/part_shapes.h"
+#include "ui/pc_editor.h"
+#include "ui/pc_window.h"
 #include "ui/player.h"
 #include "ui/settings.h"
 #include "ui/snapshot.h"
@@ -61,6 +68,13 @@ public:
 	panel  panel;
 	player play;
 	toolbar bar;                     // the window button bar (not on --lcd)
+
+	// The five PC windows both sides show (same contents, own host window)
+	pc_window list{ std::make_unique<overview>() };
+	pc_window pc{ std::make_unique<pc_editor>() };
+	pc_window fx{ std::make_unique<fx_editor>() };
+	pc_window shapes{ std::make_unique<part_shapes>() };
+	pc_window master{ std::make_unique<master_editor>() };
 
 	struct engine *eng = nullptr;    // set once the ROMs are loaded
 	std::atomic<int> *state = nullptr; // the engine's, so menus can grey out
