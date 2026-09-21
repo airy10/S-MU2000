@@ -907,7 +907,7 @@ int main(int argc, char **argv)
 	int moutmu_dev = -2;               // the machine's own MIDI OUT
 	int latency = 30;
 	ui::output_options out_opts;
-	int win_w = 1400, win_h = 360;
+	int win_w = 1000, win_h = 400;
 	bool size_given = false;
 	bool grid = false;
 	bool boot_for_shot = false;
@@ -975,7 +975,7 @@ int main(int argc, char **argv)
 			boot_for_shot = true;
 		}
 		else if (!std::strcmp(argv[i], "--size") && i + 1 < argc) {
-			if (std::sscanf(argv[++i], "%dx%d", &win_w, &win_h) != 2) { win_w = 1400; win_h = 360; }
+			if (std::sscanf(argv[++i], "%dx%d", &win_w, &win_h) != 2) { win_w = 1000; win_h = 400; }
 			size_given = true;
 		}
 		else if (dir.empty()) dir = argv[i];
@@ -1028,7 +1028,7 @@ int main(int argc, char **argv)
 			"        [--master-window] マスターの窓も開く（一覧でマスターの行をダブルクリック）\n"
 			"        gui --dump-layout panel.txt   いまの配置を書き出す\n"
 			"        gui --list\n"
-			"        gui [<rom ディレクトリ> --boot] --shot 絵.png [--size 1400x440]\n");
+			"        gui [<rom ディレクトリ> --boot] --shot 絵.png [--size 1000x400]\n");
 		return 1;
 	}
 
