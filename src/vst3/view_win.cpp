@@ -105,8 +105,16 @@ public:
 	void card_menu(int x, int y) override;
 	void alert(const std::string &text) override;
 	void pc_frame(::xg::model &m, const ::ui::xg_snapshot &ram, ::ui::bridge &br) override;
-	void open_list() override { open_pc(m_list); }
-	void open_editor() override { open_pc(m_editor); }
+	void open_pc_window(int kind) override
+	{
+		switch (kind) {
+		case PC_EDITOR: open_pc(m_editor); break;
+		case PC_FX:     open_pc(m_fx);     break;
+		case PC_SHAPES: open_pc(m_shapes); break;
+		case PC_MASTER: open_pc(m_master); break;
+		default:        open_pc(m_list);   break;
+		}
+	}
 
 private:
 	static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp);

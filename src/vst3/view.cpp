@@ -18,6 +18,7 @@
 #include "ui/bridge.h"
 #include "ui/layout.h"
 #include "ui/panel.h"
+#include "ui/toolbar.h"
 
 #if !defined(_WIN32)
 #include <CoreGraphics/CoreGraphics.h>
@@ -73,6 +74,9 @@ struct plug_view::impl
 {
 	engine  &eng;
 	ui::panel panel;
+	// **窓を開くボタンの帯**。F3・F2 をホストが先に食う
+	// DAW でも、ここからなら確実に開ける（ui/toolbar.h）
+	ui::toolbar bar;
 
 #if defined(_WIN32)
 	// Double buffered: the host repaints at 30 frames a second and drawing
@@ -82,7 +86,13 @@ struct plug_view::impl
 	int     mem_w = 0, mem_h = 0;
 #endif
 
-	explicit impl(engine &e) : eng(e) {}
+	explicit impl(engine &e) : eng(e)
+	{
+		bar.set_items({ { "一覧", PC_LIST }, { "エディタ", PC_EDITOR },
+		                { "音色", PC_SHAPES }, { "エフェクト", PC_FX },
+		                { "マスター", PC_MASTER } });
+		panel.set_top_inset(ui::toolbar::HEIGHT);
+	}
 
 	void paint_panel(HDC dc)
 	{
@@ -94,6 +104,8 @@ struct plug_view::impl
 
 		panel.set_volume(eng.panel().gain());
 		panel.paint(dc, s, eng.panel().buttons(), status);
+		// 帯はパネルの**あと**に描く（パネルは全面を塗る）
+		bar.paint(dc, panel.width());
 	}
 
 	void forget_backing()
@@ -284,6 +296,17 @@ void plug_view::repaint(void *native, int w, int h)
 
 void plug_view::mouse_down(int x, int y)
 {
+	// **帯が先**。ここはパネルでは無いので、機器には何も伝えない
+	const int id = m_impl->bar.hit(x, y);
+	if (id >= 0) {
+		m_impl->bar.set_down(id);
+		if (m_window)
+			m_window->open_pc_window(id);
+		return;
+	}
+	if (y < ui::toolbar::HEIGHT)
+		return;                  // 帯の隙間
+
 	// The card slot is not a button but a menu: a click there is about the image
 	// in the slot, and the machine is told nothing
 	if (card_slot_at(x, y)) {
@@ -309,7 +332,11 @@ void plug_view::mouse_right(int x, int y)
 
 void plug_view::mouse_drag(int x, int y) { m_impl->panel.drag(x, y, m_engine.panel()); }
 
-void plug_view::mouse_up()               { m_impl->panel.release(m_engine.panel()); }
+void plug_view::mouse_up()
+{
+	m_impl->bar.set_down(-1);
+	m_impl->panel.release(m_engine.panel());
+}
 
 void plug_view::wheel(int x, int y, int steps)
 {
@@ -321,12 +348,8 @@ void plug_view::key(int code, bool down)
 {
 	// 窓を開くキーはパネルのボタンでは無いので、押したときだけ見る
 	if (code == PLUG_KEY_LIST || code == PLUG_KEY_EDITOR) {
-		if (down && m_window) {
-			if (code == PLUG_KEY_LIST)
-				m_window->open_list();
-			else
-				m_window->open_editor();
-		}
+		if (down && m_window)
+			m_window->open_pc_window(code == PLUG_KEY_LIST ? PC_LIST : PC_EDITOR);
 		return;
 	}
 	bool ok = false;

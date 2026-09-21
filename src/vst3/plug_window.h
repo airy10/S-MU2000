@@ -59,6 +59,15 @@ enum plug_key {
 	PLUG_KEY_EDITOR,
 };
 
+// Which PC window. The button bar and the keys both name them this way
+enum pc_kind {
+	PC_LIST = 0,      // 一覧
+	PC_EDITOR,        // エディタ
+	PC_FX,            // インサーションの設定
+	PC_SHAPES,        // パートの音色
+	PC_MASTER,        // マスター
+};
+
 // A real window on the host's platform, holding the panel
 class plug_window
 {
@@ -91,10 +100,10 @@ public:
 	// rate; does nothing while no window is visible
 	virtual void pc_frame(::xg::model &, const ::ui::xg_snapshot &, ::ui::bridge &) {}
 
-	// Open one of those windows from a key (F3 / F2). Platforms without
-	// PC windows leave these alone
-	virtual void open_list() {}
-	virtual void open_editor() {}
+	// Open one of those windows, from a key (F3 / F2) or from the button
+	// bar at the top of the panel. Platforms without PC windows leave this
+	// alone
+	virtual void open_pc_window(int kind) {}
 };
 
 // The platform type string this build answers to: kPlatformTypeHWND on

@@ -389,8 +389,16 @@ public:
 
 	// Open a PC window (overview/editor), showing an alert when it fails
 	void open_pc(ui::pc_window &w);
-	void open_list() override { open_pc(m_list); }
-	void open_editor() override { open_pc(m_editor); }
+	void open_pc_window(int kind) override
+	{
+		switch (kind) {
+		case PC_EDITOR: open_pc(m_editor); break;
+		case PC_FX:     open_pc(m_fx);     break;
+		case PC_SHAPES: open_pc(m_shapes); break;
+		case PC_MASTER: open_pc(m_master); break;
+		default:        open_pc(m_list);   break;
+		}
+	}
 
 private:
 	plug_view &m_owner;
