@@ -4,12 +4,10 @@
 // (ui/app_linux.cpp, the pump in gui_linux.cpp). gui_linux.cpp keeps main();
 // the Windows and macOS twins are ui/app_win.h and ui/app_mac.h.
 //
-// Like the Mac, the class lives in files of its own rather than beside the
-// window system code: app.h pulls in the GDI shim, and the shim's Win32
-// names are only neutralized per translation unit, so SDL3's headers are
-// kept out of the same file as the Cocoa-side choices. The layout stays the
-// three files every platform has: window system (window_sdl, sdl_popup,
-// pc_window_linux), app class (this), main (gui_linux.cpp).
+// The class lives in files of its own rather than beside the window system
+// code, so SDL3's headers stay out of the file that pulls in the GDI shim.
+// The layout is the three files every platform has: window system (window_sdl,
+// sdl_popup, pc_window_linux), app class (this), main (gui_linux.cpp).
 //
 // Everything the window shows is Japanese, like Windows and macOS. The
 // contributed English texts (ui/texts.h) and help language stay available

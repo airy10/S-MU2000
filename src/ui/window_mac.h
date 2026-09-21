@@ -3,14 +3,6 @@
 // The macOS window system's services, shared with the Windows (ui/window_win.h)
 // and SDL (ui/window_sdl.h) twins.
 //
-// It used to be the seam between two translation units: Cocoa's headers
-// defined BOOL and Quickdraw's defined Polygon, so compat/gdi.h (and with it
-// ui/app.h) could not be included in the .mm, and the window could only talk
-// to the app through this header's own interface class. That wall is gone --
-// gdi.h spells BOOL as bool (agreeing with objc/objc.h) and renames its own
-// Polygon -- so window_mac.mm includes ui/app.h and talks to ui::app directly,
-// like wnd_proc and the SDL loop do.
-//
 // Nothing in this header mentions AppKit. window_mac.mm implements it; that is
 // the only file in the project compiled as Objective-C++.
 

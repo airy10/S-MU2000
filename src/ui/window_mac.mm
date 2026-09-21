@@ -2,12 +2,9 @@
 //
 // The Cocoa half of the macOS front end.
 //
-// This is the only file compiled as Objective-C++. 
-// BOOL and Quickdraw's typedef the name Polygon, so they are imported first
-// and the two names are mapped aside while the GDI shim (compat/gdi.h, via
-// app.h) is included; nothing here calls the shim's Polygon. Apart from that
-// this file is the twin of window_win.cpp / window_sdl.cpp: windows, events,
-// menus and file panels, with what the events mean decided in ui::app.
+// This is the only file compiled as Objective-C++. Apart from that this file
+// is the twin of window_win.cpp / window_sdl.cpp: windows, events, menus and
+// file panels, with what the events mean decided in ui::app.
 
 #import <Cocoa/Cocoa.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>

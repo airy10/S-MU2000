@@ -44,11 +44,9 @@ using WORD  = uint16_t;
 using DWORD = uint32_t;
 using UINT  = uint32_t;
 using INT   = int32_t;
-// BOOL is bool rather than Windows' int on purpose: it then agrees with
-// Objective-C++'s objc/objc.h typedef (bool), so a translation unit may
-// include Cocoa first and this header after without a redefinition error.
-// Legal because nothing here depends on int-ness -- the functions return
-// TRUE/FALSE and every caller ignores the result.
+// bool, agreeing with objc/objc.h's BOOL, so this header can share a
+// translation unit with Cocoa. Nothing here depends on int-ness: the
+// functions return TRUE/FALSE and callers ignore the result.
 using BOOL  = bool;
 using UINT_PTR = uintptr_t;
 

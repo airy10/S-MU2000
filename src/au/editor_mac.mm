@@ -10,9 +10,10 @@
 // src/vst3/view_mac.mm. Only the way a host asks for it differs, which is the
 // whole reason the two formats can share one engine.
 //
-// Objective-C++ for the same reason view_mac.mm is: compat/gdi.h and Cocoa both
-// define BOOL, and Quickdraw defines Polygon, so the drawing layer is reached
-// only through the void* entry points on plug_view and never included here.
+// Objective-C++ only because it holds Cocoa classes; nothing it includes
+// conflicts with Cocoa (compat/gdi.h renames its own Polygon). The drawing
+// layer is reached through the void* entry points on plug_view and gdi.h is
+// not included here only because the panel is not drawn in this file.
 
 #import <Cocoa/Cocoa.h>
 

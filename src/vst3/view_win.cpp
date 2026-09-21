@@ -6,8 +6,7 @@
 // only the window.
 //
 // Extracted from view.cpp when the macOS port arrived, so that view.cpp could
-// stop including windows.h -- view_mac.mm has to include view.h next to Cocoa,
-// and the two cannot see the same BOOL.
+// stop including windows.h -- view_mac.mm includes view.h next to Cocoa.
 
 #include "plug_window.h"
 #include "view.h"

@@ -5,8 +5,7 @@
 // platform (view_win.cpp, view_mac.mm), reached through plug_window.h.
 //
 // This file is plain C++ and includes compat/gdi.h, which is what paints the
-// panel on both platforms. On macOS that means CoreGraphics is fine to include
-// here too -- it is Cocoa, not CoreGraphics, that clashes with the GDI shim.
+// panel on both platforms.
 
 #include "view.h"
 #include "plug_window.h"
