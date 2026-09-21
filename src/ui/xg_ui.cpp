@@ -862,6 +862,31 @@ const help_text HELP[] = {
 	{ "part.resonance", {
 		"フィルタのレゾナンス（CC71）。カットオフのあたりを強調する",
 		"Filter resonance (CC71). Emphasises the area around the cutoff." } },
+	{ "part.hpf_cutoff", {
+		"ハイパスフィルタのカットオフ。この高さより低い音を削る。＋で低音が減って軽く薄い音に。\n"
+		"音色の元の設定からのずらし量（+0 がそのまま）。レゾナンスは効かない",
+		"High-pass filter cutoff. Removes the sound below it; + thins out the low end.\n"
+		"An offset from the voice's own setting (+0 leaves it). Resonance does not apply to it." } },
+	{ "part.peg_init_level", {
+		"ピッチ EG の出だしの音程。鍵盤を押した瞬間、本来の音程からどれだけずれた所から始まるか。\n"
+		"音色の元の設定からのずらし量",
+		"Pitch EG start level: how far from the true pitch a note starts when the key is pressed.\n"
+		"An offset from the voice's own setting." } },
+	{ "part.peg_attack_time", {
+		"ピッチ EG のアタック。出だしの音程から本来の音程へたどり着くまでの時間",
+		"Pitch EG attack: how long the pitch takes to move from the start level to the true pitch." } },
+	{ "part.peg_rel_level", {
+		"ピッチ EG のリリースレベル。鍵盤を離したあと、音程が最後に向かう先",
+		"Pitch EG release level: where the pitch heads after the key is released." } },
+	{ "part.peg_rel_time", {
+		"ピッチ EG のリリース。鍵盤を離してから、リリースレベルの音程へ移るまでの時間",
+		"Pitch EG release time: how long the pitch takes to reach the release level after key-off." } },
+	{ "part.porta_switch", {
+		"ポルタメント（CC65）。ON で、次の音へ音程が滑らかに移る。ドラムのパートでは使えない",
+		"Portamento (CC65). When ON, the pitch glides into the next note. Not available on drum parts." } },
+	{ "part.porta_time", {
+		"ポルタメントの時間（CC5）。大きいほどゆっくり滑る",
+		"Portamento time (CC5). Higher values glide more slowly." } },
 	{ "part.attack", {
 		"アタック（CC73）。鍵盤を押してから音が立ち上がるまでの速さ。−で速く、＋でゆっくり",
 		"Attack (CC73). How fast the sound rises after a key is pressed. - is faster, + is slower." } },
