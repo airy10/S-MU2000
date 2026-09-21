@@ -346,6 +346,13 @@ void plug_view::wheel(int x, int y, int steps)
 
 void plug_view::key(int code, bool down)
 {
+	// **F4 で native の口を入切**（gui.exe と同じ。6.207）。
+	// 切り替えは音声の糸がつぎの区間の頭で行う
+	if (code == PLUG_KEY_ENGINE) {
+		if (down)
+			m_engine.request_native_engine(m_engine.native_engine() ? 0 : 1);
+		return;
+	}
 	// 窓を開くキーはパネルのボタンでは無いので、押したときだけ見る
 	if (code == PLUG_KEY_LIST || code == PLUG_KEY_EDITOR) {
 		if (down && m_window)

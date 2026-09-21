@@ -57,6 +57,8 @@ enum plug_key {
 	// a mu2000::button
 	PLUG_KEY_LIST,
 	PLUG_KEY_EDITOR,
+	// Toggles the native engine, the way F4 does in gui.exe
+	PLUG_KEY_ENGINE,
 };
 
 // Which PC window. The button bar and the keys both name them this way

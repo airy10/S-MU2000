@@ -85,6 +85,7 @@ int plug_key_of(WPARAM vk)
 	// gui.exe と同じ割り当て。パネルのボタンではなく窓を開く
 	case VK_F3: return PLUG_KEY_LIST;
 	case VK_F2: return PLUG_KEY_EDITOR;
+	case VK_F4: return PLUG_KEY_ENGINE;
 	default: break;
 	}
 	return PLUG_KEY_NONE;

@@ -65,6 +65,7 @@ int plug_key_of_char(int c)
 	// (NSF3FunctionKey / NSF2FunctionKey)
 	case 0xf706: return PLUG_KEY_LIST;
 	case 0xf705: return PLUG_KEY_EDITOR;
+	case 0xf707: return PLUG_KEY_ENGINE;   // NSF4FunctionKey
 	default: break;
 	}
 	return PLUG_KEY_NONE;
