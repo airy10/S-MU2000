@@ -44,6 +44,16 @@ std::string voice_text(int msb, int lsb, int program);
 void set_voice_rom(std::shared_ptr<const std::vector<u8>> rom);
 const xg::voice_rom *voices();
 
+// ---- 説明の帯。窓の下に固定で出す説明の欄（パートの音色の窓）。
+// 帯のある窓は描く前に begin_hint_bar、描き終えたら end_hint_bar。その間は、絵や名前にカーソルを
+// 載せたときの説明をマウスのそばのツールチップでなく帯へ出す（hint）。帯の無い窓ではツールチップのまま
+void begin_hint_bar();
+void end_hint_bar();
+bool hint_bar();
+// 説明を出す。帯があれば帯へ、無ければ直前の部品のツールチップへ（printf の書式）
+void hint(const char *fmt, ...);
+const std::string &hint_text();
+
 // 今のコマの RAM の写し。窓が描く前に置き、絵（音色の中身を読むもの）が読む
 void set_current_ram(const xg_snapshot *ram);
 const xg_snapshot *current_ram();

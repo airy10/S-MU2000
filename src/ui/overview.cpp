@@ -404,9 +404,9 @@ void overview::cell(const column &c, int part, xg::model &m, const xg_snapshot &
 	if (hovered && !active) {
 		const char *what = master ? p->label : c.title;
 		if (dim)
-			ImGui::SetItemTooltip("%s  %s\nバリエーションの接続が INSERTION なので、この値は使われない", what, text.c_str());
+			hint("%s  %s\nバリエーションの接続が INSERTION なので、この値は使われない", what, text.c_str());
 		else
-			ImGui::SetItemTooltip(editable ? "%s  %s\n左右か上下にドラッグ・ホイール・ダブルクリックで打つ"
+			hint(editable ? "%s  %s\n左右か上下にドラッグ・ホイール・ダブルクリックで打つ"
 			                               : "%s  %s\n演奏の値（表示だけ）", what, text.c_str());
 	}
 	ImGui::PopID();
@@ -710,7 +710,7 @@ void overview::peg_cell(int part, xg::model &m, bridge &br, float w, float h, bo
 	}
 
 	if ((hovered || active) && known)
-		ImGui::SetItemTooltip("Init %s   Attack %s   Rel Lvl %s   Rel Time %s%s",
+		hint("Init %s   Attack %s   Rel Lvl %s   Rel Time %s%s",
 		                      xg::format(pi, vi).c_str(), xg::format(pa, va).c_str(),
 		                      xg::format(pl, vl).c_str(), xg::format(pr, vr).c_str(),
 		                      compact ? BIG_HINT : "\n左の点: 縦で出だしの音程\n真ん中の点: 横でアタックの時間\n"
@@ -838,7 +838,7 @@ void overview::eg_cell(int part, xg::model &m, bridge &br, float w, float h, boo
 	}
 
 	if ((hovered || active) && known)
-		ImGui::SetItemTooltip("Attack %s   Decay %s   Release %s%s",
+		hint("Attack %s   Decay %s   Release %s%s",
 		                      xg::format(pa, va).c_str(), xg::format(pd, vd).c_str(), xg::format(pr, vr).c_str(),
 		                      compact ? BIG_HINT : "\n点を横につまんで動かす（右へ長く、左へ短く）");
 	ImGui::PopID();
@@ -1002,7 +1002,7 @@ void overview::filter_cell(int part, xg::model &m, bridge &br, float w, float h,
 	}
 
 	if ((hovered || active) && known)
-		ImGui::SetItemTooltip("Cutoff %s   Resonance %s   HPF %s%s",
+		hint("Cutoff %s   Resonance %s   HPF %s%s",
 		                      xg::format(pc, vc).c_str(), xg::format(pq, vq).c_str(),
 		                      known_h ? xg::format(ph, vh).c_str() : "--",
 		                      compact ? BIG_HINT : "\n右の点: 横でカットオフ（右へ明るく）、縦でレゾナンス（上へ強く）\n"
@@ -1153,7 +1153,7 @@ int eq_plot(const char *id, eq_band *bands, int n, xg::model &m, bridge &br, flo
 				text += buf;
 			}
 		}
-		ImGui::SetItemTooltip("%s%s%s", text.c_str(), *tip == '\n' ? "" : "\n", tip);
+		hint("%s%s%s", text.c_str(), *tip == '\n' ? "" : "\n", tip);
 	}
 	ImGui::PopID();
 	return grab;
@@ -1302,7 +1302,7 @@ void overview::vib_cell(int part, xg::model &m, bridge &br, float w, float h, bo
 		dl->AddText(ImVec2(pos.x + (w - ts.x) * 0.5f, pos.y + (h - ts.y) * 0.5f), col(ImGuiCol_TextDisabled), "--");
 	}
 	if ((hovered || active) && known)
-		ImGui::SetItemTooltip("Rate %s   Depth %s   Delay %s%s",
+		hint("Rate %s   Depth %s   Delay %s%s",
 		                      xg::format(pr, vr).c_str(), xg::format(pd, vd).c_str(), xg::format(pl, vl).c_str(),
 		                      compact ? BIG_HINT : "\n波の山の点: 横で速さ、縦で深さ\n平らな所の終わりの点: 横で掛かり始めるまでの時間");
 	ImGui::PopID();
