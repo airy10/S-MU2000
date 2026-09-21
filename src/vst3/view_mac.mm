@@ -4,11 +4,6 @@
 // hands over in IPlugView::attached(). The VST3 interface, the panel and the
 // input semantics all live in view.cpp; this is only the window.
 //
-// Objective-C++ on purpose, and the only VST3 file that is. Cocoa's headers
-// define BOOL and Quickdraw's define Polygon, while compat/gdi.h has to declare
-// both so panel.cpp can stay untouched. view.h mentions no window system at
-// all, so this file includes that and never includes gdi.h -- the panel is
-// reached through the void* entry points on plug_view.
 
 #include "plug_window.h"
 #include "view.h"

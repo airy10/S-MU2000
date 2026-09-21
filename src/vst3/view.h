@@ -8,10 +8,6 @@
 // The child window itself now lives per platform behind plug_window.h, so this
 // header mentions no window system at all.
 //
-// This header deliberately mentions no window system at all. The panel is held
-// behind a pimpl because ui::panel needs compat/gdi.h, and view_mac.mm has to
-// include this header next to Cocoa -- where BOOL and Polygon mean something
-// else entirely. The per-platform window lives behind plug_window.h.
 
 #ifndef S_MU2000_VST3_VIEW_H
 #define S_MU2000_VST3_VIEW_H

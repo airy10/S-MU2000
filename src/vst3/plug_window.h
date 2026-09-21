@@ -7,10 +7,6 @@
 // its mouse and key events. Everything else about the view -- the VST3
 // interface itself, the panel, the input handling -- is shared, so only the
 // window part is per platform.
-//
-// Same constraint as the GUI: this header is included by view_mac.mm, so it
-// must not mention a single Windows type, and must not pull in compat/gdi.h
-// (Cocoa's headers define BOOL and Quickdraw's define Polygon).
 
 #ifndef S_MU2000_VST3_PLUG_WINDOW_H
 #define S_MU2000_VST3_PLUG_WINDOW_H
