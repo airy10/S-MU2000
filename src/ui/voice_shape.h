@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstring>
 #include <vector>
 
 namespace ui {
@@ -258,6 +259,175 @@ inline std::vector<amp_line> amp_lines(const u8 *rom, u32 rec, const u8 *part, f
 	keyoff += hold_ms;
 	for (int e = 0; e < n; e++)
 		out.push_back(amp_run(rom, nv::element(rom, rec, e), part, keyoff, keyoff + 12000.0f));
+	return out;
+}
+
+// ---- ビブラート（音程の LFO）
+//
+// 鍵を押したときのレジスタ 0x0a（型・刻み・深さ）を native の口の build_note で組み、
+// チップの LFO そのもの（swp30 の lfo_pitch_trace）を回す。遅れて掛かる音色（xg/native_voice.h の
+// vib_ramps）は、遅れの間は 0、そのあと 20ms ごとに深さをせり上げる（native_driver と同じ）
+struct vib_line {
+	std::vector<pt> pts;          // ms とセント
+	float hz = 0;                 // 揺れの速さ
+	float depth_cents = 0;        // 行き着いた深さ（片側）
+	float delay_ms = 0;           // 掛かり始めるまで
+	bool active = true;
+};
+
+inline std::vector<vib_line> vib_lines(const u8 *rom, u32 rec, const u8 *part, float span_ms)
+{
+	namespace nv = xg::nv;
+	std::vector<vib_line> out;
+	if (!rom || !rec)
+		return out;
+	const int n = nv::element_count(rom, rec);
+	const int N = int(span_ms / 1000.0f * float(RATE));
+	std::vector<s16> wave(size_t(std::max(N, 1)));
+	for (int e = 0; e < n; e++) {
+		const u8 *el = nv::element(rom, rec, e);
+		vib_line line;
+		line.active = nv::element_active(el, NOTE, VEL);
+		const nv::slot_regs sr = nv::build_note(rom, el, NOTE, 0, nullptr, nv::defaults(), 0, VEL, part[0x1a], part[0x1b],
+		                                        part[0x15], part[0x16], -1, NOTE, false, part[0x62], part[0x63]);
+		const u16 reg = sr.v[0x0a];
+		// 深さの移り変わり（20ms ごと）。遅れの無い音色は押した瞬間の深さのまま
+		int full = reg & 0x7f;
+		int dly = 0, step = 0, tgt = 0;
+		const bool ramps = nv::vib_ramps(el);
+		if (ramps) {
+			tgt  = nv::vib_ramp_target(el);
+			step = nv::vib_ramp_step(el);
+			dly  = nv::vib_delay_ticks(el);
+			full = nv::vib_depth(nv::vib_ramp_reg(rom, tgt) & 0x7f, part[0x16]);
+		}
+		// 深さ 127 で回して、深さの比で縮める（get_pitch は深さに比例）
+		swp30_device::lfo_pitch_trace(u16((reg & 0xff80) | 0x7f), wave.data(), N);
+		const double unit = 1200.0 / 1024.0;
+		const int tick = int(nv::VIB_TICK);          // 20ms
+		int depth = ramps ? 0 : (reg & 0x7f);
+		int cnt = 0, left = dly;
+		float peak = 0;
+		for (int i = 0; i < N; i += 32) {
+			if (ramps && i > 0 && i % tick < 32) {
+				if (left > 0)
+					left--;
+				else if (cnt < tgt) {
+					cnt = std::min(tgt, cnt + step);
+					depth = std::min(nv::vib_ramp_reg(rom, cnt) & 0x7f, full);
+				}
+				if (left == 0 && line.delay_ms == 0 && dly > 0)
+					line.delay_ms = float(i / RATE * 1000.0);
+			}
+			const float c = float(double(wave[size_t(i)]) * depth / 127.0 * unit);
+			line.pts.push_back({ float(i / RATE * 1000.0), c });
+			peak = std::max(peak, std::fabs(c));
+		}
+		const int stepv = (reg >> 8) & 0x3f;
+		line.hz = float(stepv * RATE / 262144.0);
+		line.depth_cents = peak;
+		out.push_back(std::move(line));
+	}
+	return out;
+}
+
+// ---- フィルタ
+//
+// 鍵を押したときのフィルタのレジスタ（0x00-0x04）を native の口と同じ式で組み、チップの
+// フィルタそのもの（swp30 の filter_impulse）にインパルスを通して、周波数ごとの大きさを出す。
+// 切る高さは押した瞬間の値（フィルタの包絡線はその後で動かす）
+struct filter_line {
+	std::vector<pt> pts;          // Hz と dB（cents の欄に dB）
+	u16 regs[5] = {};
+	bool active = true;
+	bool hpf = false;             // 第 2 段がハイパスで効いているか
+};
+
+// 鍵を押した瞬間のフィルタのレジスタ（native_driver の cut_plain・reso・filter2_reg と同じ）
+inline void filter_regs(const u8 *rom, const u8 *el, const u8 *part, u16 out[5])
+{
+	namespace nv = xg::nv;
+	const nv::slot_regs sr = nv::build_note(rom, el, NOTE, 0, nullptr, nv::defaults(), 0, VEL, part[0x1a], part[0x1b],
+	                                        64, 64, -1, NOTE, false, part[0x62], part[0x63]);
+	const u16 base = nv::cutoff_keyon(rom, el, NOTE, VEL, false, part[0x1a]);
+	int v = int(base & 0xfff);
+	if (part[0x18] != 64)
+		v += nv::bright_shift(part[0x18]);
+	v = std::clamp(v, 0, 0x7ff);
+	out[0] = nv::cutoff_cap(u16((base & 0xf000) | u16(v)), el, VEL, part[0x19]);
+	out[1] = 0xffff;
+	out[2] = nv::filter2_reg(el[82], part[xg::ram::PART_HPF_RAM]);
+	out[3] = sr.v[0x03];
+	out[4] = u16((sr.v[0x04] & 0x07ff) | u16(u16(nv::reso_level(el, VEL, part[0x19])) << 11));
+}
+
+// 周波数（Hz）の並びで、そのレジスタのフィルタの大きさ（dB）。post の音量のぶんは除く
+// 同じレジスタなら前に出した値を使う（毎コマ出すと重い）
+inline std::vector<pt> filter_response(const u16 regs[5], const std::vector<float> &hz)
+{
+	struct entry { u16 regs[5]; size_t n; std::vector<pt> pts; };
+	static std::vector<entry> cache;
+	for (const entry &c : cache)
+		if (!std::memcmp(c.regs, regs, sizeof(c.regs)) && c.n == hz.size())
+			return c.pts;
+	constexpr int N = 8192;
+	static std::vector<float> ir(N);
+	swp30_device::filter_impulse(regs[0], regs[1], regs[2], regs[3], regs[4], ir.data(), N);
+	const int level = regs[3] & 0xff;
+	const double post = (32.0 - (level & 0xf)) / 32.0 / double(1 << (level >> 4));
+	std::vector<pt> out;
+	out.reserve(hz.size());
+	for (float f : hz) {
+		// e^{-jwi} を掛け算で回していく（三角関数を 8192 回呼ばない）
+		const double w = 2.0 * 3.14159265358979323846 * double(f) / RATE;
+		const double cr = std::cos(w), ci = -std::sin(w);
+		double pr = 1, pi = 0, re = 0, im = 0;
+		for (int i = 0; i < N; i++) {
+			re += ir[size_t(i)] * pr;
+			im += ir[size_t(i)] * pi;
+			const double nr = pr * cr - pi * ci;
+			pi = pr * ci + pi * cr;
+			pr = nr;
+		}
+		const double mag = std::sqrt(re * re + im * im) / (post > 0 ? post : 1.0);
+		out.push_back({ f, float(20.0 * std::log10(std::max(mag, 1e-6))) });
+	}
+	if (cache.size() >= 64)
+		cache.erase(cache.begin());
+	entry e;
+	std::memcpy(e.regs, regs, sizeof(e.regs));
+	e.n = hz.size();
+	e.pts = out;
+	cache.push_back(std::move(e));
+	return out;
+}
+
+// 20 Hz-20 kHz を対数で n 点
+inline std::vector<float> log_hz(int n)
+{
+	std::vector<float> hz;
+	for (int i = 0; i < n; i++)
+		hz.push_back(float(20.0 * std::pow(1000.0, double(i) / double(n - 1))));
+	return hz;
+}
+
+inline std::vector<filter_line> filter_lines(const u8 *rom, u32 rec, const u8 *part, int points = 96)
+{
+	namespace nv = xg::nv;
+	std::vector<filter_line> out;
+	if (!rom || !rec)
+		return out;
+	const std::vector<float> hz = log_hz(points);
+	const int n = nv::element_count(rom, rec);
+	for (int e = 0; e < n; e++) {
+		const u8 *el = nv::element(rom, rec, e);
+		filter_line line;
+		line.active = nv::element_active(el, NOTE, VEL);
+		filter_regs(rom, el, part, line.regs);
+		line.hpf = (line.regs[2] & 0x7ff) != 0;
+		line.pts = filter_response(line.regs, hz);
+		out.push_back(std::move(line));
+	}
 	return out;
 }
 
