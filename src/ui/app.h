@@ -22,6 +22,7 @@
 #include <string>
 #include <thread>
 
+#include "ui/audio_in.h"
 #include "ui/audio_out.h"
 #include "ui/bridge.h"
 #include "ui/engine.h"
@@ -122,7 +123,6 @@ public:
 	}
 
 	// ---- shared input decisions (both windows act the same way)
-
 	// What a mouse press means. bar_window is a BAR_* id to open; menu asks
 	// for the context menu at the point (each side picks which one); neither
 	// set means press the panel. The strip order, the jack spots and the LCD
@@ -184,7 +184,102 @@ public:
 			eng->want_native_engine.store(eng->native_engine.load() ? 0 : 1);
 	}
 
-	void release_keys() { br.release_all(); }
+	void release_keys()
+	{
+		pressed = false;
+		br.release_all();
+	}
+
+	// Panel layout from a file (F5 reads it back). Same file both sides
+	void apply_layout(const std::string &path, bool quiet)
+	{
+		panel.lay() = layout();
+		std::string err;
+		if (!path.empty() && panel.lay().load(path, err)) {
+			if (!quiet)
+				std::printf("配置: %s\n", path.c_str());
+		} else if (!path.empty() && !quiet) {
+			std::printf("配置: %s を開けない。組み込みの配置を使う\n", path.c_str());
+		}
+		if (!err.empty())
+			std::fprintf(stderr, "%s", err.c_str());
+		std::fflush(stdout);
+		panel.resize(panel.width(), panel.height());
+	}
+
+	void reload_layout() { apply_layout(layout_path, false); }
+
+	// Which popup the point asks for. The card slot, PHONES and A/D INPUT
+	// have their own; everywhere else gets the port picker
+	std::vector<menu_group> menu_groups_for(int x, int y)
+	{
+		if (panel.on_card_slot(x, y))
+			return menu_card(menu_snapshot());
+		if (panel.on_phones(x, y))
+			return menu_phones(eng && eng->analog.load());
+		if (panel.on_ad_input(x, y))
+			return menu_ain_only(audio_in::list(), ain_name);
+		return menu_ports(menu_snapshot());
+	}
+
+	// What a mouse press does. bar_window opens through open_window_by_kind
+	// and show_menu wants the popup; panel_pressed means the panel took it
+	// (the side repaints). A press is remembered for drag/up
+	struct mouse_out {
+		bool panel_pressed = false;
+		bool opened_window = false;
+		bool show_menu = false;
+	};
+
+	mouse_out do_mouse_down(int x, int y, bool right)
+	{
+		mouse_out o;
+		const mouse_hit h = hit_test(x, y, right);
+		if (h.bar_window >= 0) {
+			bar.set_down(h.bar_window);
+			open_window_by_kind(h.bar_window);
+			o.opened_window = true;
+			pressed = true;
+			return o;
+		}
+		if (h.handled) {
+			o.show_menu = h.menu;
+			return o;
+		}
+		pressed = true;
+		o.panel_pressed = true;
+		panel.press(x, y, br);
+		return o;
+	}
+
+	bool do_mouse_drag(int x, int y)
+	{
+		if (lcd_only || !pressed)
+			return false;
+		return panel.drag(x, y, br);
+	}
+
+	void do_mouse_up()
+	{
+		if (!pressed)
+			return;
+		pressed = false;
+		bar.set_down(-1);
+		panel.release(br);
+	}
+
+	bool do_wheel(int x, int y, int steps)
+	{
+		if (lcd_only || !steps)
+			return false;
+		return panel.wheel_at(x, y, steps, br);
+	}
+
+	bool hand_at(int x, int y) const
+	{
+		return panel.on_midi_jack(x, y) || panel.on_ad_input(x, y) ||
+		       panel.on_card_slot(x, y) || panel.on_phones(x, y);
+	}
 
 	// ---- per-platform acts (thin shells implement these)
 
@@ -464,6 +559,8 @@ public:
 	{
 		if (!eng)
 			return;
+		// Digital matches S/PDIF (some DPCM samples keep their DC, as on
+		// the hardware); analog cuts DC like LINE OUT and PHONES do
 		eng->analog.store(on);
 		std::printf("音の出口: %s\n", on ? "アナログ（直流を切る）" : "デジタル");
 		std::fflush(stdout);
@@ -570,6 +667,7 @@ protected:
 	}
 
 	u64 last_flush = 0;                // card file last written back
+	bool pressed = false;            // a panel press is in flight (drag/up)
 };
 
 } // namespace ui

@@ -48,6 +48,7 @@
 #include "ui/status.h"
 #include "ui/part_shapes.h"
 #include "ui/toolbar.h"
+#include "ui/window_win.h"
 #include "ui/pc_editor.h"
 #include "ui/pc_host.h"
 #include "ui/pc_window.h"
@@ -89,38 +90,8 @@ using namespace ui;
 
 // ---- 窓
 
-// Shows a PC window, warning when it cannot be done (defined below)
-void open_window(HWND hwnd, ui::pc_window &w);
-
 // gui.ini lives under %LOCALAPPDATA% (defined below, before main)
 std::string settings_file_path();
-
-// The file dialog behind the card menu. create=false opens, true saves
-std::string ask_card_path(HWND hwnd, bool create)
-{
-	wchar_t file[MAX_PATH] = {};
-	if (create)
-		wcscpy(file, L"smartmedia.img");
-	OPENFILENAMEW o{};
-	o.lStructSize = sizeof(o);
-	o.hwndOwner = hwnd;
-	o.lpstrFilter = L"SmartMedia の中身 (*.img)\0*.img\0すべて (*.*)\0*.*\0";
-	o.lpstrFile = file;
-	o.nMaxFile = MAX_PATH;
-	o.lpstrDefExt = L"img";
-	if (create) {
-		o.lpstrTitle = L"新しい SmartMedia の保存先";
-		o.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
-		if (!GetSaveFileNameW(&o))
-			return {};
-	} else {
-		o.lpstrTitle = L"差す SmartMedia";
-		o.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
-		if (!GetOpenFileNameW(&o))
-			return {};
-	}
-	return ui::to_utf8(file);
-}
 
 // The Windows front end: shared ui::app state and logic plus the Win32
 // window (double buffering, message translation). g_win is a pointer
@@ -149,43 +120,35 @@ public:
 	void open_window_by_kind(int kind) override;
 
 	// ui::app hooks: file dialogs, confirmations and error display are
-	// Win32's business, everything they decide is shared
+	// Win32's business (ui/window_win.h), everything they decide is shared
 	std::string settings_path() const override { return settings_file_path(); }
 	void menu_error(const std::string &text) override { last_error = text; }
 	void menu_note(const std::string &text) override
 	{
-		MessageBoxW(hwnd, ui::to_wide(text).c_str(),
-		            L"S-MU2000", MB_OK | MB_ICONINFORMATION);
+		ui::win_note(hwnd, text);
 	}
 	std::string ask_card_open_path() override
 	{
-		return ask_card_path(hwnd, false);
+		return ui::win_open_file(hwnd, L"差す SmartMedia",
+		                         L"SmartMedia の中身 (*.img)\0*.img\0すべて (*.*)\0*.*\0", L"img");
 	}
 	std::string ask_card_save_path() override
 	{
-		return ask_card_path(hwnd, true);
+		return ui::win_save_file(hwnd, L"新しい SmartMedia の保存先",
+		                         L"SmartMedia の中身 (*.img)\0*.img\0すべて (*.*)\0*.*\0",
+		                         L"img", L"smartmedia.img");
 	}
 	std::string ask_midi_file_path() override
 	{
-		wchar_t file[MAX_PATH] = {};
-		OPENFILENAMEW o{};
-		o.lStructSize = sizeof(o);
-		o.hwndOwner = hwnd;
-		o.lpstrFilter = L"MIDI ファイル (*.mid;*.midi)\0*.mid;*.midi\0すべて (*.*)\0*.*\0";
-		o.lpstrFile = file;
-		o.nMaxFile = MAX_PATH;
-		o.lpstrTitle = L"流す MIDI ファイル";
-		o.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
-		if (!GetOpenFileNameW(&o))
-			return {};
-		return ui::to_utf8(file);
+		return ui::win_open_file(hwnd, L"流す MIDI ファイル",
+		                         L"MIDI ファイル (*.mid;*.midi)\0*.mid;*.midi\0すべて (*.*)\0*.*\0",
+		                         nullptr);
 	}
 	bool confirm_factory_reset() override
 	{
-		return MessageBoxW(hwnd,
-		                   L"MU2000 を工場出荷状態に戻して、電源を入れ直します。\n"
-		                   L"ユーティリティの設定や、覚えている音量・音色の設定はすべて消えます。",
-		                   L"S-MU2000", MB_OKCANCEL | MB_ICONWARNING | MB_DEFBUTTON2) == IDOK;
+		return ui::win_confirm(hwnd,
+		                       "MU2000 を工場出荷状態に戻して、電源を入れ直します。\n"
+		                       "ユーティリティの設定や、覚えている音量・音色の設定はすべて消えます。");
 	}
 };
 
@@ -224,47 +187,19 @@ std::string settings_file_path()
 	return dir + "\\gui.ini";
 }
 
-// gui.ini keys live in ui/settings.h as ui::SET_* (shared with gui_mac.cpp).
-
-// Reads the remembered ports into r. Missing keys leave r's defaults, so
-// callers start from a full struct and take what they need.
 // ---- 口を選ぶ品書き
 
 // Menu command numbers, labels and builders are shared with gui_mac.cpp
 // in ui/menu.h (Windows is the reference), so a menu added on one side
-// cannot be missed on the other. Only rendering (below) and acting on the
-// choice (WM_COMMAND) stay here.
+// cannot be missed on the other. Which popup a point asks for is shared
+// too (ui::app::menu_groups_for); only rendering it through ui/menu_win.h
+// stays here.
 
-// Popups render the shared ui/menu.h content through ui/menu_win.h.
-// Only gathering this window's state (below) stays here.
-
-// What the shared builders show, from this window's state
-void show_ain_menu(HWND hwnd, POINT screen)
+void track_menu_at(HWND hwnd, int mx, int my)
 {
-	track_menu(hwnd, screen,
-	           render_menu(ui::menu_ain_only(ui::audio_in::list(), g_win->ain_name)));
-}
-
-void show_port_menu(HWND hwnd, POINT screen)
-{
-	track_menu(hwnd, screen, render_menu(ui::menu_ports(g_win->menu_snapshot())));
-}
-
-// ---- PHONES のジャック。音の出口を選ぶ
-//
-// デジタルは S/PDIF の出口と同じで、一部の DPCM のサンプルが持つ直流もそのまま出る（実機で確かめた）。
-// アナログは LINE OUT・PHONES のつもりで直流を切る（src/analog_out.h。切れる周波数は仮）
-void show_output_menu(HWND hwnd, POINT screen)
-{
-	const bool analog = g_win->eng && g_win->eng->analog.load();
-	track_menu(hwnd, screen, render_menu(ui::menu_phones(analog)));
-}
-
-// ---- カードの差し込み口。SmartMedia を差す・MIDI ファイルを流す
-
-void show_card_menu(HWND hwnd, POINT screen)
-{
-	track_menu(hwnd, screen, render_menu(ui::menu_card(g_win->menu_snapshot())));
+	POINT pt{ mx, my };
+	ClientToScreen(hwnd, &pt);
+	ui::win_track_menu(hwnd, pt, g_win->menu_groups_for(mx, my));
 }
 
 void play_dropped_file(const std::wstring &path)
@@ -272,8 +207,7 @@ void play_dropped_file(const std::wstring &path)
 	// Outside a menu command, so a failure shows straight away rather than
 	// through last_error at the end of WM_COMMAND
 	if (!g_win->play_song(ui::to_utf8(path.c_str())) && !g_win->last_error.empty()) {
-		const std::wstring w = ui::to_wide(g_win->last_error);
-		MessageBoxW(GetForegroundWindow(), w.c_str(), L"S-MU2000", MB_OK | MB_ICONWARNING);
+		ui::win_error(GetForegroundWindow(), g_win->last_error);
 		g_win->last_error.clear();
 	}
 }
@@ -291,13 +225,6 @@ void ensure_backing(HDC dc, int w, int h)
 	g_win->mem_h = h;
 }
 
-void open_window(HWND hwnd, ui::pc_window &w)
-{
-	std::string err;
-	if (!w.show(GetModuleHandleA(nullptr), err))
-		MessageBoxW(hwnd, ui::to_wide(err).c_str(), L"S-MU2000", MB_OK | MB_ICONWARNING);
-}
-
 void win_app::open_window_by_kind(int kind)
 {
 	ui::pc_window *w = nullptr;
@@ -307,7 +234,7 @@ void win_app::open_window_by_kind(int kind)
 	else if (kind == ui::BAR_FX)      w = &fx;
 	else if (kind == ui::BAR_MASTER)  w = &master;
 	if (w)
-		open_window(hwnd, *w);
+		ui::win_open_window(hwnd, *w);
 }
 
 LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
@@ -328,7 +255,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		g_win->br.set_engine(g_win->eng ? g_win->eng->native_engine.load() : -1);
 		ui::pc_frame_all(g_win->list, g_win->pc, g_win->fx, g_win->shapes, g_win->master,
 		                 g_win->panel.xg(), g_win->panel.ram(), g_win->br,
-		                 [&](ui::pc_window &w) { open_window(hwnd, w); });
+		                 [&](ui::pc_window &w) { ui::win_open_window(hwnd, w); });
 		InvalidateRect(hwnd, nullptr, FALSE);
 		// SmartMedia に書いたものを 2 秒ごとにファイルへ書き戻す（抜いたとき・閉じたときも）
 		g_win->card_tick();
@@ -398,50 +325,16 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		if (g_win->lcd_only)
 			return 0;
 		const int mx = GET_X_LPARAM(lp), my = GET_Y_LPARAM(lp);
-		// What the press means is shared (ui::app::hit_test).
-		// Menu spots fall through to the jack branches below
-		{
-			const ui::app::mouse_hit h = g_win->hit_test(mx, my, false);
-			if (h.bar_window >= 0) {
-				g_win->bar.set_down(h.bar_window);
-				g_win->open_window_by_kind(h.bar_window);
-				InvalidateRect(hwnd, nullptr, FALSE);
-				return 0;
-			}
-			if (h.handled && !h.menu)
-				return 0;            // the strip's gaps
-		}
-		// パネルの MIDI IN A のジャックを押したら、口を選ぶ品書きを出す
-		if (g_win->panel.on_midi_jack(mx, my)) {
-			POINT pt{ mx, my };
-			ClientToScreen(hwnd, &pt);
-			show_port_menu(hwnd, pt);
-			return 0;
-		}
-		// A/D INPUT のジャックは録音デバイス
-		if (g_win->panel.on_ad_input(mx, my)) {
-			POINT pt{ mx, my };
-			ClientToScreen(hwnd, &pt);
-			show_ain_menu(hwnd, pt);
-			return 0;
-		}
-		// PHONES のジャックは音の出口
-		if (g_win->panel.on_phones(mx, my)) {
-			POINT pt{ mx, my };
-			ClientToScreen(hwnd, &pt);
-			show_output_menu(hwnd, pt);
-			return 0;
-		}
-		// カードの差し込み口は MIDI ファイル
-		if (g_win->panel.on_card_slot(mx, my)) {
-			POINT pt{ mx, my };
-			ClientToScreen(hwnd, &pt);
-			show_card_menu(hwnd, pt);
-			return 0;
-		}
-		SetCapture(hwnd);
-		if (g_win->panel.press(mx, my, g_win->br))
+		// Decided and mostly acted in the base; the window only shows the
+		// popup and repaints
+		const ui::app::mouse_out o = g_win->do_mouse_down(mx, my, false);
+		if (o.panel_pressed)
+			SetCapture(hwnd);
+		if (o.opened_window || o.panel_pressed)
 			InvalidateRect(hwnd, nullptr, FALSE);
+		if (o.opened_window || !o.show_menu)
+			return 0;
+		track_menu_at(hwnd, mx, my);
 		return 0;
 	}
 
@@ -449,14 +342,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		if (g_win->lcd_only)
 			return 0;
 		const int mx = GET_X_LPARAM(lp), my = GET_Y_LPARAM(lp);
-		POINT pt{ mx, my };
-		ClientToScreen(hwnd, &pt);
-		if (g_win->panel.on_card_slot(mx, my))
-			show_card_menu(hwnd, pt);
-		else if (g_win->panel.on_phones(mx, my))
-			show_output_menu(hwnd, pt);
-		else
-			show_port_menu(hwnd, pt);
+		track_menu_at(hwnd, mx, my);
 		return 0;
 	}
 
@@ -476,15 +362,11 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 	}
 
 	case WM_SETCURSOR: {
-		// ジャックの上では指の形にして、押せることを見せる
+		// Show a hand where something opens (same spots as the Mac side)
 		POINT pt;
 		GetCursorPos(&pt);
 		ScreenToClient(hwnd, &pt);
-		if (LOWORD(lp) == HTCLIENT &&
-		    (g_win->panel.on_midi_jack(pt.x, pt.y) ||
-		     g_win->panel.on_ad_input(pt.x, pt.y) ||
-		     g_win->panel.on_phones(pt.x, pt.y) ||
-		     g_win->panel.on_card_slot(pt.x, pt.y))) {
+		if (LOWORD(lp) == HTCLIENT && g_win->hand_at(pt.x, pt.y)) {
 			SetCursor(LoadCursor(nullptr, IDC_HAND));
 			return TRUE;
 		}
@@ -494,15 +376,14 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 	case WM_MOUSEMOVE:
 		if (g_win->lcd_only)
 			return 0;
-		if (g_win->panel.drag(GET_X_LPARAM(lp), GET_Y_LPARAM(lp), g_win->br))
+		if (g_win->do_mouse_drag(GET_X_LPARAM(lp), GET_Y_LPARAM(lp)))
 			InvalidateRect(hwnd, nullptr, FALSE);
 		return 0;
 
 	case WM_LBUTTONUP:
 		if (g_win->lcd_only)
 			return 0;
-		g_win->bar.set_down(-1);
-		g_win->panel.release(g_win->br);
+		g_win->do_mouse_up();
 		ReleaseCapture();
 		InvalidateRect(hwnd, nullptr, FALSE);
 		return 0;
@@ -513,7 +394,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		POINT pt{ GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
 		ScreenToClient(hwnd, &pt);
 		const int delta = GET_WHEEL_DELTA_WPARAM(wp) / WHEEL_DELTA;
-		if (delta && g_win->panel.wheel_at(pt.x, pt.y, delta, g_win->br))
+		if (g_win->do_wheel(pt.x, pt.y, delta))
 			InvalidateRect(hwnd, nullptr, FALSE);
 		return 0;
 	}
@@ -823,15 +704,15 @@ int main(int argc, char **argv)
 	eng.publish();
 	ShowWindow(hwnd, SW_SHOW);
 	if (win_opts.open_editor && !win_opts.lcd_only)
-		open_window(hwnd, g_win->pc);
+		ui::win_open_window(hwnd, g_win->pc);
 	if (win_opts.open_fx && !win_opts.lcd_only)
-		open_window(hwnd, g_win->fx);
+		ui::win_open_window(hwnd, g_win->fx);
 	if (win_opts.open_list && !win_opts.lcd_only)
-		open_window(hwnd, g_win->list);
+		ui::win_open_window(hwnd, g_win->list);
 	if (win_opts.open_shapes && !win_opts.lcd_only)
-		open_window(hwnd, g_win->shapes);
+		ui::win_open_window(hwnd, g_win->shapes);
 	if (win_opts.open_master && !win_opts.lcd_only)
-		open_window(hwnd, g_win->master);
+		ui::win_open_window(hwnd, g_win->master);
 	UpdateWindow(hwnd);
 
 	// 起動は別スレッド。終わったら音を出し始める

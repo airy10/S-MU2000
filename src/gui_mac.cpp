@@ -162,45 +162,25 @@ public:
 	{
 		if (lcd_only)
 			return false;
-		// What the press means is shared (ui::app::hit_test); only acting
-		// on it is the window's business
-		const mouse_hit h = hit_test(x, y, right);
-		if (h.bar_window >= 0) {
-			bar.set_down(h.bar_window);
-			open_window_by_kind(h.bar_window);
-			m_pressed = true;   // mouse_up clears the pressed look
-			return true;
-		}
-		if (h.handled)
-			return true;            // the strip's gaps, or a menu spot
-		m_pressed = true;
-		panel.press(x, y, br);
-		return false;
+		// Decided and acted in the base; the window only reports whether
+		// a popup follows (its infra then asks context_menu for the items)
+		const mouse_out o = do_mouse_down(x, y, right);
+		return o.show_menu || o.opened_window;
 	}
 
 	void mouse_drag(int x, int y) override
 	{
-		if (lcd_only)
-			return;
-		if (m_pressed)
-			panel.drag(x, y, br);
+		do_mouse_drag(x, y);
 	}
 
 	void mouse_up() override
 	{
-		if (!m_pressed)
-			return;
-		m_pressed = false;
-		bar.set_down(-1);
-		panel.release(br);
+		do_mouse_up();
 	}
 
 	void wheel(int x, int y, int steps) override
 	{
-		if (lcd_only)
-			return;
-		if (steps)
-			panel.wheel_at(x, y, steps, br);
+		do_wheel(x, y, steps);
 	}
 
 	void key(int code, bool down) override
@@ -229,7 +209,6 @@ public:
 
 	void focus_lost() override
 	{
-		m_pressed = false;
 		release_keys();
 	}
 
@@ -237,26 +216,17 @@ public:
 	{
 		if (lcd_only)
 			return false;
-		return panel.on_midi_jack(x, y) || panel.on_ad_input(x, y) ||
-		       panel.on_card_slot(x, y) || panel.on_phones(x, y);
+		return hand_at(x, y);
 	}
 
 	std::vector<ui::menu_group> context_menu(int x, int y) override
 	{
 		if (lcd_only)
 			return {};
-		if (panel.on_card_slot(x, y))
-			return ui::menu_card(menu_snapshot());
-		// The PHONES jack is about the output, as in gui.cpp
-		if (panel.on_phones(x, y))
-			return ui::menu_phones(eng && eng->analog.load());
-		// The A/D INPUT jack offers just its recording devices, as in gui.cpp
-		if (panel.on_ad_input(x, y))
-			return ui::menu_ain_only(ui::audio_in::list(), ain_name);
-		return ui::menu_ports(menu_snapshot());
+		return menu_groups_for(x, y);
 	}
 
-		// mac_app asks through here; the dispatch is shared (ui::app)
+	// mac_app asks through here; the dispatch is shared (ui::app)
 	void menu_chosen(int id) override { ui::app::menu_chosen(id); }
 
 	// ui::app hooks: file dialogs, confirmations and error display are
@@ -290,10 +260,7 @@ public:
 		                         "戻す");
 	}
 
-	void reload_layout() override
-	{
-		apply_layout(layout_path, false);
-	}
+	void reload_layout() override { ui::app::reload_layout(); }
 
 	// ---- the rest
 
@@ -324,22 +291,6 @@ public:
 			std::printf("配置: %s を開けない。組み込みの配置を使う\n", path.c_str());
 		if (!err.empty())
 			std::fprintf(stderr, "%s", err.c_str());
-		panel.resize(panel.width(), panel.height());
-	}
-
-	void apply_layout(const std::string &path, bool quiet)
-	{
-		panel.lay() = ui::layout();
-		std::string err;
-		if (!path.empty() && panel.lay().load(path, err)) {
-			if (!quiet)
-				std::printf("配置: %s\n", path.c_str());
-		} else if (!path.empty() && !quiet) {
-			std::printf("配置: %s を開けない。組み込みの配置を使う\n", path.c_str());
-		}
-		if (!err.empty())
-			std::fprintf(stderr, "%s", err.c_str());
-		std::fflush(stdout);
 		panel.resize(panel.width(), panel.height());
 	}
 
@@ -376,7 +327,6 @@ public:
 	}
 
 private:
-	bool m_pressed = false;
 	u64 last_drop_report = 0;          // when the MIDI drops were last said out loud
 };
 
