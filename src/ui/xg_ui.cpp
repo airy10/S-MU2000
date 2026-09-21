@@ -73,6 +73,13 @@ void set_voice_rom(std::shared_ptr<const std::vector<u8>> rom)
 
 const xg::voice_rom *voices() { return g_voices.get(); }
 
+namespace {
+const xg_snapshot *g_current_ram = nullptr;
+}
+
+void set_current_ram(const xg_snapshot *ram) { g_current_ram = ram; }
+const xg_snapshot *current_ram() { return g_current_ram; }
+
 bool fx_type_menu(const std::vector<xg::fx_type> &types, int current, int &chosen)
 {
 	bool picked = false;

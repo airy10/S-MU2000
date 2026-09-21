@@ -44,6 +44,10 @@ std::string voice_text(int msb, int lsb, int program);
 void set_voice_rom(std::shared_ptr<const std::vector<u8>> rom);
 const xg::voice_rom *voices();
 
+// 今のコマの RAM の写し。窓が描く前に置き、絵（音色の中身を読むもの）が読む
+void set_current_ram(const xg_snapshot *ram);
+const xg_snapshot *current_ram();
+
 // 右クリックで出す品書き（プログラムとバンク）。ROM から読めれば MU2000 の音色の名前で並べる。
 // ram は音色の引き方を知るため（無ければ XG の既定）
 void program_menu(int part, xg::model &m, const xg_snapshot *ram, bridge &br);

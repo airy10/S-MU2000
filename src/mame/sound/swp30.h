@@ -28,6 +28,10 @@ public:
 
 	swp30_device();
 
+	// S-MU2000: 包絡線（音量・音程）の 1 サンプルの歩幅。sample_counter はチップの
+	// サンプルの数え値。画面が包絡線の時間を描くのに使う（src/ui の絵）
+	static u16 envelope_step(s32 speed, u32 sample_counter);
+
 	// S-MU2000: エフェクトを C++ で鳴らす軽量モード（doc/native-dsp.md）。nullptr で切。
 	// full なら MEG そのものを回さず、乾いた音も C++ 側で混ぜる（そのぶん軽い）
 	void set_native_fx(smu2000::dsp::native_fx *fx, bool full = false, int mask = 15)
@@ -270,7 +274,8 @@ private:
 
 		// S-MU2000: speed は符号付き。ピッチ EG は 16 段遅らせて引くので、
 		// もとの表より下（負）まで伸びる。8 段下がるごとに半分の速さ
-		u16 level_step(s32 speed, u32 sample_counter);
+		// 声の状態を使わないので static（画面が包絡線の時間を描くのにも使う）
+		static u16 level_step(s32 speed, u32 sample_counter);
 	};
 
 	struct lfo_block {

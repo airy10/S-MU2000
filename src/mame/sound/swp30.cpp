@@ -1512,6 +1512,12 @@ u16 swp30_device::envelope_block::level_step(s32 level, u32 sample_counter)
 	return (mx[k1] >> ((sample_counter >> sh) & 0xf)) & 1;
 }
 
+// S-MU2000: 画面が包絡線の時間を描くための口（level_step をそのまま）
+u16 swp30_device::envelope_step(s32 speed, u32 sample_counter)
+{
+	return envelope_block::level_step(speed, sample_counter);
+}
+
 u16 swp30_device::envelope_block::step(u32 sample_counter)
 {
 	u16 result = m_envelope_level + ((m_release_glo & 0xff) << 6);

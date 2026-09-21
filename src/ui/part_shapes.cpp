@@ -48,6 +48,7 @@ void panel(const char *id, const char *title, float w, float h, int part, xg::mo
 
 void part_shapes::draw(xg::model &m, const xg_snapshot &ram, bridge &br)
 {
+	set_current_ram(&ram);            // 絵が音色の中身を読むため（ピッチ EG など）
 	const ImGuiViewport *vp = ImGui::GetMainViewport();
 	ImGui::SetNextWindowPos(vp->WorkPos);
 	ImGui::SetNextWindowSize(vp->WorkSize);
