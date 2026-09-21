@@ -134,6 +134,9 @@ void set_overview_zoom(float zoom);
 // ---- パートの音色の窓の表示の大きさ（0.4〜1.5、既定 0.6）。editor.ini に覚えておく
 float &shapes_zoom();
 void set_shapes_zoom(float zoom);
+// 音色の窓の区画（番号）ごとに、絵で触るか（false）つまみで触るか（true）。editor.ini に覚えておく
+bool shapes_knobs(int panel);
+void set_shapes_knobs(int panel, bool knobs);
 
 // ---- マスターの窓の表示の大きさ（0.4〜1.5、既定 0.8）。editor.ini に覚えておく
 float &master_zoom();

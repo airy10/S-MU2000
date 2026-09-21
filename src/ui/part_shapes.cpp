@@ -20,22 +20,51 @@ namespace {
 // パートは口 A-D の 64（C・D は実機では USB だけの口）
 constexpr int PARTS = XG_PARTS;
 
-// 1 つの区画。見出し、大きな絵、値の棒
-template <typename Draw>
-void panel(const char *id, const char *title, float w, float h, int part, xg::model &m, bridge &br,
-           std::initializer_list<const char *> keys, Draw draw)
+// 「グラフ ○ つまみ」の切り替え。右寄せで描き、押されたら true
+bool mode_toggle(const char *id, bool knobs)
 {
 	const float fs = ImGui::GetFontSize();
-	const ImGuiStyle &st = ImGui::GetStyle();
+	const char *l = "グラフ", *r = "つまみ";
+	const float lw = ImGui::CalcTextSize(l).x, rw = ImGui::CalcTextSize(r).x;
+	const float th = fs * 0.9f, tw = th * 1.8f, gap = fs * 0.3f;
+	const float total = lw + gap + tw + gap + rw;
+	ImGui::SameLine(std::max(ImGui::GetCursorPosX(), ImGui::GetWindowContentRegionMax().x - total));
+	const ImVec2 p = ImGui::GetCursorScreenPos();
+	const bool pressed = ImGui::InvisibleButton(id, ImVec2(total, ImGui::GetTextLineHeight()));
+	hint("クリックで、絵で触る（グラフ）か値の棒で触る（つまみ）かを切り替える");
+	ImDrawList *dl = ImGui::GetWindowDrawList();
+	const ImU32 on = ImGui::GetColorU32(ImGuiCol_Text), off = ImGui::GetColorU32(ImGuiCol_TextDisabled);
+	dl->AddText(p, knobs ? off : on, l);
+	dl->AddText(ImVec2(p.x + lw + gap * 2 + tw, p.y), knobs ? on : off, r);
+	const float ty = p.y + (ImGui::GetTextLineHeight() - th) * 0.5f;
+	const ImVec2 a(p.x + lw + gap, ty), b(a.x + tw, ty + th);
+	dl->AddRectFilled(a, b, ImGui::GetColorU32(ImGui::IsItemHovered() ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg), th * 0.5f);
+	const float kx = knobs ? b.x - th * 0.5f : a.x + th * 0.5f;
+	dl->AddCircleFilled(ImVec2(kx, ty + th * 0.5f), th * 0.38f, ImGui::GetColorU32(ImGuiCol_SliderGrabActive));
+	return pressed;
+}
+
+// 1 つの区画。見出しと、大きな絵か値の棒（右上の切り替えで選ぶ。index が負なら絵は無く棒だけ）
+template <typename Draw>
+void panel(const char *id, const char *title, float w, float h, int part, xg::model &m, bridge &br,
+           std::initializer_list<const char *> keys, int index, Draw draw)
+{
+	const float fs = ImGui::GetFontSize();
 	if (!ImGui::BeginChild(id, ImVec2(w, h), ImGuiChildFlags_Borders)) {
 		ImGui::EndChild();
 		return;
 	}
 	ImGui::TextUnformatted(title);
-	const float sliders = float(keys.size()) * (ImGui::GetFrameHeight() + st.ItemSpacing.y);
-	const float avail_w = ImGui::GetContentRegionAvail().x;
-	const float plot_h = std::max(fs * 4.0f, ImGui::GetContentRegionAvail().y - sliders - st.ItemSpacing.y);
-	draw(part, m, br, avail_w, plot_h);
+	const bool knobs = index < 0 || shapes_knobs(index);
+	if (index >= 0 && mode_toggle("##mode", knobs))
+		set_shapes_knobs(index, !knobs);
+	if (!knobs) {
+		// 絵だけ。区画の残りを全部使う
+		const ImVec2 avail = ImGui::GetContentRegionAvail();
+		draw(part, m, br, avail.x, std::max(fs * 4.0f, avail.y));
+		ImGui::EndChild();
+		return;
+	}
 	ImGui::PushItemWidth(-fs * 6.0f);
 	for (const char *k : keys)
 		param_slider(k, part, m, br);
@@ -146,23 +175,23 @@ void part_shapes::draw(xg::model &m, const xg_snapshot &ram, bridge &br)
 			const float room_h = body_h - (ImGui::GetCursorScreenPos().y - top_y);
 			const float w = (room.x - st.ItemSpacing.x * 2.0f) / 3.0f;
 			const float h = (room_h - st.ItemSpacing.y) * 0.5f;
-			panel("vib", "ビブラート（VIB）", w, h, part, m, br, { "part.vib_rate", "part.vib_depth", "part.vib_delay" },
+			panel("vib", "ビブラート（VIB）", w, h, part, m, br, { "part.vib_rate", "part.vib_depth", "part.vib_delay" }, 0,
 			      [](int p, xg::model &mm, bridge &b, float pw, float ph) { overview::vib_cell(p, mm, b, pw, ph, false); });
 			ImGui::SameLine();
-			panel("filter", "フィルタ（FILTER）", w, h, part, m, br, { "part.cutoff", "part.resonance", "part.hpf_cutoff" },
+			panel("filter", "フィルタ（FILTER）", w, h, part, m, br, { "part.cutoff", "part.resonance", "part.hpf_cutoff" }, 1,
 			      [](int p, xg::model &mm, bridge &b, float pw, float ph) { overview::filter_cell(p, mm, b, pw, ph, false); });
 			ImGui::SameLine();
-			panel("eg", "音量の形（EG）", w, h, part, m, br, { "part.attack", "part.decay", "part.release" },
+			panel("eg", "音量の形（EG）", w, h, part, m, br, { "part.attack", "part.decay", "part.release" }, 2,
 			      [](int p, xg::model &mm, bridge &b, float pw, float ph) { overview::eg_cell(p, mm, b, pw, ph, false); });
 			panel("peg", "音程の形（ピッチ EG）", w, h, part, m, br,
-			      { "part.peg_init_level", "part.peg_attack_time", "part.peg_rel_level", "part.peg_rel_time" },
+			      { "part.peg_init_level", "part.peg_attack_time", "part.peg_rel_level", "part.peg_rel_time" }, 3,
 			      [](int p, xg::model &mm, bridge &b, float pw, float ph) { overview::peg_cell(p, mm, b, pw, ph, false); });
 			ImGui::SameLine();
 			panel("eq", "パートの EQ", w, h, part, m, br,
-			      { "part.eq_bass_gain", "part.eq_bass_freq", "part.eq_treble_gain", "part.eq_treble_freq" },
+			      { "part.eq_bass_gain", "part.eq_bass_freq", "part.eq_treble_gain", "part.eq_treble_freq" }, 4,
 			      [](int p, xg::model &mm, bridge &b, float pw, float ph) { overview::eq_cell(p, mm, b, pw, ph, false); });
 			ImGui::SameLine();
-			panel("porta", "ポルタメント", w, h, part, m, br, { "part.porta_switch", "part.porta_time" },
+			panel("porta", "ポルタメント", w, h, part, m, br, { "part.porta_switch", "part.porta_time" }, -1,
 			      [](int, xg::model &, bridge &, float pw, float ph) { ImGui::Dummy(ImVec2(pw, ph)); });
 			ImGui::EndTabItem();
 		}
