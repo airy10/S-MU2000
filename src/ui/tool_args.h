@@ -27,6 +27,24 @@
 
 namespace ui {
 
+// The command line, identical on both front ends (flag order included)
+inline void print_usage()
+{
+	std::fprintf(stderr,
+		"使い方: gui <rom ディレクトリ> [--midi 番号] [--midi-b 番号] [--midi-c 番号] [--midi-d 番号]"
+		" [--midiout 番号] [--midiout-b 番号] [--midiout-mu 番号]"
+		" [--latency ミリ秒] [--exclusive] [--layout panel.txt] [--play 曲.mid] [--lcd] [--fast-midi] [--host-midi]\n"
+		"        [--factory]   覚えている設定を捨てて工場出荷状態で起動する\n"
+		"        [--editor]    PC エディタも開く（窓では F2 か右クリック）\n"
+		"        [--list-window] 一覧の窓も開く（窓では F3 か右クリック）\n"
+		"        [--fx-window] インサーションの設定の窓も開く（一覧でインサーションの欄をダブルクリック）\n"
+		"        [--shapes-window] パートの音色の窓も開く（一覧で VIB などの絵をダブルクリック）\n"
+		"        [--master-window] マスターの窓も開く（一覧でマスターの行をダブルクリック）\n"
+		"        gui --dump-layout panel.txt   いまの配置を書き出す\n"
+		"        gui --list\n"
+		"        gui [<rom ディレクトリ> --boot] --shot 絵.png [--size 1000x400]\n");
+}
+
 struct tool_args {
 	std::string dir, shot_path, dump_layout, play_path, layout_path;
 	std::string shot_mid;

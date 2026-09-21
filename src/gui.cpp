@@ -20,43 +20,45 @@
 // マウスホイールはダイヤルに割り当ててある。実機にもロータリー
 // エンコーダがあり、VALUE -/+ のボタンと同じ働きをする。
 
-#include "mu2000.h"
+#include "compat/console.h"
+
 #include "bootcache.h"
+#include "mu2000.h"
 #include "nvram.h"
-#include "voicecache.h"
 #include "smf.h"
-#include "ui/audio_out.h"
-#include "ui/audio_in.h"
+#include "voicecache.h"
 #include "ui/app.h"
+#include "ui/audio_in.h"
+#include "ui/audio_out.h"
 #include "ui/bridge.h"
 #include "ui/driver.h"
 #include "ui/engine.h"
-#include "ui/midi_in.h"
-#include "ui/midi_guard.h"
-#include "ui/midi_out.h"
-#include "ui/layout.h"
-#include "ui/panel.h"
 #include "ui/fx_editor.h"
-#include "ui/overview.h"
+#include "ui/keymap.h"
+#include "ui/keymap_win.h"
+#include "ui/layout.h"
 #include "ui/master_editor.h"
 #include "ui/menu.h"
 #include "ui/menu_win.h"
-#include "ui/keymap.h"
-#include "ui/keymap_win.h"
+#include "ui/midi_guard.h"
+#include "ui/midi_in.h"
+#include "ui/midi_out.h"
 #include "ui/options.h"
-#include "ui/settings.h"
-#include "ui/status.h"
+#include "ui/overview.h"
+#include "ui/panel.h"
 #include "ui/part_shapes.h"
-#include "ui/toolbar.h"
-#include "ui/tool_args.h"
-#include "ui/window_win.h"
 #include "ui/pc_editor.h"
 #include "ui/pc_host.h"
 #include "ui/pc_window.h"
 #include "ui/player.h"
-#include "ui/text.h"
 #include "ui/png.h"
+#include "ui/settings.h"
 #include "ui/shot.h"
+#include "ui/status.h"
+#include "ui/text.h"
+#include "ui/toolbar.h"
+#include "ui/tool_args.h"
+#include "ui/window_win.h"
 
 #include <algorithm>
 #include <atomic>
@@ -101,7 +103,7 @@ using namespace ui;
 
 int main(int argc, char **argv)
 {
-	SetConsoleOutputCP(CP_UTF8);
+	smu2000::init_console_utf8();
 
 	ui::tool_args a;
 	a.latency = 20;        // 溜める目標 (per-backend default; the shared parser keeps it)
@@ -130,19 +132,7 @@ int main(int argc, char **argv)
 	}
 
 	if (a.dir.empty()) {
-		std::fprintf(stderr,
-			"使い方: gui <rom ディレクトリ> [--midi 番号] [--midi-b 番号] [--midi-c 番号] [--midi-d 番号]"
-			" [--midiout 番号] [--midiout-b 番号] [--midiout-mu 番号]"
-			" [--latency ミリ秒] [--exclusive] [--layout panel.txt] [--play 曲.mid] [--lcd] [--fast-midi] [--host-midi]\n"
-			"        [--factory]   覚えている設定を捨てて工場出荷状態で起動する\n"
-			"        [--editor]    PC エディタも開く（窓では F2 か右クリック）\n"
-			"        [--list-window] 一覧の窓も開く（窓では F3 か右クリック）\n"
-			"        [--fx-window] インサーションの設定の窓も開く（一覧でインサーションの欄をダブルクリック）\n"
-			"        [--shapes-window] パートの音色の窓も開く（一覧で VIB などの絵をダブルクリック）\n"
-			"        [--master-window] マスターの窓も開く（一覧でマスターの行をダブルクリック）\n"
-			"        gui --dump-layout panel.txt   いまの配置を書き出す\n"
-			"        gui --list\n"
-			"        gui [<rom ディレクトリ> --boot] --shot 絵.png [--size 1000x400]\n");
+		ui::print_usage();
 		return 1;
 	}
 
@@ -181,6 +171,7 @@ int main(int argc, char **argv)
 	ui::pc_window::set_drop_handler(play_dropped_file);
 
 	gui.eng  = &eng;
+	gui.state = &eng.state;
 	gui.setup_for_window(a, win_opts, out_opts.factory);
 
 	eng.publish();

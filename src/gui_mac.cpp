@@ -36,30 +36,30 @@
 #include "smartmedia.h"
 #include "smf.h"
 #include "voicecache.h"
+#include "ui/app.h"
 #include "ui/audio_out.h"
 #include "ui/bridge.h"
 #include "ui/engine.h"
 #include "ui/fx_editor.h"
+#include "ui/keymap.h"
 #include "ui/layout.h"
+#include "ui/master_editor.h"
 #include "ui/midi_in.h"
 #include "ui/midi_out.h"
+#include "ui/options.h"
 #include "ui/overview.h"
 #include "ui/panel.h"
-#include "ui/master_editor.h"
 #include "ui/part_shapes.h"
 #include "ui/pc_editor.h"
 #include "ui/pc_host.h"
 #include "ui/pc_window.h"
 #include "ui/player.h"
 #include "ui/png.h"
+#include "ui/settings.h"
 #include "ui/shot.h"
-#include "ui/app.h"
+#include "ui/status.h"
 #include "ui/toolbar.h"
 #include "ui/tool_args.h"
-#include "ui/keymap.h"
-#include "ui/options.h"
-#include "ui/settings.h"
-#include "ui/status.h"
 #include "ui/window_mac.h"
 
 #include <algorithm>
@@ -320,19 +320,7 @@ int main(int argc, char **argv)
 	}
 
 	if (a.dir.empty()) {
-		std::fprintf(stderr,
-			"使い方: gui <rom ディレクトリ> [--midi 番号] [--midi-b 番号] [--midi-c 番号] [--midi-d 番号]"
-			" [--midiout 番号] [--midiout-b 番号] [--midiout-mu 番号]"
-			" [--latency ミリ秒] [--exclusive] [--layout panel.txt] [--play 曲.mid] [--host-midi] [--fast-midi] [--lcd]\n"
-			"        [--factory]   覚えている設定を捨てて工場出荷状態で起動する\n"
-			"        [--editor]    PC エディタも開く（窓では F2 か右クリック）\n"
-			"        [--list-window] 一覧の窓も開く（窓では F3 か右クリック）\n"
-			"        [--fx-window] インサーションの設定の窓も開く（一覧でインサーションの欄をダブルクリック）\n"
-			"        [--shapes-window] パートの音色の窓も開く（一覧で VIB などの絵をダブルクリック）\n"
-			"        [--master-window] マスターの窓も開く（一覧でマスターの行をダブルクリック）\n"
-			"        gui --dump-layout panel.txt   いまの配置を書き出す\n"
-			"        gui --list\n"
-			"        gui [<rom ディレクトリ> --boot] --shot 絵.png [--size 1000x400]\n");
+		ui::print_usage();
 		return 1;
 	}
 
