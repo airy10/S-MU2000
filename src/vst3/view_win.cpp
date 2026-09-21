@@ -102,13 +102,7 @@ public:
 	void pc_frame(::xg::model &m, const ::ui::xg_snapshot &ram, ::ui::bridge &br) override;
 	void open_pc_window(int kind) override
 	{
-		switch (kind) {
-		case PC_EDITOR: open_pc(m_editor); break;
-		case PC_FX:     open_pc(m_fx);     break;
-		case PC_SHAPES: open_pc(m_shapes); break;
-		case PC_MASTER: open_pc(m_master); break;
-		default:        open_pc(m_list);   break;
-		}
+		open_pc(*pc_window_for_kind(kind, m_list, m_editor, m_fx, m_shapes, m_master));
 	}
 
 private:

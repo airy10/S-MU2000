@@ -44,6 +44,7 @@
 #include "ui/keymap_win.h"
 #include "ui/options.h"
 #include "ui/settings.h"
+#include "ui/status.h"
 #include "ui/part_shapes.h"
 #include "ui/toolbar.h"
 #include "ui/pc_editor.h"
@@ -52,6 +53,7 @@
 #include "ui/player.h"
 #include "ui/text.h"
 #include "ui/png.h"
+#include "ui/shot.h"
 
 #include <algorithm>
 #include <atomic>
@@ -172,12 +174,9 @@ std::string settings_path()
 
 // gui.ini keys live in ui/settings.h as ui::SET_* (shared with gui_mac.cpp).
 
-void load_settings(std::string *in_name,
-                   std::string &out_name, std::string &out_name_b,
-                   std::string &audio_name, float *volume = nullptr,
-                   std::string *out_name_mu = nullptr, bool *fold_ports34 = nullptr,
-                   std::string *ain_name = nullptr, std::string *card_path = nullptr,
-                   bool *analog = nullptr)
+// Reads the remembered ports into r. Missing keys leave r's defaults, so
+// callers start from a full struct and take what they need.
+void load_settings(ui::remembered &r)
 {
 	const std::string path = settings_path();
 	if (path.empty())
@@ -185,31 +184,7 @@ void load_settings(std::string *in_name,
 	settings_map kv;
 	if (!read_settings_file(path, kv))
 		return;
-	for (int p = 0; p < mu2000::MIDI_PORTS; p++)
-		if (const std::string *v = find_setting(kv, SET_IN_KEYS[p]))
-			in_name[p] = *v;
-	if (const std::string *v = find_setting(kv, SET_OUT))   out_name   = *v;
-	if (const std::string *v = find_setting(kv, SET_OUT_B)) out_name_b = *v;
-	if (const std::string *v = find_setting(kv, SET_OUT_MU)) {
-		if (out_name_mu) *out_name_mu = *v;
-	}
-	if (const std::string *v = find_setting(kv, SET_AUDIO_OUT))  audio_name = *v;
-	if (const std::string *v = find_setting(kv, SET_AUDIO_IN)) {
-		if (ain_name) *ain_name = *v;
-	}
-	if (const std::string *v = find_setting(kv, SET_CARD)) {
-		if (card_path) *card_path = *v;
-	}
-	if (const std::string *v = find_setting(kv, SET_PORTS34)) {
-		if (fold_ports34) *fold_ports34 = *v != "drop";
-	}
-	if (const std::string *v = find_setting(kv, SET_OUTPUT)) {
-		if (analog) *analog = *v == "analog";
-	}
-	if (const std::string *v = find_setting(kv, SET_VOLUME)) {
-		if (volume && !v->empty())
-			*volume = std::clamp(float(std::atof(v->c_str())), 0.0f, 1.0f);
-	}
+	ui::apply_settings(kv, r);
 }
 
 void save_settings()
@@ -220,29 +195,28 @@ void save_settings()
 	if (path.empty())
 		return;
 	auto pick = [](const std::string &now, const std::string &keep) {
-		return (now.empty() ? keep : now).c_str();
+		return (now.empty() ? keep : now);
 	};
-	settings_map kv;
+	// The rows themselves are shared (ui::collect_settings); only gathering
+	// this window's state stays here
+	ui::remembered r;
 	for (int p = 0; p < mu2000::MIDI_PORTS; p++)
-		kv.emplace_back(SET_IN_KEYS[p], pick(g_win.in_name[p], g_win.in_keep[p]));
-	kv.emplace_back(SET_OUT,    pick(g_win.out_name,    g_win.out_keep));
-	kv.emplace_back(SET_OUT_B,  pick(g_win.out_name_b,  g_win.out_keep_b));
-	kv.emplace_back(SET_OUT_MU, pick(g_win.out_name_mu, g_win.out_keep_mu));
-	kv.emplace_back(SET_AUDIO_OUT, g_win.audio_name);
-	kv.emplace_back(SET_AUDIO_IN, g_win.ain_name);
-	kv.emplace_back(SET_CARD, g_win.card_path);
+		r.in[p] = pick(g_win.in_name[p], g_win.in_keep[p]);
+	r.out       = pick(g_win.out_name,    g_win.out_keep);
+	r.out_b     = pick(g_win.out_name_b,  g_win.out_keep_b);
+	r.out_mu    = pick(g_win.out_name_mu, g_win.out_keep_mu);
+	r.audio_out = g_win.audio_name;
+	r.audio_in  = g_win.ain_name;
+	r.card      = g_win.card_path;
 	// パネルの VOLUME のつまみ。実機でも DAC の後ろのアナログのつまみで、
 	// firmware の RAM には入らないので、こちらで覚える
-	if (g_win.br) {
-		char vol[32];
-		std::snprintf(vol, sizeof(vol), "%.3f", g_win.br->gain());
-		kv.emplace_back(SET_VOLUME, vol);
-	}
-	kv.emplace_back(SET_PORTS34, g_win.play_file.fold_extra_ports() ? "fold" : "drop");
+	if (g_win.br)
+		r.volume = g_win.br->gain();
+	r.fold34 = g_win.play_file.fold_extra_ports();
 	// 音の出口。digital（S/PDIF と同じ）か analog（直流を切る。src/analog_out.h）
 	if (g_win.eng)
-		kv.emplace_back(SET_OUTPUT, g_win.eng->analog.load() ? "analog" : "digital");
-	write_settings_file(path, kv);
+		r.analog = g_win.eng->analog.load();
+	write_settings_file(path, ui::collect_settings(r));
 }
 
 // ---- 口を選ぶ品書き
@@ -682,16 +656,20 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		g_win.br->read(s);
 		u64 pressed = g_win.br->buttons();
 		char status[320] = {};
-		if (g_win.out && g_win.out->produced())
-			std::snprintf(status, sizeof(status),
-			              "発音 %d/128  CPU %.0f%%  最悪 %.1f ms  待ち %.0f ms  遅れ %llu   IN: %s   OUT: %s"
-			              "   （MIDI IN A のジャックか右クリックで口を選ぶ）",
-			              s.voices_master + s.voices_slave,
-			              g_win.out->cpu_percent(), g_win.out->worst_ms(),
+		if (g_win.out && g_win.out->produced()) {
+			// The wait/drop fragment is what WASAPI measures (ui/status.h).
+			// CoreAudio reports only the drop count, in the same words
+			char middle[64];
+			std::snprintf(middle, sizeof(middle), "待ち %.0f ms  遅れ %llu",
 			              g_win.out->output_ms(),
-			              (unsigned long long)g_win.out->late(),
-			              g_win.in_name[0].empty()  ? "なし" : g_win.in_name[0].c_str(),
-			              g_win.out_name.empty() ? "なし" : g_win.out_name.c_str());
+			              (unsigned long long)g_win.out->late());
+			ui::format_status_line(status, sizeof(status),
+			                       s.voices_master + s.voices_slave,
+			                       g_win.out->cpu_percent(), g_win.out->worst_ms(),
+			                       middle,
+			                       g_win.in_name[0].empty()  ? "なし" : g_win.in_name[0].c_str(),
+			                       g_win.out_name.empty() ? "なし" : g_win.out_name.c_str());
+		}
 		else
 			std::snprintf(status, sizeof(status), "起動中...");
 		g_win.panel.set_volume(g_win.br->gain());
@@ -918,57 +896,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 }
 
 
-// ---- 窓を出さずに絵だけ書き出す。見た目を直すときに使う
-
-int shot(const std::string &path, int w, int h, ui::bridge &br, bool grid,
-         bool lcd_only, const std::string &layout_path)
-{
-	ui::panel p;
-	std::string lerr;
-	if (!layout_path.empty() && !p.lay().load(layout_path, lerr))
-		std::fprintf(stderr, "配置: %s を開けない\n", layout_path.c_str());
-	if (!lerr.empty())
-		std::fprintf(stderr, "%s", lerr.c_str());
-	p.set_lcd_only(lcd_only);
-	// 窓と同じ見た目にする（帯のぶん上を空ける）
-	ui::toolbar bar;
-	if (!lcd_only) {
-		bar.set_items(ui::window_bar_items());
-		p.set_top_inset(ui::toolbar::HEIGHT);
-	}
-	p.resize(w, h);
-	p.set_grid(grid);
-
-	BITMAPINFO bi{};
-	bi.bmiHeader.biSize = sizeof(bi.bmiHeader);
-	bi.bmiHeader.biWidth = w;
-	bi.bmiHeader.biHeight = -h;                 // 上から下へ
-	bi.bmiHeader.biPlanes = 1;
-	bi.bmiHeader.biBitCount = 32;
-	bi.bmiHeader.biCompression = BI_RGB;
-
-	void *bits = nullptr;
-	HDC screen = GetDC(nullptr);
-	HDC dc = CreateCompatibleDC(screen);
-	HBITMAP bmp = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
-	SelectObject(dc, bmp);
-
-	ui::snapshot s;
-	br.read(s);
-	p.set_volume(0.8);
-	p.paint(dc, s, 0, "");
-	bar.paint(dc, w);
-	GdiFlush();
-
-	const bool ok = ui::write_png(path, static_cast<const u8 *>(bits), w, h, w * 4);
-
-	DeleteObject(bmp);
-	DeleteDC(dc);
-	ReleaseDC(nullptr, screen);
-
-	std::printf(ok ? "書き出した: %s（%d×%d）\n" : "書き出せない: %s\n", path.c_str(), w, h);
-	return ok ? 0 : 1;
-}
+// --shot renders through the shared painter (ui/shot.h), like the window
 
 } // namespace
 
@@ -1085,7 +1013,7 @@ int main(int argc, char **argv)
 		ui::snapshot s;
 		std::snprintf(s.message, sizeof(s.message), "S-MU2000");
 		br.publish(s);
-		return shot(shot_path, win_w, win_h, br, grid, win_opts.lcd_only, layout_path);
+		return ui::write_shot(shot_path, win_w, win_h, br, grid, win_opts.lcd_only, layout_path);
 	}
 
 	if (dir.empty()) {
@@ -1170,7 +1098,7 @@ int main(int argc, char **argv)
 		}
 
 		eng.publish();
-		return shot(shot_path, win_w, win_h, br, grid, win_opts.lcd_only, layout_path);
+		return ui::write_shot(shot_path, win_w, win_h, br, grid, win_opts.lcd_only, layout_path);
 	}
 
 	// ---- 窓を出す
@@ -1223,16 +1151,13 @@ int main(int argc, char **argv)
 	g_win.panel.resize(win_w, win_h);
 	{
 		// VOLUME のつまみは前に閉じたときの位置から
-		std::string ins[mu2000::MIDI_PORTS], b, c, d;
-		float volume = 1.0f;
-		bool fold34 = true;
-		bool analog = false;
-		load_settings(ins, b, c, d, &volume, nullptr, &fold34, nullptr, nullptr, &analog);
-		br.set_gain(volume);
-		eng.analog.store(analog);
-		if (analog)
+		ui::remembered r;
+		load_settings(r);
+		br.set_gain(r.volume);
+		eng.analog.store(r.analog);
+		if (r.analog)
 			std::printf("音の出口: アナログ（直流を切る）\n");
-		g_win.play_file.set_fold_extra_ports(fold34);
+		g_win.play_file.set_fold_extra_ports(r.fold34);
 	}
 
 	eng.publish();
@@ -1272,31 +1197,29 @@ int main(int argc, char **argv)
 		eng.publish();
 
 		// 前に選んだ口を名前で探す。--midi / --midiout があればそちらが勝つ
-		std::string want_in[mu2000::MIDI_PORTS];
-		std::string want_out, want_out_b, want_audio, want_out_mu;
-		std::string want_ain, want_card;
-		load_settings(want_in, want_out, want_out_b, want_audio, nullptr, &want_out_mu, nullptr, &want_ain, &want_card);
-		g_win.ain_name = want_ain;
+		ui::remembered want;
+		load_settings(want);
+		g_win.ain_name = want.audio_in;
 		// 前に差していた SmartMedia。ファイルが無くなっていたら差さない（覚えている名前も消える）
-		if (!want_card.empty())
-			insert_card(want_card, true);
+		if (!want.card.empty())
+			insert_card(want.card, true);
 		// --audio があればそちらが勝つ。無ければ前に選んだもの
-		g_win.audio_name = out_opts.audio_dev ? std::string(out_opts.audio_dev) : want_audio;
+		g_win.audio_name = out_opts.audio_dev ? std::string(out_opts.audio_dev) : want.audio_out;
 		for (int p = 0; p < mu2000::MIDI_PORTS; p++)
 			if (in_dev[p] == -2)
-				in_dev[p] = find_device(ui::midi_in::list(), want_in[p]);
+				in_dev[p] = find_device(ui::midi_in::list(), want.in[p]);
 		if (mout_dev == -2)
-			mout_dev = find_device(ui::midi_out::list(), want_out);
+			mout_dev = find_device(ui::midi_out::list(), want.out);
 		if (moutb_dev == -2)
-			moutb_dev = find_device(ui::midi_out::list(), want_out_b);
+			moutb_dev = find_device(ui::midi_out::list(), want.out_b);
 		if (moutmu_dev == -2)
-			moutmu_dev = find_device(ui::midi_out::list(), want_out_mu);
+			moutmu_dev = find_device(ui::midi_out::list(), want.out_mu);
 
 		for (int p = 0; p < mu2000::MIDI_PORTS; p++)
-			g_win.in_keep[p] = want_in[p];
-		g_win.out_keep    = want_out;
-		g_win.out_keep_b  = want_out_b;
-		g_win.out_keep_mu = want_out_mu;
+			g_win.in_keep[p] = want.in[p];
+		g_win.out_keep    = want.out;
+		g_win.out_keep_b  = want.out_b;
+		g_win.out_keep_mu = want.out_mu;
 		for (int p = 0; p < mu2000::MIDI_PORTS; p++)
 			choose_in(p, in_dev[p], true);
 		choose_out(mout_dev, true);

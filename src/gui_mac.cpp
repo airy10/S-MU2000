@@ -30,6 +30,7 @@
 #include "compat/console.h"
 #include "compat/gdi.h"
 #include "compat/paths.h"
+#include "bootcache.h"
 #include "mu2000.h"
 #include "nvram.h"
 #include "smartmedia.h"
@@ -51,10 +52,12 @@
 #include "ui/pc_window_mac.h"
 #include "ui/player.h"
 #include "ui/png.h"
+#include "ui/shot.h"
 #include "ui/toolbar.h"
 #include "ui/keymap.h"
 #include "ui/options.h"
 #include "ui/settings.h"
+#include "ui/status.h"
 #include "ui/window_mac.h"
 
 #include <algorithm>
@@ -95,20 +98,10 @@ std::string settings_path()
 // gui.ini keys live in ui/settings.h as ui::SET_* (shared with gui.cpp).
 // Menu wording lives in ui/menu.h as ui::IN_LABELS.
 
-struct port_names {
-	std::string in[mu2000::MIDI_PORTS];     // MIDI IN A-D
-	std::string out, out_b, out_mu;
-	std::string audio;          // the audio device, by name
-	std::string audio_in;       // the recording device feeding A/D INPUT, by name
-	std::string card;           // the SmartMedia image in the slot, by path
-	float       volume = 1.0f;  // the panel's VOLUME knob
-	// Ports 3 and 4 of a MIDI file: true folds them onto A and B, false drops
-	// them. Same key as gui.cpp's ("ports34=fold" / "ports34=drop")
-	bool        fold34 = true;
-	// The output: false = digital (as S/PDIF), true = analogue (DC removed, src/analog_out.h).
-	// Same key as gui.cpp's ("output=digital" / "output=analog")
-	bool        analog = false;
-};
+// The remembered ports, in file order. One struct for both front ends
+// (ui::remembered, shared with gui.cpp); the Mac side used to spell it
+// port_names with audio instead of audio_out.
+using port_names = ui::remembered;
 
 port_names load_settings()
 {
@@ -119,21 +112,7 @@ port_names load_settings()
 	settings_map kv;
 	if (!read_settings_file(path, kv))
 		return n;
-	for (int p = 0; p < mu2000::MIDI_PORTS; p++)
-		if (const std::string *v = find_setting(kv, SET_IN_KEYS[p]))
-			n.in[p] = *v;
-	if (const std::string *v = find_setting(kv, SET_OUT))    n.out   = *v;
-	if (const std::string *v = find_setting(kv, SET_OUT_B))  n.out_b = *v;
-	if (const std::string *v = find_setting(kv, SET_OUT_MU)) n.out_mu = *v;
-	if (const std::string *v = find_setting(kv, SET_AUDIO_OUT))   n.audio = *v;
-	if (const std::string *v = find_setting(kv, SET_AUDIO_IN))    n.audio_in = *v;
-	if (const std::string *v = find_setting(kv, SET_CARD))  n.card  = *v;
-	if (const std::string *v = find_setting(kv, SET_PORTS34))     n.fold34 = *v != "drop";
-	if (const std::string *v = find_setting(kv, SET_OUTPUT))      n.analog = *v == "analog";
-	if (const std::string *v = find_setting(kv, SET_VOLUME)) {
-		if (!v->empty())
-			n.volume = std::clamp(float(std::atof(v->c_str())), 0.0f, 1.0f);
-	}
+	ui::apply_settings(kv, n);
 	return n;
 }
 
@@ -199,15 +178,19 @@ public:
 		const u64 pressed = br.buttons();
 
 		char status[320] = {};
-		if (out && out->produced())
-			std::snprintf(status, sizeof(status),
-			              "発音 %d/128  CPU %.0f%%  最悪 %.1f ms  遅れ %llu   IN: %s   OUT: %s"
-			              "   （MIDI IN A のジャックか右クリックで口を選ぶ）",
-			              s.voices_master + s.voices_slave,
-			              out->cpu_percent(), out->worst_ms(),
-			              (unsigned long long)out->starved(),
-			              in_name[0].empty() ? "なし" : in_name[0].c_str(),
-			              out_name.empty() ? "なし" : out_name.c_str());
+		if (out && out->produced()) {
+			// 遅れは CoreAudio が数える枯渇。待ちは WASAPI だけが測るので
+			// こちらは出さない（ui/status.h）
+			char middle[32];
+			std::snprintf(middle, sizeof(middle), "遅れ %llu",
+			              (unsigned long long)out->starved());
+			ui::format_status_line(status, sizeof(status),
+			                       s.voices_master + s.voices_slave,
+			                       out->cpu_percent(), out->worst_ms(),
+			                       middle,
+			                       in_name[0].empty() ? "なし" : in_name[0].c_str(),
+			                       out_name.empty() ? "なし" : out_name.c_str());
+		}
 		else
 			std::snprintf(status, sizeof(status), "起動中...");
 
@@ -766,27 +749,25 @@ public:
 		const std::string path = settings_path();
 		if (path.empty())
 			return;
-		settings_map kv;
+		// The rows themselves are shared (ui::collect_settings); only gathering
+		// this window's state stays here. A device that is not there yet keeps
+		// its name the same way the MIDI ports do (see in_keep below)
+		ui::remembered r;
 		for (int p = 0; p < mu2000::MIDI_PORTS; p++)
-			kv.emplace_back(SET_IN_KEYS[p],
-			                in_name[p].empty() ? in_keep[p] : in_name[p]);
-		kv.emplace_back(SET_OUT,    out_name.empty()    ? out_keep    : out_name);
-		kv.emplace_back(SET_OUT_B,  out_name_b.empty()  ? out_keep_b  : out_name_b);
-		kv.emplace_back(SET_OUT_MU, out_name_mu.empty() ? out_keep_mu : out_name_mu);
-		kv.emplace_back(SET_AUDIO_OUT,   audio_name);
-		// The recording device is kept by name even when it is not open, the
-		// same way the MIDI ports are: a device that is not there yet must not
-		// be forgotten. An empty name means "not used", which the menu sets
-		kv.emplace_back(SET_AUDIO_IN,    ain_name.empty() ? ain_keep : ain_name);
-		kv.emplace_back(SET_CARD,     card_path);
-		kv.emplace_back(SET_PORTS34,     play.fold_extra_ports() ? "fold" : "drop");
-		kv.emplace_back(SET_OUTPUT,      eng && eng->analog.load() ? "analog" : "digital");
+			r.in[p] = in_name[p].empty() ? in_keep[p] : in_name[p];
+		r.out       = out_name.empty()    ? out_keep    : out_name;
+		r.out_b     = out_name_b.empty()  ? out_keep_b  : out_name_b;
+		r.out_mu    = out_name_mu.empty() ? out_keep_mu : out_name_mu;
+		r.audio_out = audio_name;
+		// An empty recording name means "not used", which the menu sets
+		r.audio_in  = ain_name.empty() ? ain_keep : ain_name;
+		r.card      = card_path;
+		r.fold34    = play.fold_extra_ports();
+		r.analog    = eng && eng->analog.load();
 		// The panel's VOLUME knob. On the real machine it is the analogue one behind
 		// the DAC, so the firmware's RAM does not hold it and it is kept here
-		char vol[32];
-		std::snprintf(vol, sizeof(vol), "%.3f", br.gain());
-		kv.emplace_back(SET_VOLUME, vol);
-		write_settings_file(path, kv);
+		r.volume    = br.gain();
+		write_settings_file(path, ui::collect_settings(r));
 	}
 
 	int in_dev[mu2000::MIDI_PORTS] = { -1, -1, -1, -1 };   // MIDI IN A-D; -1 is unused
@@ -821,60 +802,7 @@ private:
 };
 
 
-// ---- Write just the picture, with no window. Used to check the looks
-
-int shot(const std::string &path, int w, int h, ui::bridge &br, bool grid,
-         bool lcd_only, const std::string &layout_path)
-{
-	ui::panel p;
-	std::string lerr;
-	if (!layout_path.empty() && !p.lay().load(layout_path, lerr))
-		std::fprintf(stderr, "配置: %s を開けない\n", layout_path.c_str());
-	if (!lerr.empty())
-		std::fprintf(stderr, "%s", lerr.c_str());
-	p.set_lcd_only(lcd_only);
-	// 窓と同じ見た目にする（帯のぶん上を空ける。gui.cpp と同じ）
-	ui::toolbar bar;
-	if (!lcd_only) {
-		bar.set_items(ui::window_bar_items());
-		p.set_top_inset(ui::toolbar::HEIGHT);
-	}
-	p.resize(w, h);
-	p.set_grid(grid);
-
-	BITMAPINFO bi{};
-	bi.bmiHeader.biSize = sizeof(bi.bmiHeader);
-	bi.bmiHeader.biWidth = w;
-	bi.bmiHeader.biHeight = -h;                 // top down
-	bi.bmiHeader.biPlanes = 1;
-	bi.bmiHeader.biBitCount = 32;
-	bi.bmiHeader.biCompression = BI_RGB;
-
-	void *bits = nullptr;
-	HDC dc = CreateCompatibleDC(nullptr);
-	HBITMAP bmp = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
-	if (!bmp) {
-		std::fprintf(stderr, "画面を作れない\n");
-		return 1;
-	}
-	SelectObject(dc, bmp);
-
-	ui::snapshot s;
-	br.read(s);
-	p.set_volume(0.8);
-	p.paint(dc, s, 0, "");
-	bar.paint(dc, w);
-	GdiFlush();
-
-	const bool ok = ui::write_png(path, static_cast<const u8 *>(bits), w, h, w * 4);
-
-	DeleteObject(bmp);
-	DeleteDC(dc);
-
-	std::printf(ok ? "書き出した: %s（%d×%d）\n" : "書き出せない: %s\n",
-	            path.c_str(), w, h);
-	return ok ? 0 : 1;
-}
+// --shot renders through the shared painter (ui/shot.h)
 
 } // namespace
 
@@ -1012,7 +940,7 @@ int main(int argc, char **argv)
 		ui::snapshot s;
 		std::snprintf(s.message, sizeof(s.message), "S-MU2000");
 		br.publish(s);
-		return shot(shot_path, win_w, win_h, br, grid, win_opts.lcd_only, layout_path);
+		return ui::write_shot(shot_path, win_w, win_h, br, grid, win_opts.lcd_only, layout_path);
 	}
 
 	if (dir.empty()) {
@@ -1095,7 +1023,7 @@ int main(int argc, char **argv)
 		}
 
 		eng.publish();
-		return shot(shot_path, win_w, win_h, br, grid, win_opts.lcd_only, layout_path);
+		return ui::write_shot(shot_path, win_w, win_h, br, grid, win_opts.lcd_only, layout_path);
 	}
 
 	// ---- Put the window up
@@ -1142,7 +1070,7 @@ int main(int argc, char **argv)
 			std::printf("音の出口: アナログ（直流を切る）\n");
 		gui.set_fold34(want.fold34);
 		// --audio wins; otherwise the port that was opened last time
-		gui.audio_name = out_opts.audio_dev ? std::string(out_opts.audio_dev) : want.audio;
+		gui.audio_name = out_opts.audio_dev ? std::string(out_opts.audio_dev) : want.audio_out;
 		// A/D INPUT is remembered by name too. It is opened in the boot thread,
 		// once the machine is up
 		gui.ain_name = want.audio_in;
@@ -1291,16 +1219,18 @@ int main(int argc, char **argv)
 	eng.settle_for_save();
 	if (eng.state.load() == 1 && !smu2000::nvram::save(eng.mu))
 		std::fprintf(stderr, "設定を残せなかった: %s\n", smu2000::nvram::path(eng.mu).c_str());
+	// 残した設定で起動した写しも用意しておく（src/bootcache.h）。無いと、
+	// 設定をいじった次の 1 回だけ起動が遅くなる (gui.cpp と同じ)
+	if (eng.state.load() == 1) {
+		if (smu2000::bootcache::refresh(eng.mu))
+			std::printf("次の起動ぶんの写しを作った\n");
+		smu2000::bootcache::prune();
+	}
 	gui.play.stop();
 	for (ui::midi_in &m : midi_ports)
 		m.close();
 	mout.close();
 	mout_b.close();
 	mout_mu.close();
-
-	if (out.produced())
-		std::printf("CPU %.1f%%、1 回の最悪 %.2f ms、枯渇 %llu 回\n",
-		            out.cpu_percent(), out.worst_ms(),
-		            (unsigned long long)out.starved());
 	return 0;
 }
