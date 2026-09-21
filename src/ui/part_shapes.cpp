@@ -104,13 +104,19 @@ void panel(const char *id, const char *title, float w, float h, int part, xg::mo
 	// 区画にカーソルが載ったら、下の帯に区画の名前と、中の項目の名前と値を 1 行ずつ。
 	// 絵に点の字があればそれ（実際の時間などつき）、無ければ（EQ・つまみ・ポルタメント）XG の値
 	if (!toggle_hovered && ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows | ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) {
-		std::string text = title;
+		// 2 行目に項目を 1 行で並べる
+		std::string text = std::string(title) + "\n";
+		const char *sep = "";
 		if (!values.empty())
-			for (const std::string &v : values)
-				text += "\n" + v;
+			for (const std::string &v : values) {
+				text += sep + v;
+				sep = "    ";
+			}
 		else
-			for (const char *k : keys)
-				text += "\n" + param_line(k, part, m);
+			for (const char *k : keys) {
+				text += sep + param_line(k, part, m);
+				sep = "    ";
+			}
 		hint("%s", text.c_str());
 	}
 	ImGui::EndChild();
@@ -201,9 +207,9 @@ void part_shapes::draw(xg::model &m, const xg_snapshot &ram, bridge &br)
 	// 音色を選ぶ面は、左に分類・右に音色とバンク違いの 2 列（xgui::program_pane）
 	const float pane_w = std::min(fs * 15.6f, avail.x * 0.3f);     // 前の 6 割
 	// 下の説明の帯（4 行ぶん。入り切らなかった字の行と、説明の 3 行）を残す
-	// 帯は小さめの字で 5 行（区画の名前と、中の項目 4 つ）
+	// 帯は小さめの字で 3 行（区画の名前と、中の項目を 1 行に並べたもの。折り返しても 3 行まで）
 	ImGui::PushFont(nullptr, fs * BAR_SCALE);
-	const float bar_h = ImGui::GetTextLineHeightWithSpacing() * 5.0f + st.WindowPadding.y * 2.0f;
+	const float bar_h = ImGui::GetTextLineHeightWithSpacing() * 3.0f + st.WindowPadding.y * 2.0f;
 	ImGui::PopFont();
 	const float body_h = std::max(fs * 8.0f, avail.y - bar_h - st.ItemSpacing.y);
 
