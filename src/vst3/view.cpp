@@ -20,7 +20,7 @@
 #include "ui/panel.h"
 #include "ui/toolbar.h"
 
-#if !defined(_WIN32)
+#if defined(__APPLE__)
 #include <CoreGraphics/CoreGraphics.h>
 #endif
 
@@ -282,13 +282,17 @@ void plug_view::repaint(void *native, int w, int h)
 	}
 	m_impl->paint_panel(m_impl->mem_dc);
 	BitBlt(dst, 0, 0, w, h, m_impl->mem_dc, 0, 0, SRCCOPY);
-#else
+#elif defined(__APPLE__)
 	// The subview is flipped, so the context is already top-left with y down
 	// and only has to be wrapped -- no flipping, same as the GUI window
 	CGContextRef ctx = static_cast<CGContextRef>(native);
 	HDC dc = static_cast<HDC>(smu_gdi_wrap_view_context(ctx, w, h));
 	m_impl->paint_panel(dc);
 	DeleteDC(dc);
+#else
+	// Linux headless build (plug_window_linux): the stub window never paints.
+	// The editor view arrives in a later phase (doc/porting-linux-gui.md).
+	(void)native; (void)w; (void)h;
 #endif
 
 	card_tick();
