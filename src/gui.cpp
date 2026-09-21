@@ -713,8 +713,12 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 			const int id = g_win.bar.hit(mx, my);
 			if (id >= 0) {
 				g_win.bar.set_down(id);
-				ui::pc_window *w[5] = { &g_win.list, &g_win.pc, &g_win.shapes,
-				                        &g_win.fx, &g_win.master };
+				ui::pc_window *w[5] = {};
+				w[ui::BAR_LIST] = &g_win.list;
+				w[ui::BAR_EDITOR] = &g_win.pc;
+				w[ui::BAR_SHAPES] = &g_win.shapes;
+				w[ui::BAR_FX] = &g_win.fx;
+				w[ui::BAR_MASTER] = &g_win.master;
 				open_window(hwnd, *w[id]);
 				InvalidateRect(hwnd, nullptr, FALSE);
 				return 0;
@@ -929,9 +933,7 @@ int shot(const std::string &path, int w, int h, ui::bridge &br, bool grid,
 	// 窓と同じ見た目にする（帯のぶん上を空ける）
 	ui::toolbar bar;
 	if (!lcd_only) {
-		bar.set_items({ { "一覧", 0 }, { "エディタ", 1 },
-		                { "音色", 2 }, { "エフェクト", 3 },
-		                { "マスター", 4 } });
+		bar.set_items(ui::window_bar_items());
 		p.set_top_inset(ui::toolbar::HEIGHT);
 	}
 	p.resize(w, h);
@@ -1203,9 +1205,7 @@ int main(int argc, char **argv)
 	g_win.panel.set_lcd_only(win_opts.lcd_only);
 	// 帯は普通の窓だけ。LCD だけの窓には出さない
 	if (!win_opts.lcd_only) {
-		g_win.bar.set_items({ { "一覧", 0 }, { "エディタ", 1 },
-		                      { "音色", 2 }, { "エフェクト", 3 },
-		                      { "マスター", 4 } });
+		g_win.bar.set_items(ui::window_bar_items());
 		g_win.panel.set_top_inset(ui::toolbar::HEIGHT);
 	}
 	// 窓を出すときだけ、覚えている設定で起動する（--shot は毎回同じ絵にしたい）

@@ -117,9 +117,11 @@ struct plug_view::impl
 
 	explicit impl(engine &e) : eng(e)
 	{
-		bar.set_items({ { "一覧", PC_LIST }, { "エディタ", PC_EDITOR },
-		                { "音色", PC_SHAPES }, { "エフェクト", PC_FX },
-		                { "マスター", PC_MASTER } });
+		// The bar ids are the pc_kind the view dispatches (open_pc_window)
+		static_assert(int(ui::BAR_LIST) == PC_LIST && int(ui::BAR_EDITOR) == PC_EDITOR &&
+		              int(ui::BAR_FX) == PC_FX && int(ui::BAR_SHAPES) == PC_SHAPES &&
+		              int(ui::BAR_MASTER) == PC_MASTER, "bar ids are pc_kind");
+		bar.set_items(ui::window_bar_items());
 		panel.set_top_inset(ui::toolbar::HEIGHT);
 	}
 
