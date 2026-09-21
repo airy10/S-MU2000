@@ -55,6 +55,14 @@ public:
 		return on;
 	}
 
+	// **実機がスロットを空けたら書くのをやめる**（6.207）。
+	// SMU2000_NO_SLOTFREE を立てると、前の「包絡線が底まで追う」やり方に戻る
+	static bool slotfree_on()
+	{
+		static const bool on = std::getenv("SMU2000_NO_SLOTFREE") == nullptr;
+		return on;
+	}
+
 	// SMU2000_NATIVE_DEBUG が立っていれば、鳴らすたびに値を出す（調べもの用）
 	static bool debug_on()
 	{
@@ -167,6 +175,9 @@ public:
 	// **そのスロットがまだ鳴っているか**をチップに聞く（6.151）。
 	// オルタネートグループで切る相手を選ぶのに使う
 	void set_slot_peek(peek_fn f) { m_slot_peek = std::move(f); }
+	// **実機がまだそのスロットを持っているか**（6.207）。離した音の
+	// 尾をどこまで追うかはこれで決める
+	void set_slot_held(peek_fn f) { m_slot_held = std::move(f); }
 	void set_rom(const u8 *rom) { m_rom = rom; }
 	// ワーク RAM（firmware が音色を選んだ結果を読む）
 	void set_ram(u8 *ram) { m_ram = ram; m_ramw = ram; }
@@ -1465,9 +1476,13 @@ private:
 			now = m_clock;
 		if (!s.rel || now - s.rel_at > REL_FOLLOW)
 			return false;
+		const int ch = int(&s - m_slot.data());
+		// 実機がスロットを空けたら、そこで書くのをやめる（6.207）
+		if (m_slot_held && slotfree_on() && !m_slot_held(ch))
+			return false;
 		if (!m_slot_peek)
 			return true;
-		return m_slot_peek(int(&s - m_slot.data()));
+		return m_slot_peek(ch);
 	}
 
 	// いま鳴っているスロットに、つまみの動きを反映する
@@ -3458,6 +3473,7 @@ private:
 	poke_fn m_poke;
 	peek_fn m_peg_peek;
 	peek_fn m_slot_peek;
+	peek_fn m_slot_held;
 	const u8 *m_rom = nullptr;
 	const u8 *m_ram = nullptr;
 	u8 *m_ramw = nullptr;           // 同じワーク RAM（Rnd の種を書き戻す用）

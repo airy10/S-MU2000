@@ -1403,6 +1403,30 @@ def case_longtone():
     return [track(seq(ev))], t + 0.3
 
 
+def case_reltail():
+    """**離した音の尾**（6.207）。実機は鍵を離したあと、チップの包絡線が
+    （0x3FFF のうち）半分の 0x2000 まで落ちたところでスロットを空け、
+    以後そのスロットには一切書かない。native はそこを越えても切る高さを
+    動かし続けていて、尾が実機の 2〜3 倍の長さで違う音になっていた。
+
+    ここまでの試験は音を離したあとすぐ次を鳴らすものばかりで、
+    **尾だけが鳴っている区間**が丸ごと抜けていた。離しの遅い 4 音色を
+    1 音ずつ鳴らして、2.4 秒あける。
+
+    * Vibes   尾 0.35 秒（native は 0.85 秒まで書いていた）
+    * Strings 尾 0.50 秒（同 0.99 秒）
+    * FX Rain 尾 0.99 秒（同 2.47 秒）
+    * Pad2    尾 0.83 秒
+    """
+    ev = head()
+    t = 1.0
+    for prog in (11, 48, 96, 89):
+        ev += [(t - 0.1, bytes([0xc0, prog]))]
+        ev += note(0, 60, 100, t, 1.0)
+        t += 3.4
+    return [track(seq(ev))], t + 0.3
+
+
 CASES = {
     "piano":   case_piano,
     "chord":   case_chord,
@@ -1453,6 +1477,7 @@ CASES = {
     "rcvch": case_rcvch,
     "althh": case_althh,
     "drumrcv": case_drumrcv,
+    "reltail": case_reltail,
 }
 
 
