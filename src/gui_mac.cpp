@@ -53,6 +53,7 @@
 #include "ui/player.h"
 #include "ui/png.h"
 #include "ui/shot.h"
+#include "ui/app.h"
 #include "ui/toolbar.h"
 #include "ui/keymap.h"
 #include "ui/options.h"
@@ -117,32 +118,17 @@ port_names load_settings()
 }
 
 
-// ---- Keyboard. The table is shared (ui/keymap.h, same as gui.cpp).
-// Letters arrive in lower case. macOS hands over the character with Shift
-// already stripped, so both '=' and '+' have to be listed.
-bool key_to_button(int code, mu2000::button &out)
-{
-	return ui::button_for_char(code, out);
-}
-
 // ---- Things handed to the window
 
 // ---- The screen. Paints the panel, feeds it input, builds the menus
 
-class app : public ui::mac_app
+class gui_app : public ui::mac_app, public ui::app
 {
 public:
 	// mi is MIDI IN A-D, mu2000::MIDI_PORTS of them
-	app(ui::bridge &b, ui::midi_in *mi,
-	    ui::midi_out &mo, ui::midi_out &mob, ui::midi_out &mmu)
-	    : br(b), midi(mi), mout(mo), mout_b(mob), mout_mu(mmu) {}
-
-	ui::panel  panel;
-	ui::player play;
-
-	// **窓を開くボタンの帯**（窓の最上段。gui.cpp と同じ ui/toolbar.h）。
-	// LCD だけの窓には出さない
-	ui::toolbar bar;
+	gui_app(ui::bridge &b, ui::midi_in *mi,
+	    ui::midi_out &tha, ui::midi_out &thb, ui::midi_out &muo)
+	    : ui::app(b, mi, tha, thb, muo) {}
 
 	// The PC editor windows. Same contents as on Windows; only the window is
 	// AppKit + Metal (ui/pc_window_mac.mm). F2 / F3 or right-click opens them
@@ -173,35 +159,10 @@ public:
 		card_tick();
 		report_drops();
 
-		ui::snapshot s;
-		br.read(s);
-		const u64 pressed = br.buttons();
-
-		char status[320] = {};
-		if (out && out->produced()) {
-			// 遅れは CoreAudio が数える枯渇。待ちは WASAPI だけが測るので
-			// こちらは出さない（ui/status.h）
-			char middle[32];
-			std::snprintf(middle, sizeof(middle), "遅れ %llu",
-			              (unsigned long long)out->starved());
-			ui::format_status_line(status, sizeof(status),
-			                       s.voices_master + s.voices_slave,
-			                       out->cpu_percent(), out->worst_ms(),
-			                       middle,
-			                       in_name[0].empty() ? "なし" : in_name[0].c_str(),
-			                       out_name.empty() ? "なし" : out_name.c_str());
-		}
-		else
-			std::snprintf(status, sizeof(status), "起動中...");
-
-		panel.set_volume(br.gain());
-
-		// The view's context is already top-left, y down, so it can be handed
-		// to the shim as it stands
+		// The view's context is already top-left, y down, so the shared
+		// painter (ui::app::paint_into) takes it as it stands
 		HDC dc = static_cast<HDC>(smu_gdi_wrap_view_context(cg, w, h));
-		panel.paint(dc, s, pressed, status);
-		// 帯はパネルの**あと**に描く（パネルは全面を塗る。gui.cpp と同じ）
-		bar.paint(dc, w);
+		paint_into(dc, w);
 		DeleteDC(dc);
 	}
 
@@ -214,37 +175,17 @@ public:
 	{
 		if (lcd_only)
 			return false;
-		// A secondary click opens the port picker wherever it lands; on the
-		// card slot it opens the file menu instead. Same as gui.cpp does on
-		// WM_RBUTTONUP
-		if (right)
+		// What the press means is shared (ui::app::hit_test); only acting
+		// on it is the window's business
+		const mouse_hit h = hit_test(x, y, right);
+		if (h.bar_window >= 0) {
+			bar.set_down(h.bar_window);
+			open_window_by_kind(h.bar_window);
+			m_pressed = true;   // mouse_up clears the pressed look
 			return true;
-
-		// **帯が先**。ここはパネルでは無いので、機器には何も伝えない
-		// (gui.cpp の WM_LBUTTONDOWN と同じ)
-		{
-			const int id = bar.hit(x, y);
-			if (id >= 0) {
-				bar.set_down(id);
-				if (id == ui::BAR_LIST)   open_editor_window(list);
-				else if (id == ui::BAR_EDITOR) open_editor_window(pc);
-				else if (id == ui::BAR_SHAPES) open_editor_window(shapes);
-				else if (id == ui::BAR_FX)     open_editor_window(fx);
-				else if (id == ui::BAR_MASTER) open_editor_window(master);
-				m_pressed = true;   // mouse_up で set_down(-1) に戻す
-				return true;
-			}
-			if (y < ui::toolbar::HEIGHT)
-				return true;            // 帯の隙間
 		}
-
-		// The jacks and the card slot are pressed rather than clicked: they
-		// open a menu instead of moving a panel control (the A/D INPUT jack
-		// offers just its recording devices, as a left click does in gui.cpp)
-		if (panel.on_midi_jack(x, y) || panel.on_ad_input(x, y) ||
-		    panel.on_card_slot(x, y) || panel.on_phones(x, y))
-			return true;
-
+		if (h.handled)
+			return true;            // the strip's gaps, or a menu spot
 		m_pressed = true;
 		panel.press(x, y, br);
 		return false;
@@ -285,26 +226,24 @@ public:
 			return;
 		}
 		if (down && code == ui::MAC_KEY_FUNCTION_BASE + 0x78) {   // F2
-			open_editor_window(pc);
+			open_window_by_kind(ui::BAR_EDITOR);
 			return;
 		}
 		if (down && code == ui::MAC_KEY_FUNCTION_BASE + 0x63) {   // F3
-			open_editor_window(list);
+			open_window_by_kind(ui::BAR_LIST);
 			return;
 		}
-		if (down && eng && code == ui::MAC_KEY_FUNCTION_BASE + 0x76) {   // F4
-			eng->want_native_engine.store(eng->native_engine.load() ? 0 : 1);
+		if (down && code == ui::MAC_KEY_FUNCTION_BASE + 0x76) {   // F4
+			toggle_engine();
 			return;
 		}
-		mu2000::button b = mu2000::button::count;
-		if (key_to_button(code, b))
-			br.press(b, down);
+		handle_panel_key(code, down);
 	}
 
 	void focus_lost() override
 	{
 		m_pressed = false;
-		br.release_all();
+		release_keys();
 	}
 
 	bool hand_cursor(int x, int y) override
@@ -378,8 +317,8 @@ public:
 		else if (id >= ID_CARD_NEW16 && id <= ID_CARD_NEW128)         new_card(16u << (id - ID_CARD_NEW16));
 		else if (id == ID_PORTS34_FOLD)                               set_fold34(true);
 		else if (id == ID_PORTS34_DROP)                               set_fold34(false);
-		else if (id == ID_PC_EDITOR)                                  open_editor_window(pc);
-		else if (id == ID_OVERVIEW)                                   open_editor_window(list);
+		else if (id == ID_PC_EDITOR)                                  open_window_by_kind(ui::BAR_EDITOR);
+		else if (id == ID_OVERVIEW)                                   open_window_by_kind(ui::BAR_LIST);
 		else if (id == ID_NATIVE_FX && eng)
 			eng->want_native_fx.store(eng->native_fx.load() ? 0 : 2);
 		else if (id == ID_NATIVE_ENGINE && eng)
@@ -413,6 +352,15 @@ public:
 		std::string err;
 		if (!w.show(err))
 			ui::alert_modal("S-MU2000", ("開けない: " + err).c_str());
+	}
+
+	void open_window_by_kind(int kind) override
+	{
+		if (kind == ui::BAR_LIST)         open_editor_window(list);
+		else if (kind == ui::BAR_EDITOR)  open_editor_window(pc);
+		else if (kind == ui::BAR_SHAPES)  open_editor_window(shapes);
+		else if (kind == ui::BAR_FX)      open_editor_window(fx);
+		else if (kind == ui::BAR_MASTER)  open_editor_window(master);
 	}
 
 	void set_layout(const std::string &path)
@@ -518,13 +466,13 @@ public:
 		if (!keep)
 			out_keep.clear();
 		std::string err;
-		if (!mout.open(dev, err)) {
+		if (!thru_a.open(dev, err)) {
 			std::fprintf(stderr, "MIDI 出力: %s\n", err.c_str());
-			mout.open(-1, err);
+			thru_a.open(-1, err);
 			dev = -1;
 		}
-		out_dev  = mout.is_open() ? dev : -1;
-		out_name = mout.device_name();
+		out_dev  = thru_a.is_open() ? dev : -1;
+		out_name = thru_a.device_name();
 		save_settings();
 	}
 
@@ -533,13 +481,13 @@ public:
 		if (!keep)
 			out_keep_b.clear();
 		std::string err;
-		if (!mout_b.open(dev, err)) {
+		if (!thru_b.open(dev, err)) {
 			std::fprintf(stderr, "MIDI 出力 B: %s\n", err.c_str());
-			mout_b.open(-1, err);
+			thru_b.open(-1, err);
 			dev = -1;
 		}
-		out_dev_b  = mout_b.is_open() ? dev : -1;
-		out_name_b = mout_b.device_name();
+		out_dev_b  = thru_b.is_open() ? dev : -1;
+		out_name_b = thru_b.device_name();
 		save_settings();
 	}
 
@@ -551,13 +499,13 @@ public:
 		if (!keep)
 			out_keep_mu.clear();
 		std::string err;
-		if (!mout_mu.open(dev, err)) {
+		if (!mu_out.open(dev, err)) {
 			std::fprintf(stderr, "MIDI 出力（本体の OUT）: %s\n", err.c_str());
-			mout_mu.open(-1, err);
+			mu_out.open(-1, err);
 			dev = -1;
 		}
-		out_dev_mu  = mout_mu.is_open() ? dev : -1;
-		out_name_mu = mout_mu.device_name();
+		out_dev_mu  = mu_out.is_open() ? dev : -1;
+		out_name_mu = mu_out.device_name();
 		save_settings();
 	}
 
@@ -776,27 +724,8 @@ public:
 	// MIDI thrown away by the THRU guards, and when that was last said out loud
 	u64  reported_drops = 0;
 	u64  last_drop_report = 0;
-	bool keep_settings = false;        // --nomidi: leave the remembered ports alone
-	std::string in_name[mu2000::MIDI_PORTS];
-	std::string out_name, out_name_b, out_name_mu;
-	// The name to fall back on when a port could not be opened. Cleared when the
-	// menu is used, so a deliberate "unused" is not undone on the next start
-	std::string in_keep[mu2000::MIDI_PORTS];
-	std::string out_keep, out_keep_b, out_keep_mu, ain_keep;
-	std::string audio_name;            // the audio device, by name (empty = default)
-	std::string ain_name;              // the recording device, by name (empty = unused)
-	std::string card_path;             // the SmartMedia in the slot, by path (empty = none)
-
-	ui::audio_out *out = nullptr;      // set once the audio device is open
-	ui::audio_in  *ain = nullptr;      // set once the recording device is picked
-	ui::engine    *eng = nullptr;      // set once the ROMs are loaded
-	std::atomic<int> *state = nullptr; // the engine's, so menu items can be greyed
-	bool lcd_only = false;             // --lcd: the LCD on its own, as in gui.cpp
 
 private:
-	ui::bridge   &br;
-	ui::midi_in  *midi;                // MIDI IN A-D (mu2000::MIDI_PORTS of them)
-	ui::midi_out &mout, &mout_b, &mout_mu;
 	bool m_pressed = false;
 	u64 last_flush = 0;                // when the card file was last written back
 };
@@ -809,7 +738,7 @@ private:
 
 // A MIDI file dropped on **any** window -- the panel's, or one of the editor
 // windows' -- is played. Windows' play_dropped_file (gui.cpp), in UTF-8
-app *g_gui = nullptr;                  // set once main has made the app
+gui_app *g_gui = nullptr;                  // set once main has made the app
 
 void play_dropped_file(const std::string &path)
 {
@@ -1028,7 +957,7 @@ int main(int argc, char **argv)
 
 	// ---- Put the window up
 
-	static app gui(br, midi_ports, mout, mout_b, mout_mu);
+	static gui_app gui(br, midi_ports, mout, mout_b, mout_mu);
 	g_gui = &gui;
 	// a MIDI file dropped on any window plays (the panel, the editor, the overview)
 	ui::pc_window::set_drop_handler(play_dropped_file);
@@ -1219,8 +1148,9 @@ int main(int argc, char **argv)
 	eng.settle_for_save();
 	if (eng.state.load() == 1 && !smu2000::nvram::save(eng.mu))
 		std::fprintf(stderr, "設定を残せなかった: %s\n", smu2000::nvram::path(eng.mu).c_str());
-	// 残した設定で起動した写しも用意しておく（src/bootcache.h）。無いと、
-	// 設定をいじった次の 1 回だけ起動が遅くなる (gui.cpp と同じ)
+	// Prepare the snapshot for the settings just saved (src/bootcache.h).
+	// Without it, the first boot after changing settings is slow
+	// (same as gui.cpp)
 	if (eng.state.load() == 1) {
 		if (smu2000::bootcache::refresh(eng.mu))
 			std::printf("次の起動ぶんの写しを作った\n");
