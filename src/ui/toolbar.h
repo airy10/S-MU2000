@@ -20,7 +20,7 @@
 #include <string>
 #include <vector>
 
-#include <windows.h>
+#include "compat/gdi.h"
 
 #include "compat/gdi.h"
 #include "ui/draw.h"

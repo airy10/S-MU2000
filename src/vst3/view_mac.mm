@@ -74,6 +74,8 @@ using smu2000::vst3::plug_view;
 using smu2000::vst3::plug_key;
 using smu2000::vst3::plug_key_of_char;
 using smu2000::vst3::PLUG_KEY_NONE;
+using smu2000::vst3::PC_LIST;
+using smu2000::vst3::PC_EDITOR;
 
 // mac_window, defined below: the card menu's choices open its PC windows
 namespace smu2000 { namespace vst3 { class mac_window; } }
@@ -448,9 +450,9 @@ private:
 	if (tag == ui::ID_PLUG_CARD_EJECT)                           // 抜く
 		_owner->card_eject();
 	else if (tag == ui::ID_PLUG_LIST && _win)                      // 一覧
-		_win->open_list();
+		_win->open_pc_window(PC_LIST);
 	else if (tag == ui::ID_PLUG_EDITOR && _win)                    // エディタ
-		_win->open_editor();
+		_win->open_pc_window(PC_EDITOR);
 }
 
 @end
