@@ -1174,9 +1174,17 @@ inline int volume_rest(const u8 *rom, const u8 *elem, int note, int vel)
 
 // 目盛り・残り・そのときの音量から、0x09 に入れる減衰。
 // 実機（`0x12A538`-`0x12A55A`）は **127 で頭打ちにしてから 2 倍**する
-inline int volume_att_from(const u8 *rom, int level, int rest, int gain)
+// `add` は**つまみの割り当ての音量**（6.200）。実機は音量を掛けた**あと**の
+// 目盛りの索引に足して 0-128 で頭打ちにする（音量の側ではない）
+inline int volume_att_from(const u8 *rom, int level, int rest, int gain,
+                           int add = 0)
 {
-	const int l = level_with_gain(level, gain);
+	int l = level_with_gain(level, gain);
+	if (add) {
+		l += add;
+		if (l < 0) l = 0;
+		if (l > 128) l = 128;
+	}
 	int a = int(rom[LEVEL_TAB + 0x80 + u32(l)]) + rest;
 	if (a > 127) a = 127;
 	if (a < 0) a = 0;
