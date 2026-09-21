@@ -44,6 +44,9 @@ def rms(v):
     return math.sqrt(sum(float(x) * x for x in v) / max(1, len(v)))
 
 
+CAL = False      # True なら写し取りをする既定の道で測る（--cal）
+
+
 def render(roms, midi, seconds, tag, native):
     wav = WORK / ("%s.wav" % tag)
     trc = WORK / ("%s.txt" % tag)
@@ -53,7 +56,13 @@ def render(roms, midi, seconds, tag, native):
     env["SMU2000_NO_VOICECACHE"] = "1"
     if native:
         cmd.append("--native-engine")
-        env["SMU2000_NOCAL"] = "1"
+        # **写し取りをする道でも測れるようにする**（6.209）。既定の
+        # `SMU2000_NOCAL=1` は式だけでレジスタを組むので、写し取りの
+        # 最中にしか出ない差（10ms 格子のずれなど）が見えない
+        if CAL:
+            env.pop("SMU2000_NOCAL", None)
+        else:
+            env["SMU2000_NOCAL"] = "1"
     else:
         env.pop("SMU2000_NOCAL", None)
     r = subprocess.run(cmd, env=env, stdout=subprocess.DEVNULL,
@@ -167,9 +176,11 @@ def main():
                     help="窓ごとに合わせる幅（サンプル）")
     ap.add_argument("--where", type=int, default=0,
                     help="悪い窓を N つ出す")
+    ap.add_argument("--cal", action="store_true",
+                    help="写し取りをする既定の道で測る（6.209）")
     a = ap.parse_args()
-    global LAG, WHERE
-    LAG, WHERE = a.lag, a.where
+    global LAG, WHERE, CAL
+    LAG, WHERE, CAL = a.lag, a.where, a.cal
 
     roms = regdiff.find_roms(a.roms)
     if not roms:

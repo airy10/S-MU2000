@@ -2893,8 +2893,11 @@ public:
 				// **共振はパートのつまみを式の中に入れる**（6.169）。
 				// 差を足す形（reso_reg）だと、実機の
 				// 「つまみが 64 以上なら大きいほうを取る」が出ない
-				sr.set(0x04, c->synth
-				             ? u16(u16(nv::reso_level(el, pvel, res_knob(part))) << 11)
+				// **写し取りの道でも式で出す**（6.210）。差を足す形だと
+				// CC71=0x60 で 1 段ずれていた（実機 0x8000 / こちら 0x9000）
+				sr.set(0x04, el
+				             ? u16(u16(sr.v[0x04] & 0x07ff) |
+				                   u16(u16(nv::reso_level(el, pvel, res_knob(part))) << 11))
 				             : reso_reg(sr.v[0x04], *c, part));
 				if (c->synth) {
 					sr.set(0x33, exact_send(su, part, false, su.base33));
@@ -3139,7 +3142,10 @@ public:
 			su.vel = vel;
 			m_traj = true;
 			m_traj_next = 0;
-			su.att = att0 + 2 * (nv::velocity_att(m_rom, vel) - nv::velocity_att(m_rom, c.cal_vel));
+			// **強さの曲線はドラムの列（行 1）**（6.210）。旋律の列（行 0）を
+			// 使っていたので、写し取った強さから離れた打で減衰が 2 段（0.75dB）ずれていた
+			su.att = att0 + 2 * (nv::velocity_att(m_rom, vel, nv::DRUM_VEL_CURVE) -
+					  nv::velocity_att(m_rom, c.cal_vel, nv::DRUM_VEL_CURVE));
 			// **写しが無いときは、ドラムセットアップから直に組む**（6.155）
 			if (synth) {
 				const int lv = drum_setup_of(part, note, 0x02);

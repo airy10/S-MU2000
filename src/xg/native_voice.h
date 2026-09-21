@@ -2112,7 +2112,11 @@ inline slot_regs build_note(const u8 *rom, const u8 *elem, int note, int att,
 		// **0x0b・0x10 はもう写し取らない**。音程の包絡線を式で出すようになった
 		// （写し取りは包絡線が終わったあとの値を拾うので、入れると出だしの
 		//  しゃくりが丸ごと消えていた。doc/native-engine.md の 6.68）
-		static const int COPY[] = { 0x00, 0x01, 0x06, 0x0a,
+		// **`0x01` も写し取りで上書きしない**（6.210）。押鍵の瞬間は
+		// 実機はどの音色でも `0xFFFF`（6.67）なのに、写し取りは
+		// そのあとの 10ms の目の値（`0xDCFF` など）を拾っていた。
+		// 下位 8bit しかチップは見ていないので音は変わらないが、物差しが濁る
+		static const int COPY[] = { 0x00, 0x06, 0x0a,
 		                            0x20, 0x22, 0x24, 0x26, 0x28, 0x2a,
 		                            0x32, 0x33, 0x34, 0x35, 0x36, 0x37 };
 		for (int i : COPY) {
