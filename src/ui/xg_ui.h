@@ -86,6 +86,23 @@ bool take_opened_file(std::vector<u8> &bytes);      // 頼んだ側が受け取�
 void set_file_note(std::string text);               // 結果のひとこと（「書き出した」など）
 const std::string &file_note();
 
+// ---- パートのパラメータの組。エディタのパートの面と、音色の窓の「すべて」が同じ表を使う
+// （片方だけに項目が増えないように）。keys は nullptr まで
+struct part_group { const char *title; const char *const keys[12]; };
+inline constexpr part_group PART_GROUPS[] = {
+	{ "音色",             { "part.bank_msb", "part.bank_lsb", "part.program", "part.mode", "part.element_reserve" } },
+	{ "音量と送り",       { "part.volume", "part.pan", "part.dry_level", "part.reverb_send", "part.chorus_send", "part.variation_send" } },
+	{ "受信と発音",       { "part.rcv_channel", "part.mono_poly", "part.key_assign", "part.note_low", "part.note_high",
+	                        "part.note_shift", "part.detune", "part.vel_depth", "part.vel_offset" } },
+	{ "フィルタと EG",    { "part.cutoff", "part.resonance", "part.hpf_cutoff", "part.attack", "part.decay", "part.release" } },
+	{ "ピッチ EG",        { "part.peg_init_level", "part.peg_attack_time", "part.peg_rel_level", "part.peg_rel_time" } },
+	{ "ポルタメント",     { "part.porta_switch", "part.porta_time" } },
+	{ "ビブラート",       { "part.vib_rate", "part.vib_depth", "part.vib_delay" } },
+	{ "パートの EQ",      { "part.eq_bass_gain", "part.eq_bass_freq", "part.eq_treble_gain", "part.eq_treble_freq" } },
+	{ "モジュレーション", { "part.mw_pitch", "part.mw_filter", "part.mw_amp", "part.mw_lfo_pmod", "part.mw_lfo_fmod", "part.mw_lfo_amod" } },
+	{ "ピッチベンド",     { "part.bend_pitch", "part.bend_filter", "part.bend_amp", "part.bend_lfo_pmod", "part.bend_lfo_fmod", "part.bend_lfo_amod" } },
+};
+
 // 値の棒 1 本。表示は層の書式（xg::format）で、ダブルクリックか Ctrl+クリックで数を打てる。
 // EQ の周波数は表の番号でなく Hz、マスター EQ の Q は 10 分の 1 で出す。戻り値は「値を変えたか」。
 // label を渡すとパラメータの名前の代わりにそれを出す（"##" で始めれば名前を出さない）
