@@ -227,25 +227,14 @@ void engine::log_line(const char *text)
 	logf("%s", text);
 }
 
-bool engine::start(bool sync)
+void engine::start()
 {
-	// 起動は 1 度だけ。init() で sync 起動が済んでいれば、あとの
-	// activate/start_processing から呼んでも何もしない。
-	// 2 度 boot を走らせると、動き出した機械 m_mu を差し替えて
-	// 音声スレッドが半分できた機械を触ってしまう（issue #19）
-	const status s = m_state.load(std::memory_order_acquire);
-	if (s != status::loading)
-		return s == status::ready;
-	if (m_boot_once.exchange(true, std::memory_order_acq_rel)) {
-		// 他の糸が既に起動を走らせている。待つのは wait_ready の仕事
-		return true;
-	}
-	if (sync) {
-		boot();
-		return m_state.load(std::memory_order_acquire) == status::ready;
-	}
+	// 起動は 1 度だけ（m_boot_once）。2 度 boot を走らせると、動き出した
+	// 機械 m_mu を差し替えて音声スレッドが半分できた機械を触ってしまう。
+	// 終わりを待つのは wait_ready の仕事
+	if (m_boot_once.exchange(true, std::memory_order_acq_rel))
+		return;
 	m_thread = std::thread([this] { boot(); });
-	return true;
 }
 
 bool engine::wait_ready(int ms)
@@ -260,8 +249,8 @@ bool engine::wait_ready(int ms)
 	return true;
 }
 
-bool engine::boot()
-{	
+void engine::boot()
+{
 	std::string tried;
 	const std::string dir = find_roms(tried);
 	if (dir.empty()) {
@@ -270,7 +259,7 @@ bool engine::boot()
 		logf("ROM が見つからない。探した場所:\n%s", tried.c_str());
 		ui::driver::publish_message(m_bridge, "ROM が見つからない");
 		m_state.store(status::failed, std::memory_order_release);
-		return false;
+		return;
 	}
 	logf("ROM: %s", dir.c_str());
 	ui::driver::publish_message(m_bridge, "ROM 読み込み中");
@@ -299,7 +288,7 @@ bool engine::boot()
 				logf("%s", m_message.c_str());
 				mu.reset();
 				m_state.store(status::failed, std::memory_order_release);
-				return false;
+				return;
 			}
 			if (!mu->load_sintab(smu2000::join(dir, "standin/sin-table.bin"))) {
 				warn = mu->error();
@@ -344,13 +333,12 @@ bool engine::boot()
 	// 別の曲の写しが混ざっても安全。plugin.ini の voicecache=0 で切る
 	int voicecache = 0;
 	// 実物の直列速度（DIN 31250bps / USB の実機相当）で firmware に届けるか。
-	// ** plugin では既定で速い方**。DAW は再生頭や読み込み時に 1,000 を超える
-	// パート設定（NRPN）を一括で流す事があり、実物と同じ速さでは 10kB ぶんが
-	// 約 3 秒かけてしか流れない（実機でも同じ遅れが出る）。その間この先に
-	// 並んだノートが丸ごと遅れて鳴るので、口では順番だけ保って速く渡す。
-	// gui / live の --fast-midi と同じ仕組み。実機と同じ間隔を確かめたい人は
-	// plugin.ini に fast_midi=0
-	int fast_midi = 1;
+	// **既定は実物と同じ速さ** — 実機の間隔をそのまま出すのがこの project の
+	// 狙いなので、速い方は選んで入れるもの。plugin.ini に fast_midi=1 と
+	// 書くと、口では順番だけ保って速く渡す（gui / live の --fast-midi と同じ）。
+	// 再生頭の 1,000 個越えのパート設定の洪水は、Automation の種
+	// （automation_host.h の seed_values）で直列に載せる前に弾く
+	int fast_midi = 0;
 	if (const std::string local = smu2000::config_dir(); !local.empty())
 		if (std::FILE *f = std::fopen(smu2000::join(local, "plugin.ini").c_str(), "rb")) {
 			char line[256];
@@ -379,8 +367,8 @@ bool engine::boot()
 	mu->set_usb_host(usb);
 	logf(usb ? "MIDI は USB の口（A-D の 64 パート）" : "plugin.ini: usb=0（DIN の口 A・B だけ）");
 	mu->set_fast_midi(fast_midi != 0);
-	if (!fast_midi)
-		logf("plugin.ini: fast_midi=0（実物と同じ直列の速さで流す。再生頭の音色指定が遅れる）");
+	if (fast_midi)
+		logf("plugin.ini: fast_midi=1（実物より速く直列に流す。実機と同じ間隔ではなくなる）");
 	mu->set_threaded(threaded);
 	if (!threaded)
 		logf("plugin.ini: threaded=0（スレーブを別スレッドにしない）");
@@ -421,7 +409,7 @@ bool engine::boot()
 		                         : std::string("ROM: ") + dir + "\n警告: " + warn;
 		m_state.store(status::ready, std::memory_order_release);
 		ui::driver::publish_now(*m_mu, m_bridge, true, nullptr);
-		return true;
+		return;
 	}
 
 	ui::driver::publish_message(m_bridge, "MU2000 起動中");
@@ -432,7 +420,7 @@ bool engine::boot()
 	int64_t i = 0;
 	for (; i < limit; i++) {
 		if (!(i & 4095) && m_abort.load(std::memory_order_relaxed)) {
-			return false;
+			return;
 		}
 		if (mu->midi_ready())
 			break;
@@ -444,7 +432,7 @@ bool engine::boot()
 		logf("%s", m_message.c_str());
 		mu.reset();
 		m_state.store(status::failed, std::memory_order_release);
-		return false;
+		return;
 	}
 
 	// Run past midi_ready until the firmware settles: at midi_ready the LCD
@@ -453,7 +441,7 @@ bool engine::boot()
 	// forever, so only save once the steady screen is up
 	for (int64_t j = 0; j < int64_t(2.0 * NATIVE_RATE); j++) {
 		if (!(j & 4095) && m_abort.load(std::memory_order_relaxed)) {
-			return false;
+			return;
 		}
 		s32 l = 0, r = 0;
 		mu->run_sample(l, r);
@@ -480,7 +468,6 @@ bool engine::boot()
 	// which is also where the m_machine lock is already held
 	m_state.store(status::ready, std::memory_order_release);
 	ui::driver::publish_now(*m_mu, m_bridge, true, nullptr);
-	return true;
 }
 
 
@@ -548,28 +535,23 @@ void engine::midi(const uint8_t *bytes, size_t n, int port)
 {
 	if (port < 0 || port >= mu2000::MIDI_PORTS)
 		port = 0;
-	// 起動待ち: 捨てない。**糸を止める。**今来た分は起動が終わってから
-	// 届く（順番は保つ）。本来は start_processing が音声スレッドを留めるので
-	// ここには来ない。来たら、そこが錠の穴だ（issue #19）
-	if (state() == status::loading) {
-		if (!m_blocked_logged.exchange(true, std::memory_order_relaxed))
-			logf("起動中の機械へ MIDI が届いた。落さず起動を待つ");
-		wait_ready(60000);
-	}
-	if (state() != status::ready)
-		return;                  // 機械が立たなかった。届け先が無い
-	std::unique_lock<std::mutex> lock(m_machine, std::try_to_lock);
-	if (lock.owns_lock()) {
-		// 溜まっていた分を先に流して、順番を保つ
-		for (uint8_t b : m_pending[port])
-			m_drv.watch(b, m_mu->midi_in(b, port));
-		m_pending[port].clear();
-		for (size_t i = 0; i < n; i++)
-			m_drv.watch(bytes[i], m_mu->midi_in(bytes[i], port));
+	const status s = state();
+	if (s == status::failed)
 		return;
+	if (s == status::ready) {
+		std::unique_lock<std::mutex> lock(m_machine, std::try_to_lock);
+		if (lock.owns_lock()) {
+			// 溜まっていた分を先に流して、順番を保つ
+			for (uint8_t b : m_pending[port])
+				m_drv.watch(b, m_mu->midi_in(b, port));
+			m_pending[port].clear();
+			for (size_t i = 0; i < n; i++)
+				m_drv.watch(bytes[i], m_mu->midi_in(bytes[i], port));
+			return;
+		}
 	}
-	// 保存などで機械を他が使っている。落さず溜めて、fill が流す
-	// （あふれるようなら捨てる。上限は機械の溜めと同じ。mu2000.h）
+	// 起動待ちか、機械を他が使っている。落さず溜めて、fill が順番どおりに流す
+	// （issue #19。あふれるようなら捨てる。上限は機械の溜めと同じ。mu2000.h）
 	std::vector<uint8_t> &pending = m_pending[port];
 	if (pending.size() + n > mu2000::MIDI_QUEUE_LIMIT)
 		return;
@@ -670,6 +652,13 @@ void engine::fill(float *left, float *right, int n, const float *in_l, const flo
 	m_drv.apply_buttons(*m_mu, m_bridge);
 	m_drv.pump_midi(*m_mu, m_bridge);
 	m_drv.pump_wheel(*m_mu, m_bridge);
+
+	// 起動を待つ間に溜めた分。口 C・D も（前は A・B しか流さず、C・D はその口に次の MIDI が来るまで残っていた）
+	for (int port = 0; port < mu2000::MIDI_PORTS; port++) {
+		for (uint8_t b : m_pending[port])
+			m_drv.watch(b, m_mu->midi_in(b, port));
+		m_pending[port].clear();
+	}
 
 	if (m_direct) {
 		for (int i = 0; i < n; i++)

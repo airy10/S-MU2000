@@ -32,7 +32,6 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
-#include <functional>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -153,72 +152,32 @@ public:
 private:
 	static mu_plugin *self(const clap_plugin *p) { return static_cast<mu_plugin *>(p->plugin_data); }
 
-	// ---- 調査記録 (issue #19)
-	//
-	// ホストがプラグインを受け入れてから最初の音が鳴るまでの道を辿る。
-	// 誰がどれだけ待ったか、イベントがまとめて一気に入ってきたか、
-	// そのとき送り側は再生中だったか。thread はスレ ID の略ハッシュ
-	void trace(const char *what, long long ms, const char *extra = nullptr)
-	{
-		const size_t tid = std::hash<std::thread::id>{}(std::this_thread::get_id());
-		char buf[256];
-		std::snprintf(buf, sizeof(buf), "trace %s: %lldms thread=%zx%s%s",
-		              what, ms, tid, extra ? " " : "", extra ? extra : "");
-		m_engine.log_line(buf);
-	}
-	static long long ms_since(std::chrono::steady_clock::time_point t0)
-	{
-		return static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(
-		    std::chrono::steady_clock::now() - t0).count());
-	}
-
 	// ---- clap_plugin
 
 	bool init()
 	{
-		const auto t0 = std::chrono::steady_clock::now();
 		m_host_params = static_cast<const clap_host_params_t *>(
 			m_host->get_extension(m_host, CLAP_EXT_PARAMS));
-		// ROM 読みと起動（音にして 4 秒ぶんの空回し）をここでやり切る。
-		// init は [main-thread]。UI が数秒止まるのは仕様どおりの我慢で、
-		// 音側の窓（activate 以降）に起動中を持ち越さないため。
-		// ROM が無くて失敗しても true を返す — 断ると窓が出せず、
-		// 何が足りないのか分からないまま消える。パネルに理由を出す。
-		// 音の方: fill() は無音、midi() は停止 — 機械が立つまで音も
-		// バイトも素通りしない（落さない。届くのが後ろにずれるだけ）
-		const bool ok = m_engine.start(true);
-		trace("init", ms_since(t0), ok ? "ready" : "BOOT-FAILED");
-		if (!ok)
-			m_engine.log_line("起動に失敗。音は出ない");
+		// ROM 読みと起動（音にして 4 秒ぶんの空回し）は時間がかかるので、
+		// ここでは走らせるだけ。終わるまでは無音を返す
+		m_engine.start();
 		return true;
 	}
 
 	bool activate(double rate)
 	{
-		const auto t0 = std::chrono::steady_clock::now();
 		m_rate = rate;
 		m_engine.set_output_rate(rate);
-		// **ここで起動を待ちきる。**activate は [main-thread & !active]。
-		// 本スレッドを止めてもよい場所なので、ここで待たないとホストは
-		// 起動中の機械へ MIDI を流し始める。流された分は溜めてあとで
-		// まとめて出すので、曲の頭が崩れる（issue #19）
-		const bool ready = m_engine.wait_ready(30000);
-		trace("activate", ms_since(t0), ready ? "ready" : "TIMEOUT");
+		// **ここで起動を待ちきる。**activate は本スレッドで呼ばれ、時間がかかってよい
+		// ところなので、ここで待たないとホストは起動中の機械へ MIDI を流し始める。
+		// 流された分は溜めてあとでまとめて出すので、曲の頭が崩れる（issue #19）
+		if (!m_engine.wait_ready(30000))
+			m_engine.log_line("起動が終わらないまま演奏に入る");
 		return true;
 	}
 
 	bool start_processing()
 	{
-		const auto t0 = std::chrono::steady_clock::now();
-		// CLAP は start_processing を [audio-thread] で呼ぶ。ここが最後の錠:
-		// 機械が ready になるまでこの呼び出しを戻さない。音声スレッドは
-		// ここで止まるので、ホストは process() を 1 ブロックも進められない＝
-		// PCM も MIDI も、安定するまでこのプラグインには 1 バイトも流れない。
-		// init/activate で大抵はもう ready なので、ふつうは即通る
-		const bool ready = m_engine.wait_ready(120000);
-		trace("start_processing", ms_since(t0), ready ? "ready" : "TIMEOUT");
-		m_blk = 0;
-		m_blk_evt = 0;
 		// 動いているあいだ、機械に触れてよいのは音声スレッドだけ
 		m_engine.set_processing(true);
 		return true;
@@ -226,7 +185,6 @@ private:
 
 	void stop_processing()
 	{
-		trace("stop_processing", static_cast<long long>(m_blk));
 		m_hush.store(true);
 		m_engine.set_processing(false);
 	}
@@ -318,7 +276,6 @@ private:
 			return false;
 		const autom::entry &en = autom::entries()[size_t(i)];
 		m_xg.host_value(i, autom::clamp_value(en, e->value), [&](int port, const uint8_t *bytes, int n) {
-			m_cnt.emit++;                    // 音源へ実際に載った数（dedup を抜けた数）
 			m_engine.midi(bytes, size_t(n), port);
 		});
 		return true;
@@ -530,10 +487,6 @@ private:
 	{
 		if (!api || std::strcmp(api, kWindowApi) || floating)
 			return false;
-		// GUI が出たときに機械が ready だったか。foo_midi は init の前に
-		// GUI を作る事があるので、順目を確かめる（調査記録）
-		trace("gui create", 0,
-		      m_engine.wait_ready(0) ? "ready" : "LOADING");
 		if (!m_view)
 			m_view = new plug_view(m_engine);
 		return true;
@@ -573,18 +526,6 @@ private:
 	std::atomic<bool>      m_hush{false};
 	// 音を出したチャンネル（口ごとに 16 ビット）。止めるときに流す先を絞る
 	std::atomic<uint16_t>  m_sounded[mu2000::MIDI_PORTS] = {};
-	// 調査記録用。start_processing で zero クリア
-	uint64_t m_blk = 0, m_blk_evt = 0;
-	// 調査記録: 1 ブロックぶんの内訳。foo_midi が再生頭に何を詰めてくるか
-	// （1,300 個の正体）を log で確定させるための数え上げ
-	struct burst_count {
-		uint32_t par = 0, pmod = 0, cc = 0, note = 0, pb = 0, midi = 0, other = 0;
-		uint32_t syx = 0, syx_bytes = 0, emit = 0;
-		void reset() { *this = burst_count{}; }
-	};
-	burst_count m_cnt;
-	bool m_seed_logged = false;
-	int m_flood_logged = 0;
 
 	// 音を作る途中の入れ物。process の間だけ有効
 	float       *m_left = nullptr, *m_right = nullptr;
@@ -803,98 +744,22 @@ clap_process_status mu_plugin::process(const clap_process_t *pr)
 	// 最初の区間（と状態を戻した直後）の頭で、RAM から「音源の今の値」を
 	// 種に仕込む。ホストが再生頭で流す 1,300 個近いパラメータの再送は
 	// ほとんどがこの値と一致するので、直列に載る前に弾ける（seed_values）
-	if (!m_xg.seeded()) {
-		const bool ok = m_xg.seed_values();
-		if (!m_seed_logged) {
-			m_seed_logged = true;
-			trace("seed", 0, ok ? "ok ram=1" : "NO-MACHINE");
-		}
-	}
+	if (!m_xg.seeded())
+		m_xg.seed_values();
 
 	// イベントは時刻順に来る。その時刻まで音を作ってから流す
 	m_xg.begin_block();
-	uint32_t nev = 0;
 	if (const clap_input_events_t *ev = pr->in_events) {
 		const uint32_t count = ev->size(ev);
 		for (uint32_t i = 0; i < count; i++) {
 			const clap_event_header_t *h = ev->get(ev, i);
 			if (!h || h->space_id != CLAP_CORE_EVENT_SPACE_ID)
 				continue;
-			nev++;
-			// 中訳を数える（bursto heartbeat の log に載せる）
-			switch (h->type) {
-			case CLAP_EVENT_PARAM_VALUE: m_cnt.par++; break;
-			case CLAP_EVENT_PARAM_MOD:   m_cnt.pmod++; break;
-			case CLAP_EVENT_MIDI: {
-				const auto *md = reinterpret_cast<const clap_event_midi_t *>(h);
-				const uint8_t st = uint8_t(md->data[0] & 0xf0);
-				if (st == 0xb0) m_cnt.cc++;
-				else if (st == 0x90 || st == 0x80) m_cnt.note++;
-				else if (st == 0xe0) m_cnt.pb++;
-				else m_cnt.midi++;
-				break;
-			}
-			case CLAP_EVENT_MIDI_SYSEX:
-				m_cnt.syx++;
-				m_cnt.syx_bytes += reinterpret_cast<const clap_event_midi_sysex_t *>(h)->size;
-				break;
-			case CLAP_EVENT_NOTE_ON:
-			case CLAP_EVENT_NOTE_OFF:
-			case CLAP_EVENT_NOTE_CHOKE:
-				m_cnt.note++; break;
-			default: m_cnt.other++; break;
-			}
 			fill_to(std::min(h->time, n));
 			event(h);
 		}
 	}
 	fill_to(n);
-
-	// ---- 調査記録: 最初のブロックと、詰め込まれて来たブロックを log へ
-	// pend は firmware が読み終わるのを待っている MIDI バイト数。ここが
-	// 数 kB あると、その後のノートがそのぶん遅れて鳴る（直列の速さの壁）
-	m_blk_evt += nev;
-	if (++m_blk <= 3 || nev >= 24) {
-		const clap_event_transport_t *tr = pr->transport;
-		char ex[320];
-		std::snprintf(ex, sizeof(ex),
-		              "blk=%llu frames=%u nev=%u pos=%.2fs playing=%d pend=%zu"
-		              " | par=%u pmod=%u cc=%u note=%u pb=%u midi=%u syx=%u/%uB other=%u emit=%u",
-		              (unsigned long long)m_blk, n, nev,
-		              tr ? tr->song_pos_seconds : -1.0,
-		              (tr && (tr->flags & CLAP_TRANSPORT_IS_PLAYING)) ? 1 : 0,
-		              m_engine.backlog(),
-		              m_cnt.par, m_cnt.pmod, m_cnt.cc, m_cnt.note, m_cnt.pb,
-		              m_cnt.midi, m_cnt.syx, m_cnt.syx_bytes, m_cnt.other, m_cnt.emit);
-		trace(nev >= 24 ? "burst" : "first process", 0, ex);
-		// 違った値の抜き取り: i=一覧の番号 h=ホストの値 c=音源の値 k=知っていたか
-		if (m_xg.miss_total() && m_flood_logged < 3) {
-			m_flood_logged++;
-			char ms[192];
-			int at = std::snprintf(ms, sizeof(ms), "miss=%d:", m_xg.miss_total());
-			for (int k = 0; k < m_xg.miss_n() && at < 150; k++) {
-				const auto &s = m_xg.misses()[k];
-				at += std::snprintf(ms + at, sizeof(ms) - at, " i%d h%d c%d k%d",
-				                    s.i, s.host, s.cur, s.known ? 1 : 0);
-			}
-			trace("flood", 0, ms);
-			m_xg.miss_reset();
-		}
-		m_cnt.reset();
-	}
-	if ((m_blk & 1023) == 0) {
-		char ex[320];
-		std::snprintf(ex, sizeof(ex),
-		              "blk=%llu ev/1024blk=%llu pend=%zu"
-		              " | par=%u pmod=%u cc=%u note=%u pb=%u midi=%u syx=%u/%uB other=%u emit=%u",
-		              (unsigned long long)m_blk, (unsigned long long)m_blk_evt,
-		              m_engine.backlog(),
-		              m_cnt.par, m_cnt.pmod, m_cnt.cc, m_cnt.note, m_cnt.pb,
-		              m_cnt.midi, m_cnt.syx, m_cnt.syx_bytes, m_cnt.other, m_cnt.emit);
-		trace("heartbeat", 0, ex);
-		m_blk_evt = 0;
-		m_cnt.reset();
-	}
 
 	// 出力レベル。一気に変えると音が跳ねるので 1 サンプルずつ寄せる
 	const float target = m_engine.panel().gain();

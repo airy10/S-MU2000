@@ -67,17 +67,12 @@ public:
 	~engine();
 	bool m_voicecache = false;      // plugin.ini の voicecache=1
 
-	// ROM を探して読み、起動する。起動は 2 度とやらせない（1 度目だけが走る）。
-	// sync=true なら呼んだ糸でそのまま起動する（UI は待ってよい本スレッド用。
-	// 終わるまで戻らないので、このあとホストが音を作り始めても機械はいつでもready）。
-	// sync=false なら別糸で始めてすぐ返る。
-	// 戻り値は「起動が終わり、音が出せるか」。起動中のあいだは true
-	bool start(bool sync = false);
-	// 起動が終わるまで待つ。本スレッド（activate/setActive）からでも、
-	// 音を始める手前の start_processing からでもよい。
-	// 待っているあいだ音声スレッドを止めておくのが狙いなので、ホストは
-	// 起動前の機械へ MIDI も PCM も流せない。待ちきれずに時間切れなら false。
-	// 始まっていなければ始めてから待つ
+	// ROM を探して読み、起動するまでを別スレッドで進める。すぐ返る。
+	// 起動は 2 度とやらせない（m_boot_once が守る。2 度 boot を走らせると
+	// 動き中の機械を差し替えてしまう）。待ちたければ wait_ready を
+	void start();
+	// 起動が終わるまで待つ。**DAW の本スレッドからだけ**呼ぶこと。
+	// 待ちきれずに時間切れなら false。始まっていなければ始めてから待つ
 	bool wait_ready(int ms);
 
 	status state() const { return m_state.load(std::memory_order_acquire); }
@@ -90,10 +85,8 @@ public:
 	uint32_t latency_samples() const { return m_latency; }
 
 	// MIDI を 1 メッセージ流す。実機と同じく 31250bps の直列に崩される。
-	// 起動が終わっていない間に来たものは**落さず、その糸を止めて**起動が
-	// 終わるのを待ち、終わってから順番どおりに流す（issue #19）。
-	// 本来この窓に MIDI は届かない — start_processing が ready まで
-	// 音声スレッドを留めている。届いたなら錠の穴なので記録へ残す
+	// 起動が終わっていない間に来たものは**落さず**溜めておいて、終わってから
+	// fill() が順番どおりに流す（issue #19）
 	// port は 0 が MIDI IN A（パート 1-16）、1 が B（17-32）、2 が C（33-48）、3 が D（49-64）
 	void midi(const uint8_t *bytes, size_t n, int port = 0);
 	// オールサウンドオフ + オールノートオフを流す。mask は口ごとのチャンネルのビット
@@ -113,22 +106,16 @@ public:
 
 	// パネルの画面と触れ合う口。ボタンは画面から、LCD の写しはこちらから
 	ui::bridge &panel() { return m_bridge; }
-	
-	// 線上に溜まっている MIDI バイト数（診断用）。firmware が読み終わらない
-	// バイトがこれだけ後ろに並んでいる印。大きな数ならノートもその後に遅れる
-	size_t backlog()
-	{
-		std::lock_guard<std::mutex> guard(m_machine);
-		return m_mu ? m_mu->midi_pending() : 0;
-	}
 
 	// firmware のワーク RAM から XG の値を直接写す。echo も直列も使わないので
-	// どの糸でもその場で 1 枚取れる。状態を戻した直後の Automation の種に使う
-	// （automation_host.h の seed_values）
+	// その場で 1 枚取れる。状態を戻した直後の Automation の種に使う
+	// （automation_host.h の seed_values）。**音声の糸から呼ぶ**ので錠は
+	// try_lock — 保存中で取れなければ false を返し、呼んだ側が bridge の
+	// 写し（read_xg）へ落ちる。音声スレッドを待たせない（m_machine の注意）
 	bool copy_xg_now(ui::xg_snapshot &ram)
 	{
-		std::lock_guard<std::mutex> guard(m_machine);
-		if (state() != status::ready || !m_mu)
+		std::unique_lock<std::mutex> guard(m_machine, std::try_to_lock);
+		if (!guard.owns_lock() || state() != status::ready || !m_mu)
 			return false;
 		ui::driver::copy_xg(*m_mu, ram);
 		return true;
@@ -167,8 +154,6 @@ public:
 	// 機械（m_mu）に触るところは全部 m_machine で守る。音声スレッドは待たない:
 	// 取れなければその区間は無音を返し、MIDI は溜めて fill が流す（落さない）。保存・復元・カードの
 	// 差し替えは、呼んだスレッドで取れるまで待ってその場でやる。
-	// 起動待ちで糸を止めるのは midi() が呼ばれたときだけ。本来
-	// start_processing が音を始める前に起動を待ち終わっているので、その窓は空
 	//
 	// 前は「音を作っている最中は音声スレッドに頼む、止まっていればその場でやる」と
 	// していたが、FL Studio の「Reset plugin when FL Studio resets」は保存の途中で
@@ -215,7 +200,7 @@ private:
 	mutable std::mutex m_card_mutex;        // m_card_path を守る
 	std::string m_card_path;
 
-	bool boot();
+	void boot();
 	void apply_deferred_state();   // 起動前に来た状態を戻す（m_machine を持って呼ぶ）
 	// 機械まるごとの状態を戻す。読めなければ XG の値の控えを流す（m_machine を持って呼ぶ）
 	bool restore(const uint8_t *p, size_t n, const std::vector<uint8_t> &setup);
@@ -237,8 +222,6 @@ private:
 	// 起動は 1 度だけ。start() が exchange で守る（2 度やると
 	// 動き中の機械 m_mu を丸ごと差し替えてしまう）
 	std::atomic<bool>   m_boot_once{false};
-	// 起動中に MIDI を捨てたら 1 回だけ記録へ書く
-	std::atomic<bool>   m_blocked_logged{false};
 
 	std::unique_ptr<mu2000> m_mu = nullptr;
 	// 読み込んだ ROM を掴んでおく。他の枚数ぶんと分け合っている
@@ -288,9 +271,8 @@ private:
 	int     m_tx_w = 0, m_tx_r = 0;
 	void tx_push(uint8_t v);
 
-	// 機械を保存などが使っているあいだに来た MIDI。落さず溜めて fill が流す。
-	// 口ごとに持つ。音声スレッドしか触らない。起動待ちはここへ来ない —
-	// midi() が糸を止めて起動を待つ
+	// 起動待ちや、機械を他が使っている間に来た MIDI。落さず溜めて fill が流す。
+	// 口ごとに持つ。音声スレッドしか触らない
 	std::vector<uint8_t> m_pending[mu2000::MIDI_PORTS];
 };
 

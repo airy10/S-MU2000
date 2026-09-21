@@ -91,9 +91,9 @@ public:
 			// 区ごとに firmware の RAM から直接写す。bridge の写しは再生頭に
 			// まだ空だったり（serial=0）、状態を戻す前の古かったりで、1,200 個
 			// 違えの flood を呼んでいた。機械はこの直後に音を作るので写しは
-			// この区間の真実。エフェクトの枠の種類の引き直しもこれで常に新しい
+			// この区間の真実。錠が込んで取れないときだけ旧い道（bridge の写し）
 			if (!m_engine.copy_xg_now(*m_audio_ram))
-				m_engine.panel().read_xg(*m_audio_ram);   // 機械が居ないときだけ旧い道
+				m_engine.panel().read_xg(*m_audio_ram);
 			if (m_audio_ram->serial == 0)
 				m_audio_ram->serial = 1;
 			m_audio_ram_read = true;
@@ -107,9 +107,6 @@ public:
 		const int n = midi(e, value, m_audio_ram->serial ? m_audio_ram.get() : nullptr, bytes, port);
 		if (n > 0)
 			emit(port, bytes, n);
-		m_miss_total++;                      // 調査記録: 直列に載った = 違った
-		if (m_miss_n < 3)
-			m_miss[m_miss_n++] = { i, value, cur, known };
 		s.sent_value.store(value);
 		s.sent_ms.store(now);
 	}
@@ -270,17 +267,6 @@ private:
 	std::unique_ptr<ui::xg_snapshot> m_audio_ram;
 	bool m_audio_ram_read = false;
 	std::atomic<bool> m_seeded{false};       // seed_values が 1 枚目を仕込んだか（main が捨てる）
-
-	// 調査記録: ホストの値が音源と違ったところの抜き取り（3 個まで）
-public:
-	struct miss_sample { int i, host, cur; bool known; };
-	const miss_sample *misses() const { return m_miss; }
-	int miss_n() const { return m_miss_n; }
-	int miss_total() const { return m_miss_total; }
-	void miss_reset() { m_miss_n = 0; m_miss_total = 0; }
-private:
-	miss_sample m_miss[3] = {};
-	int m_miss_n = 0, m_miss_total = 0;
 
 	std::unique_ptr<ui::xg_snapshot> m_view_ram;
 	std::mutex m_view_mutex;
