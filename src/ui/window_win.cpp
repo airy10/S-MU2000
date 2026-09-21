@@ -5,6 +5,7 @@
 // main(); everything Win32 here mirrors ui/window_mac.mm on the Mac side.
 
 #include "window_win.h"
+#include "app_win.h"
 
 #include "ui/keymap_win.h"
 #include "ui/pc_host.h"
@@ -14,45 +15,47 @@
 
 namespace ui {
 
-win_app *g_win = nullptr;
-
-// ---- 選んだ口を覚えておく
-//
-// 番号ではなく**名前**で覚える。USB の機器を挿し直すと番号がずれるので、
-// 番号で覚えると次に開いたとき別の機器に繋がってしまう。
-
-std::string settings_file_path()
-{
-	const char *base = std::getenv("LOCALAPPDATA");
-	if (!base || !*base)
-		return {};
-	std::string dir = std::string(base) + "\\S-MU2000";
-	CreateDirectoryA(dir.c_str(), nullptr);
-	return dir + "\\gui.ini";
-}
-
-
 // Menu command numbers, labels and builders are shared with gui_mac.cpp
 // in ui/menu.h (Windows is the reference), so a menu added on one side
 // cannot be missed on the other. Which popup a point asks for is shared
 // too (ui::app::menu_groups_for); only rendering it through ui/menu_win.h
 // stays here.
 
+// Creates and shows the main window. The window class and the drag target
+// belong to the message pump's file; ui::app::run asks for them through
+// open_main_window
+bool make_window(const char *title, int w, int h)
+{
+	const HINSTANCE inst = GetModuleHandleA(nullptr);
+	WNDCLASSA wc{};
+	wc.lpfnWndProc   = wnd_proc;
+	wc.hInstance     = inst;
+	wc.hCursor       = LoadCursor(nullptr, IDC_ARROW);
+	wc.lpszClassName = "SMU2000Panel";
+	wc.hbrBackground = nullptr;
+	RegisterClassA(&wc);
+
+	RECT want{ 0, 0, w, h };
+	AdjustWindowRect(&want, WS_OVERLAPPEDWINDOW, FALSE);
+	HWND hwnd = CreateWindowA("SMU2000Panel", title, WS_OVERLAPPEDWINDOW,
+	                          CW_USEDEFAULT, CW_USEDEFAULT,
+	                          want.right - want.left, want.bottom - want.top,
+	                          nullptr, nullptr, inst, nullptr);
+	if (!hwnd)
+		return false;
+
+	// MIDI ファイルを窓に落とせば流す（本体の窓も、エディタや一覧の窓も）
+	DragAcceptFiles(hwnd, TRUE);
+	ShowWindow(hwnd, SW_SHOW);
+	UpdateWindow(hwnd);
+	return true;
+}
+
 void track_menu_at(HWND hwnd, int mx, int my)
 {
 	POINT pt{ mx, my };
 	ClientToScreen(hwnd, &pt);
-	ui::win_track_menu(hwnd, pt, g_win->menu_groups_for(mx, my));
-}
-
-void play_dropped_file(const std::string &path)
-{
-	// Outside a menu command, so a failure shows straight away rather than
-	// through last_error at the end of WM_COMMAND
-	if (!g_win->play_song(path) && !g_win->last_error.empty()) {
-		ui::win_error(GetForegroundWindow(), g_win->last_error);
-		g_win->last_error.clear();
-	}
+	win_track_menu(hwnd, pt, g_win->menu_groups_for(mx, my));
 }
 
 void ensure_backing(HDC dc, int w, int h)
@@ -66,14 +69,7 @@ void ensure_backing(HDC dc, int w, int h)
 	SelectObject(g_win->mem_dc, g_win->mem_bmp);
 	g_win->mem_w = w;
 	g_win->mem_h = h;
-}
-
-void win_app::open_window_by_kind(int kind)
-{
-	ui::win_open_window(hwnd, *ui::window_for_kind(kind, list, pc, fx, shapes, master));
-}
-
-LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+}LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
 	switch (msg) {
 	case WM_CREATE:
@@ -82,12 +78,9 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		return 0;
 
 	case WM_TIMER: {
-		// The window's timer work is shared (ui::app::poll); only driving
-		// the PC editor windows stays here (different window types)
-		g_win->poll();
-		ui::pc_frame_all(g_win->list, g_win->pc, g_win->fx, g_win->shapes, g_win->master,
-		                 g_win->panel.xg(), g_win->panel.ram(), g_win->br,
-		                 [&](ui::pc_window &w) { ui::win_open_window(hwnd, w); });
+		// The timer half is shared (ui::app::frame_work); painting waits
+		// for the invalidate, like every other platform work item here
+		g_win->frame_work();
 		InvalidateRect(hwnd, nullptr, FALSE);
 		return 0;
 	}
@@ -98,12 +91,13 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		wchar_t path[MAX_PATH * 4] = {};
 		const bool got = DragQueryFileW(drop, 0, path, UINT(sizeof(path) / sizeof(path[0]))) > 0;
 		DragFinish(drop);
-		if (got && !g_win->play_song(ui::to_utf8(path)) && !g_win->last_error.empty()) {
-			ui::win_error(hwnd, g_win->last_error);
-			g_win->last_error.clear();
-		}
+	if (got && !g_win->play_song(ui::to_utf8(path)) && !g_win->last_error.empty()) {
+		ui::win_error(hwnd, g_win->last_error);
+		g_win->last_error.clear();
+	}
 		return 0;
 	}
+
 
 	case WM_SIZE:
 		g_win->panel.resize(LOWORD(lp), HIWORD(lp));
@@ -122,12 +116,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		ensure_backing(dc, w, h);
 
 		// The wait/drop fragment is what WASAPI measures (ui/status.h)
-		char middle[64] = {};
-		if (g_win->out && g_win->out->produced())
-			std::snprintf(middle, sizeof(middle), "待ち %.0f ms  遅れ %llu",
-			              g_win->out->output_ms(),
-			              (unsigned long long)g_win->out->late());
-		g_win->paint_into(g_win->mem_dc, w, middle);
+		g_win->paint_frame(g_win->mem_dc, w);
 
 		BitBlt(dc, 0, 0, w, h, g_win->mem_dc, 0, 0, SRCCOPY);
 		EndPaint(hwnd, &ps);

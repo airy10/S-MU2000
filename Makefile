@@ -312,9 +312,11 @@ $(BUILD)/imgui/%.o: %.cpp
 
 $(BUILD)/src/gui.o: CXXFLAGS += $(IMGUI_FLAGS)
 
+# The app classes pull in app.h, whose editor headers want imgui.h
+$(BUILD)/src/ui/app_win.o: CXXFLAGS += $(IMGUI_FLAGS)
 $(BUILD)/src/ui/window_win.o: CXXFLAGS += $(IMGUI_FLAGS)
 
-$(BUILD)/gui$(EXE): $(OBJS) $(BUILD)/src/mu2000.o $(BUILD)/src/smf.o $(UI_OBJS) $(PC_OBJS) $(BUILD)/src/gui.o $(BUILD)/src/ui/window_win.o
+$(BUILD)/gui$(EXE): $(OBJS) $(BUILD)/src/mu2000.o $(BUILD)/src/smf.o $(UI_OBJS) $(PC_OBJS) $(BUILD)/src/gui.o $(BUILD)/src/ui/app_win.o $(BUILD)/src/ui/window_win.o
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS) -lwinmm -lole32 -lgdi32 -luser32 -lavrt -lcomdlg32 -lshell32 	       -ld3d11 -ldxgi -ld3dcompiler -ldwmapi -limm32
 
@@ -645,7 +647,8 @@ MAC_GUI_SRCS := src/ui/panel.cpp src/ui/editor.cpp src/ui/effects.cpp \
                 src/ui/audio_out_mac.cpp src/ui/audio_in_mac.cpp \
                 src/ui/midi_in_mac.cpp src/ui/midi_out_mac.cpp \
                 src/xg/model.cpp \
-                src/compat/gdi_mac.cpp src/ui/window_mac.mm src/gui_mac.cpp
+                src/compat/gdi_mac.cpp src/ui/window_mac.mm src/ui/app_mac.cpp \
+                src/gui_mac.cpp
 
 # PC editor (doc/pc-editor.md). The views are the same files as on Windows;
 # the window is AppKit + Metal (pc_window_mac.mm). imgui_impl_osx is not used
@@ -674,8 +677,10 @@ $(BUILD)/%.o: %.mm
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -fobjc-arc -c -o $@ $<
 
-# The macOS front end pulls in the editor's headers (fx_editor.h and friends),
-# which want imgui.h on the include path. Same reason as gui.o on Windows
+# The macOS front end pulls in the editor's headers (fx_editor.h and friends)
+# through app.h, which want imgui.h on the include path. Same reason as gui.o
+# on Windows
+$(BUILD)/src/ui/app_mac.o: CXXFLAGS += $(IMGUI_FLAGS)
 $(BUILD)/src/gui_mac.o: CXXFLAGS += $(IMGUI_FLAGS)
 
 MAC_FRAMEWORKS += -framework Metal

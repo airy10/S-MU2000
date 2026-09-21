@@ -22,60 +22,16 @@
 
 #include "compat/console.h"
 
-#include "bootcache.h"
 #include "mu2000.h"
-#include "nvram.h"
-#include "smf.h"
-#include "voicecache.h"
-#include "ui/app.h"
-#include "ui/audio_in.h"
-#include "ui/audio_out.h"
-#include "ui/bridge.h"
-#include "ui/driver.h"
-#include "ui/engine.h"
-#include "ui/fx_editor.h"
-#include "ui/keymap.h"
-#include "ui/keymap_win.h"
-#include "ui/layout.h"
-#include "ui/master_editor.h"
-#include "ui/menu.h"
-#include "ui/menu_win.h"
-#include "ui/midi_guard.h"
-#include "ui/midi_in.h"
-#include "ui/midi_out.h"
+#include "ui/app_win.h"
 #include "ui/options.h"
-#include "ui/overview.h"
-#include "ui/panel.h"
-#include "ui/part_shapes.h"
-#include "ui/pc_editor.h"
-#include "ui/pc_host.h"
-#include "ui/pc_window.h"
-#include "ui/player.h"
-#include "ui/png.h"
-#include "ui/settings.h"
-#include "ui/shot.h"
-#include "ui/status.h"
-#include "ui/text.h"
-#include "ui/toolbar.h"
 #include "ui/tool_args.h"
 #include "ui/window_win.h"
 
-#include <algorithm>
-#include <atomic>
 #include <cstdio>
-#include <cstring>
-#include <mutex>
 #include <string>
-#include <thread>
-
-#include <windows.h>
-#include <windowsx.h>
-#include <commdlg.h>
-#include <shellapi.h>
 
 namespace {
-
-constexpr u32 RATE = ui::AUDIO_RATE;
 
 // ---- 音源側
 //
@@ -84,19 +40,8 @@ constexpr u32 RATE = ui::AUDIO_RATE;
 // copy is the only way to keep the two from drifting. Only the name is pulled
 // in here, so the rest of this file reads as it always did.
 
-using ui::engine;
-
-// Menu lines and builders are shared with gui_mac.cpp in ui/menu.h; the
-// names below are unqualified for the choice dispatch (WM_COMMAND).
+// The menu names below are unqualified for the choice dispatch (WM_COMMAND).
 using namespace ui;
-
-
-// ---- 窓
-
-// gui.ini lives under %LOCALAPPDATA% (defined below, before main)
-// ---- 口を選ぶ品書き
-
-// --shot renders through the shared painter (ui/shot.h), like the window
 
 } // namespace
 
@@ -107,9 +52,9 @@ int main(int argc, char **argv)
 
 	ui::tool_args a;
 	a.latency = 20;        // 溜める目標 (per-backend default; the shared parser keeps it)
-	ui::output_options out_opts;
 	ui::window_options win_opts;
 	ui::engine_options eng_opts;
+	ui::output_options out_opts;
 
 	// The flags are shared (ui/tool_args.h); only latency above stays per side
 	const int parsed = ui::parse_tool_args(argc, argv, a, eng_opts, out_opts, win_opts);
@@ -121,110 +66,29 @@ int main(int argc, char **argv)
 	static ui::midi_out mout, mout_b, mout_mu;
 	static win_app gui(br, midi_ports, mout, mout_b, mout_mu);
 	g_win = &gui;
-	gui.keep_settings = a.nomidi;
 
 	// 絵だけ欲しい場合。ROM が無くても中身が空の画面は出せる
-	if (!a.shot_path.empty() && (a.dir.empty() || !a.boot_for_shot)) {
-		ui::snapshot s;
-		std::snprintf(s.message, sizeof(s.message), "S-MU2000");
-		br.publish(s);
-		return ui::write_shot(a.shot_path, a.win_w, a.win_h, br, a.grid, win_opts.lcd_only, a.layout_path);
-	}
+	if (!a.shot_path.empty() && (a.dir.empty() || !a.boot_for_shot))
+		return ui::empty_shot(br, a, win_opts);
 
 	if (a.dir.empty()) {
 		ui::print_usage();
 		return 1;
 	}
 
-	static engine eng(br, midi_ports[0]);
+	static ui::engine eng(br, midi_ports[0]);
 	gui.wire_engine(eng, eng_opts);
 	gui.eng = &eng;
+	gui.state = &eng.state;
 	if (!gui.load_machine(eng, a))
 		return 1;
 	const int shot = gui.run_boot_shot(eng, br, a, win_opts);
 	if (shot >= 0)
 		return shot;
-	// ---- 窓を出す
 
-	const HINSTANCE inst = GetModuleHandleA(nullptr);
-	WNDCLASSA wc{};
-	wc.lpfnWndProc   = wnd_proc;
-	wc.hInstance     = inst;
-	wc.hCursor       = LoadCursor(nullptr, IDC_ARROW);
-	wc.lpszClassName = "SMU2000Panel";
-	wc.hbrBackground = nullptr;
-	RegisterClassA(&wc);
-
-	RECT want{ 0, 0, a.win_w, a.win_h };
-	AdjustWindowRect(&want, WS_OVERLAPPEDWINDOW, FALSE);
-	HWND hwnd = CreateWindowA("SMU2000Panel", "S-MU2000", WS_OVERLAPPEDWINDOW,
-	                          CW_USEDEFAULT, CW_USEDEFAULT,
-	                          want.right - want.left, want.bottom - want.top,
-	                          nullptr, nullptr, inst, nullptr);
-	if (!hwnd) {
-		std::fprintf(stderr, "窓を出せない\n");
-		return 1;
-	}
-
-	// MIDI ファイルを窓に落とせば流す（本体の窓も、エディタや一覧の窓も）
-	DragAcceptFiles(hwnd, TRUE);
+	// MIDI ファイルを窓に落とせば流す（本体の窓も、エディタや一覧の窓も）。
+	// The window itself is made and pumped by ui::app::run
 	ui::pc_window::set_drop_handler(play_dropped_file);
 
-	gui.eng  = &eng;
-	gui.state = &eng.state;
-	gui.setup_for_window(a, win_opts, out_opts.factory);
-
-	eng.publish();
-	ShowWindow(hwnd, SW_SHOW);
-	gui.open_startup_windows(win_opts);
-	UpdateWindow(hwnd);
-
-	// 起動は別スレッド。終わったら音を出し始める
-	static ui::audio_out out;
-	gui.out = &out;
-	static ui::audio_in ain;
-	gui.ain = &ain;
-	eng.ain = &ain;
-	std::thread boot_thread([&] {
-		if (!eng.boot()) {
-			eng.state.store(2);
-			eng.publish();
-			return;
-		}
-		// 起動が終わってから入れる（起動には firmware が要る）
-		gui.apply_native_engine(eng, eng_opts);
-		eng.state.store(1);
-		eng.publish();
-
-		// 前に選んだ口を名前で探す。--midi / --midiout があればそちらが勝つ
-		gui.open_remembered_ports(a, out_opts);
-
-		std::string err;
-
-		if (!gui.start_audio(a.latency, out_opts.exclusive))
-			return;
-		std::printf("音声の出口: %s\n%s\n", out.device_name().c_str(),
-		            out.format_line().c_str());
-		// A/D INPUT。前に選んだ録音デバイスがあれば開く（開けなくても名前は覚えておく）
-		gui.start_ad();
-		// --play が付いていれば、鳴り始めたところで流し出す
-		if (!a.play_path.empty())
-			gui.play_song(a.play_path);
-		std::printf("鳴らしている（待ち時間 %.1f ms、MMCSS %s）\n",
-		            1000.0 * out.buffer_frames() / RATE,
-		            out.mmcss() ? "登録できた" : "登録できない（途切れやすい）");
-		std::fflush(stdout);
-	});
-
-	MSG msg;
-	while (GetMessageA(&msg, nullptr, 0, 0) > 0) {
-		TranslateMessage(&msg);
-		DispatchMessageA(&msg);
-	}
-
-	if (boot_thread.joinable())
-		boot_thread.join();
-	gui.shutdown();
-	gui.print_exit_stats(out.late());
-	return 0;
+	return gui.run(a, eng_opts, out_opts, win_opts);
 }

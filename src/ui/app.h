@@ -19,6 +19,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <cstdio>
 #include <memory>
 #include <string>
@@ -121,6 +122,40 @@ public:
 	}
 
 	// ---- shared paint (the whole panel picture, status line included)
+
+	// The timer half of a frame: the panel tick and the PC windows. Windows
+	// runs it from WM_TIMER and paints from WM_PAINT; the Mac has one draw
+	// call and does both (paint_main below)
+	void frame_work()
+	{
+		poll();
+		pc_frame_all(list, pc, fx, shapes, master, panel.xg(), panel.ram(), br,
+		             [this](pc_window &w) { open_pc_window(w); });
+	}
+
+	// A full frame: timer work, status middle, panel paint. The HDC comes
+	// wrapped from either window system; the middle fragment and the PC
+	// window opening stay virtual (backend stats, host windows)
+	void paint_main(HDC dc, int w)
+	{
+		frame_work();
+		paint_frame(dc, w);
+	}
+
+	// The paint half, for a window that splits timer work from painting
+	void paint_frame(HDC dc, int w)
+	{
+		char middle[64] = {};
+		if (out && out->produced())
+			format_middle(middle, sizeof(middle));
+		paint_into(dc, w, middle);
+	}
+
+	// The wait/drop fragment for the status line (WASAPI: 待ち + 遅れ,
+	// CoreAudio: 遅れ). Called only when the device is up
+	virtual void format_middle(char *dst, std::size_t n) = 0;
+	// Opens one PC window (host windows differ)
+	virtual void open_pc_window(pc_window &w) = 0;
 
 	void paint_into(HDC dc, int w, const char *middle)
 	{
@@ -317,7 +352,10 @@ public:
 	// ---- per-platform acts (thin shells implement these)
 
 	// Open a PC window by BAR_* id (F2/F3, the strip, the menus)
-	virtual void open_window_by_kind(int kind) = 0;
+	void open_window_by_kind(int kind)
+	{
+		open_pc_window(*window_for_kind(kind, list, pc, fx, shapes, master));
+	}
 
 	// ---- remembered settings (gui.ini)
 
@@ -1003,6 +1041,88 @@ public:
 	// hog mode on CoreAudio). Nothing shared to say: each side says its own
 	virtual void print_audio_details() = 0;
 
+	// ---- the program itself (both mains end here)
+
+	// Everything after the machine is loaded: put the window up, boot on a
+	// thread, pump events, close down. The mains keep the argument parsing
+	// and the object construction; what still differs is only the shell
+	// below (window creation, the event pump, the audio say-lines)
+	int run(tool_args &a, const engine_options &eo, const output_options &oo,
+	        const window_options &wo)
+	{
+		keep_settings = a.nomidi;
+		setup_for_window(a, wo, oo.factory);
+
+		// The remembered ports open on this thread, while the machine boots
+		// beside it: the audio device is the only thing that needs the
+		// firmware. --midi and friends win over what was remembered
+		open_remembered_ports(a, oo);
+
+		// Give the panel something to read before the boot thread says
+		// anything, so the window comes up showing the boot message rather
+		// than a blank LCD
+		eng->publish();
+
+		if (!open_main_window("S-MU2000", a.win_w, a.win_h)) {
+			std::fprintf(stderr, "窓を出せない\n");
+			return 1;
+		}
+
+		make_audio();
+
+		// Boot on a separate thread, and start the audio once it is done
+		std::thread boot_thread([&] {
+			if (!eng->boot()) {
+				eng->state.store(2);
+				eng->publish();
+				return;
+			}
+			// After boot, as always: starting needs the firmware
+			apply_native_engine(*eng, eo);
+			eng->state.store(1);
+			eng->publish();
+
+			if (!start_audio(a.latency, oo.exclusive))
+				return;
+			say_audio_opened(oo.exclusive);
+			// A/D INPUT: open the recording device that was picked last time
+			start_ad();
+			// With --play, start streaming as soon as it begins to sound
+			if (!a.play_path.empty())
+				play_song(a.play_path);
+			say_audio_running();
+			std::fflush(stdout);
+		});
+
+		// --editor and friends, alongside the panel
+		open_startup_windows(wo);
+
+		pump_window("S-MU2000", a.win_w, a.win_h);
+
+		if (boot_thread.joinable())
+			boot_thread.join();
+		shutdown();
+		print_exit_stats(audio_drops());
+		return 0;
+	}
+
+	// ---- the window-system shell (thin shells implement these)
+
+	// Creates the main window and shows it. False when it could not be made
+	virtual bool open_main_window(const char *title, int w, int h) = 0;
+	// Pumps events until the window closes. Blocks. The Mac's make and pump
+	// are one call (run_window), so the arguments ride along unused there
+	virtual void pump_window(const char *title, int w, int h) = 0;
+	// Creates the audio devices and points out/ain at them. Opening the
+	// device itself waits for the firmware (start_audio, on the boot thread)
+	virtual void make_audio() = 0;
+	// Said once the device is up. exclusive is whether hog mode was asked for
+	virtual void say_audio_opened(bool exclusive) = 0;
+	// Said once it is actually sounding (latency, thread class)
+	virtual void say_audio_running() = 0;
+	// What the backend counted (WASAPI late(), CoreAudio starved())
+	virtual u64 audio_drops() = 0;
+
 	// ---- per-platform acts (thin shells implement these)
 
 	// Something in a menu failed. Windows remembers it for the end of the
@@ -1044,6 +1164,17 @@ protected:
 	u64 last_drop_report = 0;          // MIDI drops last said out loud
 	bool pressed = false;            // a panel press is in flight (drag/up)
 };
+
+// --shot without a ROM or without booting: draw the empty screen. Both
+// mains do this before anything else is built
+inline int empty_shot(bridge &b, const tool_args &a, const window_options &w)
+{
+	snapshot s;
+	std::snprintf(s.message, sizeof(s.message), "S-MU2000");
+	b.publish(s);
+	return write_shot(a.shot_path, a.win_w, a.win_h, b, a.grid,
+	                  w.lcd_only, a.layout_path);
+}
 
 } // namespace ui
 

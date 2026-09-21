@@ -6,6 +6,7 @@
 //
 // Deciding what to ask is shared (ui::app); only asking is here.
 // Never included from Mac builds.
+// The app class that answers these is ui/app_win.h.
 
 #ifndef S_MU2000_UI_WINDOW_WIN_H
 #define S_MU2000_UI_WINDOW_WIN_H
@@ -18,7 +19,6 @@
 #include <windows.h>
 #include <commdlg.h>
 
-#include "app.h"
 #include "menu.h"
 #include "menu_win.h"
 #include "pc_window.h"
@@ -26,8 +26,9 @@
 
 namespace ui {
 
-// gui.ini lives under %LOCALAPPDATA%
-std::string settings_file_path();
+// Creates and shows the main window (WM_CREATE sets g_win->hwnd through
+// wnd_proc, DragAcceptFiles included). False when it could not be made
+bool make_window(const char *title, int w, int h);
 
 // Shows popup menu groups at a client point (already ClientToScreen'd)
 inline void win_track_menu(HWND hwnd, POINT screen,
@@ -103,66 +104,6 @@ inline void win_error(HWND hwnd, const std::string &text)
 {
 	MessageBoxW(hwnd, to_wide(text).c_str(), L"S-MU2000", MB_OK | MB_ICONWARNING);
 }
-
-class win_app : public app
-{
-public:
-	win_app(ui::bridge &b, midi_in *mi,
-	        midi_out &tha, midi_out &thb, midi_out &muo)
-	    : app(b, mi, tha, thb, muo) {}
-
-	HWND hwnd = nullptr;             // set at WM_CREATE, for message boxes
-	// Double buffering: repainting straight into the window would flicker
-	HDC     mem_dc = nullptr;
-	HBITMAP mem_bmp = nullptr;
-	int     mem_w = 0, mem_h = 0;
-	// Choosing from a menu failed: shown at the end of the command
-	std::string last_error;
-
-	void open_window_by_kind(int kind) override;
-
-	void print_audio_details() override
-	{
-		std::printf("%s\n%s\n", out->format_line().c_str(), out->latency_line().c_str());
-	}
-
-	// ui::app hooks: file dialogs, confirmations and error display are
-	// Win32's business (ui/window_win.h), everything they decide is shared
-	std::string settings_path() const override { return settings_file_path(); }
-	void menu_error(const std::string &text) override { last_error = text; }
-	void menu_note(const std::string &text) override
-	{
-		win_note(hwnd, text);
-	}
-	std::string ask_card_open_path() override
-	{
-		return win_open_file(hwnd, L"差す SmartMedia",
-		                         L"SmartMedia の中身 (*.img)\0*.img\0すべて (*.*)\0*.*\0", L"img");
-	}
-	std::string ask_card_save_path() override
-	{
-		return win_save_file(hwnd, L"新しい SmartMedia の保存先",
-		                         L"SmartMedia の中身 (*.img)\0*.img\0すべて (*.*)\0*.*\0",
-		                         L"img", L"smartmedia.img");
-	}
-	std::string ask_midi_file_path() override
-	{
-		return win_open_file(hwnd, L"流す MIDI ファイル",
-		                         L"MIDI ファイル (*.mid;*.midi)\0*.mid;*.midi\0すべて (*.*)\0*.*\0",
-		                         nullptr);
-	}
-	bool confirm_factory_reset() override
-	{
-		return win_confirm(hwnd,
-		                       "MU2000 を工場出荷状態に戻して、電源を入れ直します。\n"
-		                       "ユーティリティの設定や、覚えている音量・音色の設定はすべて消えます。");
-	}
-};
-
-
-extern win_app *g_win;
-
-void play_dropped_file(const std::string &path);
 
 LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
 
