@@ -51,6 +51,7 @@
 #include "ui/pc_window_mac.h"
 #include "ui/player.h"
 #include "ui/png.h"
+#include "ui/toolbar.h"
 #include "ui/keymap.h"
 #include "ui/options.h"
 #include "ui/settings.h"
@@ -160,6 +161,10 @@ public:
 	ui::panel  panel;
 	ui::player play;
 
+	// **窓を開くボタンの帯**（窓の最上段。gui.cpp と同じ ui/toolbar.h）。
+	// LCD だけの窓には出さない
+	ui::toolbar bar;
+
 	// The PC editor windows. Same contents as on Windows; only the window is
 	// AppKit + Metal (ui/pc_window_mac.mm). F2 / F3 or right-click opens them
 	ui::pc_window pc{ std::make_unique<ui::pc_editor>() };    // PC editor (F2 or right-click)
@@ -180,6 +185,9 @@ public:
 		// the CPU load for the PC windows (the overview's top strip)
 		if (out && out->produced())
 			br.set_cpu(float(out->cpu_percent()));
+		// いまどちらの口で鳴らしているか（F4 で切り替わる）を一覧の帯へ。
+		// Windows 側は gui.cpp の WM_TIMER で同じことを書く
+		br.set_engine(eng ? eng->native_engine.load() : -1);
 		// the PC editor windows, where the Windows side has its WM_TIMER
 		ui::pc_frame_all(list, pc, fx, shapes, master, panel.xg(), panel.ram(), br,
 		                 [&](ui::pc_window &w) { open_editor_window(w); });
@@ -209,6 +217,8 @@ public:
 		// to the shim as it stands
 		HDC dc = static_cast<HDC>(smu_gdi_wrap_view_context(cg, w, h));
 		panel.paint(dc, s, pressed, status);
+		// 帯はパネルの**あと**に描く（パネルは全面を塗る。gui.cpp と同じ）
+		bar.paint(dc, w);
 		DeleteDC(dc);
 	}
 
@@ -226,6 +236,24 @@ public:
 		// WM_RBUTTONUP
 		if (right)
 			return true;
+
+		// **帯が先**。ここはパネルでは無いので、機器には何も伝えない
+		// (gui.cpp の WM_LBUTTONDOWN と同じ)
+		{
+			const int id = bar.hit(x, y);
+			if (id >= 0) {
+				bar.set_down(id);
+				if (id == ui::BAR_LIST)   open_editor_window(list);
+				else if (id == ui::BAR_EDITOR) open_editor_window(pc);
+				else if (id == ui::BAR_SHAPES) open_editor_window(shapes);
+				else if (id == ui::BAR_FX)     open_editor_window(fx);
+				else if (id == ui::BAR_MASTER) open_editor_window(master);
+				m_pressed = true;   // mouse_up で set_down(-1) に戻す
+				return true;
+			}
+			if (y < ui::toolbar::HEIGHT)
+				return true;            // 帯の隙間
+		}
 
 		// The jacks and the card slot are pressed rather than clicked: they
 		// open a menu instead of moving a panel control (the A/D INPUT jack
@@ -252,6 +280,7 @@ public:
 		if (!m_pressed)
 			return;
 		m_pressed = false;
+		bar.set_down(-1);
 		panel.release(br);
 	}
 
@@ -795,7 +824,7 @@ private:
 // ---- Write just the picture, with no window. Used to check the looks
 
 int shot(const std::string &path, int w, int h, ui::bridge &br, bool grid,
-         const std::string &layout_path)
+         bool lcd_only, const std::string &layout_path)
 {
 	ui::panel p;
 	std::string lerr;
@@ -803,6 +832,13 @@ int shot(const std::string &path, int w, int h, ui::bridge &br, bool grid,
 		std::fprintf(stderr, "配置: %s を開けない\n", layout_path.c_str());
 	if (!lerr.empty())
 		std::fprintf(stderr, "%s", lerr.c_str());
+	p.set_lcd_only(lcd_only);
+	// 窓と同じ見た目にする（帯のぶん上を空ける。gui.cpp と同じ）
+	ui::toolbar bar;
+	if (!lcd_only) {
+		bar.set_items(ui::window_bar_items());
+		p.set_top_inset(ui::toolbar::HEIGHT);
+	}
 	p.resize(w, h);
 	p.set_grid(grid);
 
@@ -827,6 +863,7 @@ int shot(const std::string &path, int w, int h, ui::bridge &br, bool grid,
 	br.read(s);
 	p.set_volume(0.8);
 	p.paint(dc, s, 0, "");
+	bar.paint(dc, w);
 	GdiFlush();
 
 	const bool ok = ui::write_png(path, static_cast<const u8 *>(bits), w, h, w * 4);
@@ -975,7 +1012,7 @@ int main(int argc, char **argv)
 		ui::snapshot s;
 		std::snprintf(s.message, sizeof(s.message), "S-MU2000");
 		br.publish(s);
-		return shot(shot_path, win_w, win_h, br, grid, layout_path);
+		return shot(shot_path, win_w, win_h, br, grid, win_opts.lcd_only, layout_path);
 	}
 
 	if (dir.empty()) {
@@ -1058,7 +1095,7 @@ int main(int argc, char **argv)
 		}
 
 		eng.publish();
-		return shot(shot_path, win_w, win_h, br, grid, layout_path);
+		return shot(shot_path, win_w, win_h, br, grid, win_opts.lcd_only, layout_path);
 	}
 
 	// ---- Put the window up
@@ -1072,6 +1109,10 @@ int main(int argc, char **argv)
 	gui.state = &eng.state;
 	gui.lcd_only = win_opts.lcd_only;
 	gui.panel.set_lcd_only(win_opts.lcd_only);
+	if (!win_opts.lcd_only) {
+		gui.bar.set_items(ui::window_bar_items());
+		gui.panel.set_top_inset(ui::toolbar::HEIGHT);
+	}
 	gui.panel.resize(win_w, win_h);
 	gui.set_layout(layout_path);
 	gui.panel.resize(win_w, win_h);
