@@ -612,19 +612,24 @@ void overview::eg_cell(int part, xg::model &m, bridge &br, float w, float h, boo
 	ImGui::PopID();
 }
 
-// フィルタの 1 マス。低い音から高い音への通り方（2 次のローパス）を描き、カットオフの位置の点を
-// つまむ。横に動かすとカットオフ、縦に動かすとレゾナンス（山の高さ）が変わる（大きな窓だけ）。
-// 横軸は値に比例（64 が真ん中 = 音色のまま）で、1 マスの幅が 8 オクターブ。
+// フィルタの 1 マス。低い音から高い音への通り方（2 次のローパスと 2 次のハイパスを重ねたもの）を描き、
+// 2 つの点をつまむ（大きな窓だけ）。押した瞬間に近いほうの点をつかむ。
+//   ローパスの点  横でカットオフ、縦でレゾナンス（山の高さ）
+//   ハイパスの点  横でカットオフ（左の低いところにあり、右へ動かすと低音が削れる）
+// 横軸は値に比例で、1 マスの幅が 8 オクターブ。ローパスは 64 が真ん中（音色のまま）。
+// ハイパスは 64 を左の端の近く（真ん中から 3.4 オクターブ下）に置き、同じ目盛りで動かす。
+// ハイパスにレゾナンスは効かない（Q は 0.707 の平ら）。
 // 点の高さは、カットオフでの持ち上がり 20log10(Q) dB。Q = 2 の (値 - 64) / 16 乗なので、
-// 高さも値に比例する。どちらも見た目だけで、実際の周波数や Q ではない
+// 高さも値に比例する。どれも見た目だけで、実際の周波数や Q ではない
 void overview::filter_cell(int part, xg::model &m, bridge &br, float w, float h, bool compact)
 {
 	ImGuiIO &io = ImGui::GetIO();
 	const float fs = ImGui::GetFontSize();
 	ImDrawList *dl = ImGui::GetWindowDrawList();
-	const xg::param &pc = P("part.cutoff"), &pq = P("part.resonance");
-	int vc = 64, vq = 64;
+	const xg::param &pc = P("part.cutoff"), &pq = P("part.resonance"), &ph = P("part.hpf_cutoff");
+	int vc = 64, vq = 64, vh = 64;
 	const bool known = m.get(pc, part, vc) && m.get(pq, part, vq);
+	const bool known_h = m.get(ph, part, vh);
 
 	ImGui::PushID("filter");
 	const ImVec2 pos = ImGui::GetCursorScreenPos();
@@ -640,29 +645,44 @@ void overview::filter_cell(int part, xg::model &m, bridge &br, float w, float h,
 	auto y_of = [&](float db) { return top + (bottom - top) * (DB_TOP - std::clamp(db, DB_BOTTOM, DB_TOP)) / (DB_TOP - DB_BOTTOM); };
 	auto db_of_value = [](int v) { return 6.0206f * float(v - 64) / 16.0f; };
 	const float y0db = y_of(0.0f);
-	const float xc = x0 + (x1 - x0) * float(vc) / 127.0f;
+	const float span = x1 - x0;
+	const float HPF_BASE = 64.0f - 0.425f * 127.0f;          // ハイパスの 64 を置く目盛り（真ん中から 3.4 オクターブ下）
+	const float xc = x0 + span * float(vc) / 127.0f;
 	const float yq = y_of(db_of_value(vq));
+	const float xh = x0 + span * (float(vh) - 64.0f + HPF_BASE) / 127.0f;
+	const float yh = y_of(-3.0103f);
 
-	// つかんだときの、点とマウスのずれを覚えておき、点が指に飛ばないようにする
+	// つかんだときの、点とマウスのずれと、どちらの点か（0 ローパス、1 ハイパス）を覚えておく
 	// a Get*Ref reference goes stale when an insert grows the storage, so take
 	// a value and write it back
 	ImGuiStorage *st = ImGui::GetStateStorage();
 	float gx = st->GetFloat(id, 0.0f), gy = st->GetFloat(id + 1, 0.0f);
+	int grab = st->GetInt(id + 2, 0);
 	if (active && ImGui::IsItemActivated() && known) {
-		gx = xc - io.MousePos.x;
-		gy = yq - io.MousePos.y;
+		const float dc = std::hypot(io.MousePos.x - xc, io.MousePos.y - yq);
+		const float dh = std::hypot(io.MousePos.x - xh, io.MousePos.y - yh);
+		grab = known_h && dh < dc ? 1 : 0;
+		gx = (grab ? xh : xc) - io.MousePos.x;
+		gy = (grab ? yh : yq) - io.MousePos.y;
 		st->SetFloat(id, gx);
 		st->SetFloat(id + 1, gy);
+		st->SetInt(id + 2, grab);
 	}
 	if (active && known && (io.MouseDelta.x != 0.0f || io.MouseDelta.y != 0.0f)) {
 		const float fx = io.MousePos.x + gx, fy = io.MousePos.y + gy;
-		const int nc = std::clamp(int(std::lround((fx - x0) / (x1 - x0) * 127.0f)), pc.min, pc.max);
-		const float db = DB_TOP - (fy - top) / (bottom - top) * (DB_TOP - DB_BOTTOM);
-		const int nq = std::clamp(int(std::lround(64 + db * 16.0f / 6.0206f)), pq.min, pq.max);
-		if (nc != vc)
-			br.send(m.set(pc, part, nc));
-		if (nq != vq)
-			br.send(m.set(pq, part, nq));
+		if (grab == 1) {
+			const int nh = std::clamp(int(std::lround((fx - x0) / span * 127.0f - HPF_BASE + 64.0f)), ph.min, ph.max);
+			if (nh != vh)
+				br.send(m.set(ph, part, nh));
+		} else {
+			const int nc = std::clamp(int(std::lround((fx - x0) / span * 127.0f)), pc.min, pc.max);
+			const float db = DB_TOP - (fy - top) / (bottom - top) * (DB_TOP - DB_BOTTOM);
+			const int nq = std::clamp(int(std::lround(64 + db * 16.0f / 6.0206f)), pq.min, pq.max);
+			if (nc != vc)
+				br.send(m.set(pc, part, nc));
+			if (nq != vq)
+				br.send(m.set(pq, part, nq));
+		}
 	}
 
 	// 描く
@@ -671,18 +691,23 @@ void overview::filter_cell(int part, xg::model &m, bridge &br, float w, float h,
 		// 目安の線。0 dB と、音色のままのカットオフ
 		const ImU32 guide = col(ImGuiCol_TextDisabled, 0.35f);
 		dl->AddLine(ImVec2(x0, y0db), ImVec2(x1, y0db), guide);
-		const float xmid = x0 + (x1 - x0) * 64.0f / 127.0f;
+		const float xmid = x0 + span * 64.0f / 127.0f;
 		dl->AddLine(ImVec2(xmid, top), ImVec2(xmid, bottom), guide);
 
 		const float q = std::pow(2.0f, float(vq - 64) / 16.0f);
-		const int n = std::max(8, int(x1 - x0) / 2);
+		const int n = std::max(8, int(span) / 2);
 		std::vector<ImVec2> pts;
 		pts.reserve(n + 1);
 		for (int i = 0; i <= n; i++) {
-			const float x = x0 + (x1 - x0) * float(i) / float(n);
-			const float r = std::pow(2.0f, (x - xc) / (x1 - x0) * 8.0f);          // 周波数 / カットオフ
+			const float x = x0 + span * float(i) / float(n);
+			const float r = std::pow(2.0f, (x - xc) / span * 8.0f);          // 周波数 / ローパスのカットオフ
 			const float r2 = r * r;
-			const float mag = 1.0f / std::sqrt((1 - r2) * (1 - r2) + r2 / (q * q));
+			float mag = 1.0f / std::sqrt((1 - r2) * (1 - r2) + r2 / (q * q));
+			if (known_h) {
+				const float s = std::pow(2.0f, (xh - x) / span * 8.0f);      // ハイパスのカットオフ / 周波数
+				const float s2 = s * s;
+				mag *= 1.0f / std::sqrt((1 - s2) * (1 - s2) + 2.0f * s2);    // Q = 0.707
+			}
 			pts.push_back(ImVec2(x, y_of(20.0f * std::log10(std::max(mag, 1e-4f)))));
 		}
 		const ImU32 line = col(ImGuiCol_SliderGrabActive);
@@ -693,18 +718,23 @@ void overview::filter_cell(int part, xg::model &m, bridge &br, float w, float h,
 		dl->PathFillConcave(col(ImGuiCol_SliderGrab, 0.25f));
 		dl->PushClipRect(pos, ImVec2(pos.x + w, pos.y + h), true);
 		dl->AddPolyline(pts.data(), int(pts.size()), line, 0, std::max(1.5f, fs * 0.1f));
-		dl->PopClipRect();
 		const float r = std::max(2.5f, fs * 0.22f);
-		dl->AddCircleFilled(ImVec2(xc, yq), active ? r * 1.4f : r, active ? col(ImGuiCol_Text) : line);
+		const bool hold_c = active && grab == 0, hold_h = active && grab == 1;
+		dl->AddCircleFilled(ImVec2(xc, yq), hold_c ? r * 1.4f : r, hold_c ? col(ImGuiCol_Text) : line);
+		if (known_h)
+			dl->AddCircleFilled(ImVec2(xh, yh), hold_h ? r * 1.4f : r, hold_h ? col(ImGuiCol_Text) : line);
+		dl->PopClipRect();
 	} else {
 		const ImVec2 ts = ImGui::CalcTextSize("--");
 		dl->AddText(ImVec2(pos.x + (w - ts.x) * 0.5f, pos.y + (h - ts.y) * 0.5f), col(ImGuiCol_TextDisabled), "--");
 	}
 
 	if ((hovered || active) && known)
-		ImGui::SetItemTooltip("Cutoff %s   Resonance %s%s",
+		ImGui::SetItemTooltip("Cutoff %s   Resonance %s   HPF %s%s",
 		                      xg::format(pc, vc).c_str(), xg::format(pq, vq).c_str(),
-		                      compact ? BIG_HINT : "\n点をつまんで、横でカットオフ（右へ明るく）、縦でレゾナンス（上へ強く）");
+		                      known_h ? xg::format(ph, vh).c_str() : "--",
+		                      compact ? BIG_HINT : "\n右の点: 横でカットオフ（右へ明るく）、縦でレゾナンス（上へ強く）\n"
+		                                           "左の点: 横で HPF（右へ低音が削れる）");
 	ImGui::PopID();
 }
 
