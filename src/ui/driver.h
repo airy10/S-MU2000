@@ -226,9 +226,11 @@ public:
 			return;
 		static_assert(bridge::SCOPE_N <= mu2000::SCOPE_N, "scope sizes");
 		mu.scope_read(m_scope, bridge::SCOPE_N);
-		br.publish_scope(m_scope, want);
+		const int ins = mu.scope_read_post(m_scope_post, bridge::SCOPE_N);
+		br.publish_scope(m_scope, m_scope_post, want, ins);
 	}
 	float m_scope[bridge::SCOPE_N] = {};
+	float m_scope_post[bridge::SCOPE_N] = {};
 
 	// firmware のワーク RAM から XG の値を写す（xg/ram.h）
 	void publish_xg(mu2000 &mu, bridge &br)

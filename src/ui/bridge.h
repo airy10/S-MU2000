@@ -185,11 +185,15 @@ public:
 	static constexpr size_t SCOPE_N = 2048;
 	void want_scope(int part) { m_scope_want.store(part, std::memory_order_relaxed); }
 	int scope_wanted() const { return m_scope_want.load(std::memory_order_relaxed); }
-	void publish_scope(const float *s, int part)
+	// post はインサーションを通したあとの音（mu2000::scope_read_post）、ins はその番号（1-4。無ければ 0 で、
+	// post は s と同じ）
+	void publish_scope(const float *s, const float *post, int part, int ins)
 	{
 		m_scope_seq.fetch_add(1, std::memory_order_release);
 		std::memcpy(m_scope, s, sizeof(m_scope));
+		std::memcpy(m_scope_post, post, sizeof(m_scope_post));
 		m_scope_part = part;
+		m_scope_ins = ins;
 		m_scope_seq.fetch_add(1, std::memory_order_release);
 	}
 	// 置いてあれば、そのパートの番号を返す（無ければ -1）
@@ -204,6 +208,27 @@ public:
 			if (m_scope_seq.load(std::memory_order_acquire) == a)
 				return a ? part : -1;
 		}
+		return -1;
+	}
+	// 同じパートの、インサーションを通したあとの音。*ins に通したインサーションの番号（1-4。
+	// 付いていなければ 0 で、中身は read_scope と同じ）。返り値は read_scope と同じ
+	int read_scope_post(float *out, int *ins) const
+	{
+		for (int tries = 0; tries < 8; tries++) {
+			const unsigned a = m_scope_seq.load(std::memory_order_acquire);
+			if (a & 1)
+				continue;
+			std::memcpy(out, m_scope_post, sizeof(m_scope_post));
+			const int part = m_scope_part;
+			const int n = m_scope_ins;
+			if (m_scope_seq.load(std::memory_order_acquire) == a) {
+				if (ins)
+					*ins = a ? n : 0;
+				return a ? part : -1;
+			}
+		}
+		if (ins)
+			*ins = 0;
 		return -1;
 	}
 
@@ -275,7 +300,9 @@ private:
 	std::atomic<int>      m_scope_want{-1};
 	std::atomic<unsigned> m_scope_seq{0};
 	float                 m_scope[SCOPE_N] = {};
+	float                 m_scope_post[SCOPE_N] = {};
 	int                   m_scope_part = -1;
+	int                   m_scope_ins = 0;
 	xg_snapshot           m_xg;
 	std::atomic<bool>     m_want_defaults{false};
 	std::atomic<bool>     m_have_defaults{false};

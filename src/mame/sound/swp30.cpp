@@ -4206,6 +4206,8 @@ void swp30_device::run_sample(s32 &left, s32 &right)
 	} else if(!meg_jit_run())
 		// S-MU2000: 機械語にできていれば、そちらで回す（swp30_jit.cpp）
 		m_meg->run_program(m_meg_ops.data());
+	if(m_meg_tap)
+		m_meg_tap(m_meg_tap_ctx, &m_meg->m_m[0x20]);
 
 	// sound_stream_update() がやっていたことをここで行う。
 	// DAC は出力 0-3 の先頭 2 本。scale は 1<<17。

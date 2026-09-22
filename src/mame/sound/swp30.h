@@ -116,6 +116,11 @@ public:
 	using voice_tap_fn = void (*)(void *ctx, const s32 *samples_per_chan);
 	voice_tap_fn m_voice_tap = nullptr;
 	void *m_voice_tap_ctx = nullptr;
+	// S-MU2000: MEG を回した直後の m20-m2f（エフェクトの出口。次のサンプルでミキサの入力 0x40-0x4f に
+	// なる）を 1 サンプルごとに渡す口。インサーションを通したあとのパートの音を拾うのに使う。音には触らない
+	using meg_tap_fn = void (*)(void *ctx, const s32 *m20);
+	meg_tap_fn m_meg_tap = nullptr;
+	void *m_meg_tap_ctx = nullptr;
 
 	// MEG の入口・出口の書き出し（移植の突き合わせ用）
 	std::FILE *m_dbg_dac = nullptr;

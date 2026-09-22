@@ -91,6 +91,10 @@ mu2000::mu2000()
 	m_swpm.m_voice_tap_ctx = &m_scope_ctx[0];
 	m_swps.m_voice_tap = &mu2000::scope_tap_fn;
 	m_swps.m_voice_tap_ctx = &m_scope_ctx[1];
+	m_swpm.m_meg_tap = &mu2000::scope_meg_fn;
+	m_swpm.m_meg_tap_ctx = &m_scope_ctx[0];
+	m_swps.m_meg_tap = &mu2000::scope_meg_fn;
+	m_swps.m_meg_tap_ctx = &m_scope_ctx[1];
 
 	build_bus();
 }
@@ -121,8 +125,47 @@ void mu2000::scope_tap_fn(void *ctx, const s32 *samples)
 	m.m_scope_w[size_t(t.chip)].store(w + 1, std::memory_order_release);
 }
 
+namespace {
+// インサーション n（0-3）の出口: チップと m20 からの位置（左。右はその次）
+constexpr int SCOPE_INS_CHIP[4] = { 0, 1, 1, 1 };
+constexpr int SCOPE_INS_M[4]    = { 0x08, 0x08, 0x0a, 0x0c };
+// MEG の出口を声の和の目盛りにそろえる倍率（THRU のインサーションで両者の rms をそろえた）
+constexpr float SCOPE_INS_GAIN = 1.0f;
+}
+
+void mu2000::scope_meg_fn(void *ctx, const s32 *m20)
+{
+	const scope_tap &t = *static_cast<const scope_tap *>(ctx);
+	mu2000 &m = *t.self;
+	if (m.m_scope_part.load(std::memory_order_relaxed) < 0)
+		return;
+	const int ins = m.m_scope_ins.load(std::memory_order_relaxed);
+	float v = 0.0f;
+	if (ins >= 0 && SCOPE_INS_CHIP[ins] == t.chip) {
+		const int k = SCOPE_INS_M[ins];
+		v = (float(m20[k]) + float(m20[k + 1])) * (0.5f * SCOPE_INS_GAIN);
+	}
+	const u32 w = m.m_scope_post_w[size_t(t.chip)].load(std::memory_order_relaxed);
+	m.m_scope_post_ring[size_t(t.chip)][w & (SCOPE_N - 1)] = v;
+	m.m_scope_post_w[size_t(t.chip)].store(w + 1, std::memory_order_release);
+}
+
 void mu2000::scope_refresh_owner()
 {
+	// 見ているパートに付いているインサーション（XG 03 0n 0C がパート番号。7F は無し）
+	{
+		const int part = m_scope_part.load(std::memory_order_relaxed);
+		int ins = -1;
+		for (int n = 0; n < 4 && part >= 0; n++) {
+			u32 off = 0;
+			if (xg::ram::locate(u32(0x03 << 14 | n << 7 | 0x0c), off) && off < m_ram.size() &&
+			    (m_ram[off] & 0x7f) == part) {
+				ins = n;
+				break;
+			}
+		}
+		m_scope_ins.store(ins, std::memory_order_relaxed);
+	}
 	// パートの塊の番地（下 16bit）→ パート
 	static const std::array<u16, 64> PART_PTR = [] {
 		std::array<u16, 64> a{};
@@ -159,6 +202,23 @@ void mu2000::scope_read(float *out, size_t n) const
 		const u32 k = end - u32(n) + u32(i);
 		out[i] = (end >= n || k < end) ? m_scope_ring[0][k & (SCOPE_N - 1)] + m_scope_ring[1][k & (SCOPE_N - 1)] : 0.0f;
 	}
+}
+
+int mu2000::scope_read_post(float *out, size_t n) const
+{
+	const int ins = m_scope_ins.load(std::memory_order_relaxed);
+	if (ins < 0) {
+		scope_read(out, n);
+		return 0;
+	}
+	n = std::min(n, SCOPE_N);
+	const int c = SCOPE_INS_CHIP[ins];
+	const u32 end = m_scope_post_w[size_t(c)].load(std::memory_order_acquire);
+	for (size_t i = 0; i < n; i++) {
+		const u32 k = end - u32(n) + u32(i);
+		out[i] = (end >= n || k < end) ? m_scope_post_ring[size_t(c)][k & (SCOPE_N - 1)] : 0.0f;
+	}
+	return ins + 1;
 }
 
 mu2000::~mu2000()
