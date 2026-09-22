@@ -26,7 +26,9 @@ public:
 	int default_height() const override { return 720; }
 	void draw(xg::model &m, const xg_snapshot &ram, bridge &br) override;
 	// つまみ 1 つ。戻り値は「値が変わったか」。tooltip を切るとマウスのそばに説明を出さない（音色の窓は下の帯に出す）
-	static bool knob(const char *id, int &v, int lo, int hi, float size, const char *label, const char *text, bool tooltip = true);
+	// dim なら色を落として描く（触れないとき。操作は呼ぶ側が BeginDisabled で止める）
+	static bool knob(const char *id, int &v, int lo, int hi, float size, const char *label, const char *text, bool tooltip = true,
+	                 bool dim = false);
 
 private:
 	int m_focus = -1;                     // 説明を出しているつまみ（カーソルが載った・最後に触った）

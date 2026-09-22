@@ -85,7 +85,9 @@ void panel(const char *id, const char *title, float w, float h, int part, xg::mo
 	const float fs = ImGui::GetFontSize();
 	// 見出しを枠の上端に寄せる（上下の余白を詰める）
 	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(ImGui::GetStyle().WindowPadding.x, fs * 0.1f));
-	const bool open = ImGui::BeginChild(id, ImVec2(w, h), ImGuiChildFlags_Borders);
+	// 切り替えの無い区画（エフェクト・つなぎ）は中身を区画に収めて描くので、スクロールバーを出さない
+	const bool open = ImGui::BeginChild(id, ImVec2(w, h), ImGuiChildFlags_Borders,
+	                                    index == PANEL_FIXED ? ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse : 0);
 	ImGui::PopStyleVar();
 	if (!open) {
 		ImGui::EndChild();
@@ -432,7 +434,8 @@ void fx_cell(int slot, bool part_only, int part, xg::model &m, bridge &br, float
 	ImGui::SetCursorScreenPos(ImVec2(pos.x + pad, split + pad));
 	ImGui::BeginDisabled(locked);
 	const std::vector<xg::fx_type> &types = slot == 5 ? xg::rev_types() : slot == 6 ? xg::cho_types() : xg::ins_types();
-	ImGui::SetNextItemWidth(std::min(fs * 11.0f, w * 0.62f));
+	// 送りの棒を横に置くとき（触れないバリエーション）は、種類の欄を短くして棒の幅を空ける
+	ImGui::SetNextItemWidth(locked ? std::min(fs * 11.0f, w * 0.38f) : std::min(fs * 11.0f, w * 0.62f));
 	if (begin_fx_combo("##type", type, ImGuiComboFlags_HeightLarge)) {
 		int chosen = 0;
 		if (fx_type_menu(types, type, chosen)) {
@@ -451,13 +454,26 @@ void fx_cell(int slot, bool part_only, int part, xg::model &m, bridge &br, float
 	if (ImGui::IsItemHovered())
 		hint("エフェクトの設定の窓\nこのエフェクトを大きなつまみと説明で触る窓を開く");
 	ImGui::EndDisabled();
+	// このパートのインサーションにしていないバリエーションで触れるのは、このパートの送り（Var Send）だけ。
+	// つまみの並びに足すと段が増えて全部が縮むので、種類の欄の右に横長の棒で置く
+	if (locked) {
+		const xg::param &ps = P("part.variation_send");
+		int sv = ps.def;
+		const bool known = m.get(ps, part, sv);
+		ImGui::SameLine();
+		ImGui::SetNextItemWidth(std::max(fs * 3.0f, pos.x + w - pad - ImGui::GetCursorScreenPos().x));
+		ImGui::BeginDisabled(!known);
+		if (ImGui::SliderInt("##varsend", &sv, ps.min, ps.max, "Send %d") && known)
+			drag_send(br, m.set(ps, part, sv));
+		ImGui::EndDisabled();
+		if (ImGui::IsItemHovered() || ImGui::IsItemActive())
+			hint("%s  %d\nこのパートからバリエーションへの送り（システム接続のとき効く）。ドラッグで変える", official_name("part.variation_send").c_str(), sv);
+	}
 
 	// ---- つまみ。入る大きさまで縮める
 	struct knob_item { const xg::fx_param *fp; const xg::param *mp; const char *label; bool lock; };
 	std::vector<knob_item> items;
-	if (locked)
-		items.push_back({ nullptr, &P("part.variation_send"), "Send", false });
-	if (slot >= 5 && !part_only) {
+	if (slot == 5 || slot == 6) {   // リバーブ・コーラスだけ（バリエーションは Send とパラメータに絞って大きさをそろえる）
 		items.push_back({ nullptr, &P((prefix + ".return").c_str()), "Return", locked });
 		items.push_back({ nullptr, &P((prefix + ".pan").c_str()), "Pan", locked });
 	}
@@ -471,35 +487,42 @@ void fx_cell(int slot, bool part_only, int part, xg::model &m, bridge &br, float
 		}
 	const float kx0 = pos.x + pad, kx1 = pos.x + w - pad;
 	const float ky0 = ImGui::GetCursorScreenPos().y + pad, ky1 = pos.y + h - pad;
-	ImGui::PushFont(nullptr, fs * 0.7f);
-	const float kfs = ImGui::GetFontSize();
+	// 入る大きさを探す。まずつまみを縮め、それでも入らなければ字ごと縮める
 	const int n = int(items.size());
-	float ksize = kfs * 3.4f, cw = 0, ch = 0;
+	float kscale = 0.7f, ksize = 0, cw = 0, ch = 0;
 	int per_row = 1;
-	float label_w = 0;
-	for (const knob_item &it : items)
-		label_w = std::max(label_w, ImGui::CalcTextSize(it.label).x);
-	for (;; ksize -= kfs * 0.2f) {
-		cw = std::max(ksize + kfs * 1.9f, label_w + kfs * 0.8f);
-		ch = ksize + kfs * 2.8f;
-		per_row = std::max(1, int((kx1 - kx0) / cw));
-		const int rows = (n + per_row - 1) / per_row;
-		if (float(rows) * ch <= ky1 - ky0 || ksize <= kfs * 1.4f)
+	for (const float sc : { 0.7f, 0.62f, 0.55f, 0.48f }) {
+		kscale = sc;
+		const float kfs = fs * sc;
+		float label_w = 0;
+		for (const knob_item &it : items)
+			label_w = std::max(label_w, ImGui::GetFont()->CalcTextSizeA(kfs, FLT_MAX, 0.0f, it.label).x);
+		bool fits = false;
+		for (ksize = kfs * 3.4f;; ksize -= kfs * 0.2f) {
+			cw = std::max(ksize + kfs * 1.9f, label_w + kfs * 0.8f);
+			ch = ksize + kfs * 2.8f;
+			per_row = std::max(1, int((kx1 - kx0) / cw));
+			const int rows = (n + per_row - 1) / per_row;
+			fits = float(rows) * ch <= ky1 - ky0;
+			if (fits || ksize <= kfs * 1.6f)
+				break;
+		}
+		if (fits)
 			break;
 	}
+	ImGui::PushFont(nullptr, fs * kscale);
 	for (int k = 0; k < n; k++) {
 		const knob_item &it = items[size_t(k)];
 		ImGui::SetCursorScreenPos(ImVec2(kx0 + float(k % per_row) * cw, ky0 + float(k / per_row) * ch));
 		char id[8];
 		std::snprintf(id, sizeof(id), "k%d", k);
-		const ImVec2 cell0 = ImGui::GetCursorScreenPos();
 		ImGui::BeginDisabled(it.lock);
 		if (it.mp) {
 			const int pp = it.mp->where == xg::area::part ? part : 0;
 			int v = it.mp->def;
 			const bool known = m.get(*it.mp, pp, v);
 			const std::string text = known ? xg::format(*it.mp, v) : std::string("--");
-			if (fx_editor::knob(id, v, it.mp->min, it.mp->max, ksize, it.label, text.c_str(), false) && known)
+			if (fx_editor::knob(id, v, it.mp->min, it.mp->max, ksize, it.label, text.c_str(), false, it.lock) && known)
 				drag_send(br, m.set(*it.mp, pp, v));
 			if (it.lock && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
 				hint("%s  %s\nこのパートのインサーションにしていないので、ここでは見るだけ（上の INS と PART を両方入れると触れる）",
@@ -517,7 +540,7 @@ void fx_cell(int slot, bool part_only, int part, xg::model &m, bridge &br, float
 			const bool known = m.get_raw(addr, size, v);
 			v = std::clamp(v, int(it.fp->lo), int(it.fp->hi));
 			const std::string text = known ? fx_value_text(*it.fp, v) : std::string("--");
-			if (fx_editor::knob(id, v, it.fp->lo, it.fp->hi, ksize, it.fp->label, text.c_str(), false) && known)
+			if (fx_editor::knob(id, v, it.fp->lo, it.fp->hi, ksize, it.fp->label, text.c_str(), false, it.lock) && known)
 				drag_send(br, m.set_raw(addr, size, v));
 			if (it.lock && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
 				hint("%s  %s\nこのパートのインサーションにしていないので、ここでは見るだけ（上の INS と PART を両方入れると触れる）",
@@ -529,9 +552,6 @@ void fx_cell(int slot, bool part_only, int part, xg::model &m, bridge &br, float
 			}
 		}
 		ImGui::EndDisabled();
-		// 触れないつまみは暗く
-		if (it.lock)
-			dl->AddRectFilled(cell0, ImVec2(cell0.x + cw, cell0.y + ch), IM_COL32(16, 20, 28, 150), 4.0f);
 	}
 	if (!def || def->count == 0) {
 		ImGui::SetCursorScreenPos(ImVec2(kx0, ky0 + (n ? float((n + per_row - 1) / per_row) * ch : 0.0f)));
@@ -1047,6 +1067,10 @@ void part_shapes::draw(xg::model &m, const xg_snapshot &ram, bridge &br)
 				      [slot, only](int p, xg::model &mm, bridge &b, float pw, float ph) { fx_cell(slot, only, p, mm, b, pw, ph); },
 				      only ? "このパートに掛かっているエフェクト。上の段は、通したあと（緑）と通す前（灰）のこのパートの音の"
 				             "スペクトラム（同じ目盛り）。下の段で種類とパラメータを変える。「詳しく」で設定の窓"
+				      : slot == 7
+				           ? "バリエーション。見出しの行の [INS] [PART] を両方入れると、このパートに掛けて種類とパラメータを触れる。"
+				             "そうでない間は、種類の欄の右の棒でこのパートの送り（Var Send）だけを変える（つまみは見るだけ）。"
+				             "上の段は出口（緑）と入口（灰）のスペクトラム"
 				           : "このパートが送っているシステムエフェクト。上の段は、出口（緑）と入口（灰）のスペクトラムで、"
 				             "全パートの送りを混ぜた音。下の段で種類・戻り（Return）・パン・パラメータを変える。「詳しく」で設定の窓");
 			};
