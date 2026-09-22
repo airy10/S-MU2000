@@ -285,6 +285,7 @@ void part_shapes::draw(xg::model &m, const xg_snapshot &ram, bridge &br)
 
 	const float fs = ImGui::GetFontSize();
 	int part = shape_window_part();
+	int scope = -1;                   // パートの音を拾うか（形のタブのフィルタが絵のときだけ）
 
 	// ---- パートを選ぶ。音色の名前も出す
 	ImGui::SetNextItemWidth(fs * 5);
@@ -367,6 +368,8 @@ void part_shapes::draw(xg::model &m, const xg_snapshot &ram, bridge &br)
 	const float top_y = ImGui::GetCursorScreenPos().y;
 	if (ImGui::BeginTabBar("right")) {
 		if (ImGui::BeginTabItem("形")) {
+			if (!shapes_knobs(1))
+				scope = part;
 			// 3 × 2。上に VIB・モジュレーション・FILTER（揺れの 2 つを隣に）、下に EG・ピッチ EG・EQ。
 			// ポルタメントは「すべて」のタブにある
 			const ImVec2 room = ImGui::GetContentRegionAvail();
@@ -464,6 +467,7 @@ void part_shapes::draw(xg::model &m, const xg_snapshot &ram, bridge &br)
 	ImGui::EndChild();
 	}
 	end_hint_bar();
+	br.want_scope(scope);
 
 	ImGui::PopFont();
 	ImGui::End();

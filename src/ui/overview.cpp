@@ -10,6 +10,7 @@
 #include "xg/fx_types.h"
 #include "xg/ram.h"
 #include "voice_shape.h"
+#include "spectrum.h"
 
 #include <algorithm>
 #include <cmath>
@@ -1002,6 +1003,67 @@ void overview::filter_cell(int part, xg::model &m, bridge &br, float w, float h,
 
 	// 描く
 	dl->AddRectFilled(pos, ImVec2(pos.x + w, pos.y + h), col(hovered || active ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg), 3.0f);
+
+	// ---- 背景: このパートが今出している音のスペクトラム（大きな窓だけ）。
+	// 横は**実際の周波数**（30 Hz-20 kHz の対数。上のフィルタの絵の横軸は目安で Hz ではないので、
+	// 別の目盛り）。縦はいちばん大きい所から 60 dB 下まで。下がるときはゆっくり落とす
+	struct scope_state { int part = -1; std::vector<float> sm; float peak = -200.0f; };
+	static scope_state ss;
+	const float F_LO = 30.0f, F_HI = 20000.0f;
+	auto x_hz = [&](float f) { return x0 + span * std::log(std::max(f, F_LO) / F_LO) / std::log(F_HI / F_LO); };
+	bool scope_drawn = false;
+	if (!compact) {
+		static float wave[bridge::SCOPE_N];
+		const int got = br.read_scope(wave);
+		if (got == part) {
+			std::vector<float> db;
+			spectrum::magnitude_db(wave, bridge::SCOPE_N, db);
+			if (ss.part != part || ss.sm.size() != db.size()) {
+				ss.part = part;
+				ss.sm.assign(db.size(), -200.0f);
+				ss.peak = -200.0f;
+			}
+			float frame_peak = -200.0f;
+			for (size_t k = 1; k < db.size(); k++) {
+				ss.sm[k] = std::max(db[k], ss.sm[k] - 1.5f);
+				frame_peak = std::max(frame_peak, db[k]);
+			}
+			ss.peak = std::max(frame_peak, ss.peak - 0.5f);
+			if (ss.peak > -150.0f) {
+				const float floor_db = ss.peak - 60.0f;
+				std::vector<ImVec2> sp;
+				const float step = std::max(1.5f, fs * 0.12f);
+				for (float x = x0; x <= x1; x += step) {
+					// この列にかかる bin のうちいちばん大きいもの
+					const float f0 = F_LO * std::pow(F_HI / F_LO, (x - x0) / span);
+					const float f1 = F_LO * std::pow(F_HI / F_LO, (x + step - x0) / span);
+					size_t k0 = size_t(f0 * float(bridge::SCOPE_N) / 44100.0f), k1 = size_t(f1 * float(bridge::SCOPE_N) / 44100.0f);
+					k0 = std::clamp<size_t>(k0, 1, ss.sm.size() - 1);
+					k1 = std::clamp<size_t>(std::max(k1, k0), 1, ss.sm.size() - 1);
+					float v = -200.0f;
+					for (size_t k = k0; k <= k1; k++)
+						v = std::max(v, ss.sm[k]);
+					const float t = std::clamp((v - floor_db) / 60.0f, 0.0f, 1.0f);
+					sp.push_back(ImVec2(x, bottom - (bottom - top) * t));
+				}
+				dl->PushClipRect(pos, ImVec2(pos.x + w, pos.y + h), true);
+				const ImU32 fill = IM_COL32(120, 220, 170, 60), edge = IM_COL32(140, 240, 190, 150);
+				for (size_t i = 1; i < sp.size(); i++)
+					dl->AddQuadFilled(ImVec2(sp[i - 1].x, bottom), sp[i - 1], sp[i], ImVec2(sp[i].x, bottom), fill);
+				dl->AddPolyline(sp.data(), int(sp.size()), edge, 0, 1.0f);
+				// 実際の周波数の目盛り
+				for (float f : { 100.0f, 1000.0f, 10000.0f }) {
+					const float x = x_hz(f);
+					dl->AddLine(ImVec2(x, bottom - fs * 0.3f), ImVec2(x, bottom), col(ImGuiCol_TextDisabled, 0.6f));
+					const char *t = f >= 10000.0f ? "10k" : f >= 1000.0f ? "1k" : "100";
+					dl->AddText(ImGui::GetFont(), fs * 0.55f, ImVec2(x + 2.0f, bottom - fs * 0.6f), col(ImGuiCol_TextDisabled, 0.7f), t);
+				}
+				dl->PopClipRect();
+				scope_drawn = true;
+			}
+		}
+	}
+
 	if (known) {
 		// 目安の線。0 dB と、音色のままのカットオフ
 		const ImU32 guide = col(ImGuiCol_TextDisabled, 0.35f);
@@ -1066,6 +1128,19 @@ void overview::filter_cell(int part, xg::model &m, bridge &br, float w, float h,
 					else std::snprintf(t, sizeof(t), "%.0f Hz", f);
 					return std::string(t);
 				};
+				// スペクトラムを描いたときは、**実際の**切る高さにも印（スペクトラムと同じ目盛り）
+				if (scope_drawn) {
+					auto mark = [&](float f, ImU32 c) {
+						if (f <= 0.0f || f >= 19000.0f)
+							return;
+						const float x = x_hz(f);
+						for (float y = top; y < bottom; y += fs * 0.4f)
+							dl->AddLine(ImVec2(x, y), ImVec2(x, std::min(bottom, y + fs * 0.2f)), c, 1.5f);
+					};
+					mark(lpf_hz, IM_COL32(255, 170, 60, 200));
+					if (L.hpf)
+						mark(hpf_hz, IM_COL32(255, 120, 200, 200));
+				}
 				char s[96];
 				const ImVec2 a(pos.x, pos.y), b(pos.x + w, pos.y + h);
 				std::snprintf(s, sizeof(s), "Cutoff : %s (%s)\nReso : %s", xg::format(pc, vc).c_str(),
