@@ -1047,6 +1047,15 @@ const help_text HELP[] = {
 		"リリース（CC72）。鍵盤を離してから音が消えるまでの長さ",
 		"Release (CC72). How long the sound takes to fade after the key is released." } },
 	{ "part.vib_rate", { "ビブラートの速さ", "Vibrato speed." } },
+	{ "part.eq_bass_gain", { "パートの EQ の低音のゲイン（±12 の目盛り）。フィルタのすぐ後ろ、声ごとに掛かる（インサーションより前）。"
+	                         "実機でも効き方は ±2.4 dB ほどと小さい（2026-09-17 に実機と比べて確かめた）",
+	                         "Part EQ bass gain (±12 steps). Applied per voice right after the filter (before insertion effects). "
+	                         "The real unit only moves about ±2.4 dB (checked against hardware)." } },
+	{ "part.eq_treble_gain", { "パートの EQ の高音のゲイン（±12 の目盛り）。フィルタのすぐ後ろ、声ごとに掛かる（インサーションより前）。"
+	                           "実機でも効き方は ±2.4 dB ほどと小さい",
+	                           "Part EQ treble gain (±12 steps). Applied per voice right after the filter. The real unit only moves about ±2.4 dB." } },
+	{ "part.eq_bass_freq", { "パートの EQ の低音の周波数（32 Hz-2 kHz）。これより下を上げ下げする", "Part EQ bass shelf frequency (32 Hz-2 kHz)." } },
+	{ "part.eq_treble_freq", { "パートの EQ の高音の周波数（500 Hz-16 kHz）。これより上を上げ下げする", "Part EQ treble shelf frequency (500 Hz-16 kHz)." } },
 	{ "part.vib_depth", { "ビブラートの深さ（音色自身の揺れを深くする）。モジュレーションホイールなどの揺れとは足し合わさず、深いほうが効く",
 	                      "Vibrato depth (the voice's own vibrato). It does not add to the vibrato from the mod wheel etc.; the deeper one wins." } },
 	{ "part.vib_delay", { "弾いてからビブラートが掛かり始めるまでの時間", "Time before the vibrato starts." } },

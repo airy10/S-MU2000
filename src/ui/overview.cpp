@@ -1587,10 +1587,12 @@ void overview::vib_cell(int part, xg::model &m, bridge &br, float w, float h, bo
 	ImGui::PopID();
 }
 
-// フィルタ（音色の窓の大きな区画）。左に絵、右に Cutoff・Resonance・HPF のフェーダー。
+// フィルタとパートの EQ（音色の窓の、2 区画ぶんの幅の区画）。左に絵、右に Cutoff・Resonance・HPF と
+// EQ の 4 つ（低音のゲイン・周波数、高音のゲイン・周波数）のフェーダー。
 // 絵の横は**実際の周波数**（20 Hz-20 kHz の対数）で、次の 2 つを同じ目盛りで重ねる:
 //   * このパートが今出している音のスペクトラム（緑。声ごとの出力をパートに振り分けて足したもの。6.216）
-//   * フィルタの実際の周波数特性（音色の元の値と合わせたレジスタを、チップのフィルタに通して出したもの）
+//   * フィルタとパートの EQ を合わせた実際の周波数特性（太線）。フィルタだけ（細線）と EQ だけ（点線）も。
+//     どちらも声ごとに掛かり、EQ はフィルタのすぐ後ろ（インサーションより前）
 // 実際に切る周波数に縦の点線（LPF 橙・HPF 桃色）。絵は見るだけで、フェーダーをドラッグ
 // （つまんだ高さがそのまま値）か、フェーダーの上でマウスホイール（1 目で 1、Ctrl で 10）で動かす。
 // 一覧の小さなマスは filter_small（目安の形）
@@ -1603,13 +1605,18 @@ void overview::filter_cell(int part, xg::model &m, bridge &br, float w, float h,
 	ImGuiIO &io = ImGui::GetIO();
 	const float fs = ImGui::GetFontSize();
 	ImDrawList *dl = ImGui::GetWindowDrawList();
-	static const char *const KEYS[3] = { "part.cutoff", "part.resonance", "part.hpf_cutoff" };
-	static const char *const NAMES[3] = { "Cutoff", "Reso", "HPF" };
-	const xg::param *ps[3] = { &P(KEYS[0]), &P(KEYS[1]), &P(KEYS[2]) };
-	int vals[3] = { 64, 64, 64 };
-	bool have[3];
-	for (int i = 0; i < 3; i++)
+	constexpr int NF = 7;
+	static const char *const KEYS[NF] = { "part.cutoff", "part.resonance", "part.hpf_cutoff",
+		"part.eq_bass_gain", "part.eq_bass_freq", "part.eq_treble_gain", "part.eq_treble_freq" };
+	static const char *const NAMES[NF] = { "Cutoff", "Reso", "HPF", "Lo G", "Lo F", "Hi G", "Hi F" };
+	const xg::param *ps[NF];
+	int vals[NF];
+	bool have[NF];
+	for (int i = 0; i < NF; i++) {
+		ps[i] = &P(KEYS[i]);
+		vals[i] = ps[i]->def;
 		have[i] = m.get(*ps[i], part, vals[i]);
+	}
 	const bool known = have[0] && have[1];
 
 	ImGui::PushID("filterbig");
@@ -1619,14 +1626,20 @@ void overview::filter_cell(int part, xg::model &m, bridge &br, float w, float h,
 	const bool hovered = ImGui::IsItemHovered();
 	const bool active = ImGui::IsItemActive();
 
-	// 置き場所。右にフェーダー 3 本、残りが絵
+	// 置き場所。右にフェーダー 7 本（フィルタの 3 本と EQ の 4 本の間を少し空ける）、残りが絵
 	const float pad = fs * 0.25f;
 	const float gfs = fs * 0.6f;
-	const float fw = std::min(fs * 1.3f, w * 0.1f);
-	const float fgap = fs * 0.35f;
-	float fx0[3];
-	for (int i = 0; i < 3; i++)
-		fx0[i] = pos.x + w - pad - fw * float(3 - i) - fgap * float(2 - i);
+	const float fw = std::min(fs * 1.3f, w * 0.06f);
+	const float fgap = fs * 0.35f, group = fs * 0.8f;
+	float fx0[NF];
+	{
+		float x = pos.x + w - pad;
+		for (int i = NF - 1; i >= 0; i--) {
+			x -= fw;
+			fx0[i] = x;
+			x -= (i == 3) ? group : fgap;
+		}
+	}
 	const float ftop = pos.y + pad + gfs * 2.4f, fbot = pos.y + h - pad;
 	const float x0 = pos.x + pad, x1 = fx0[0] - fs * 0.5f;
 	const float top = pos.y + pad, bottom = pos.y + h - pad;
@@ -1637,7 +1650,7 @@ void overview::filter_cell(int part, xg::model &m, bridge &br, float w, float h,
 	auto y_db = [&](float db) { return top + (bottom - top) * (DB_TOP - std::clamp(db, DB_BOTTOM, DB_TOP)) / (DB_TOP - DB_BOTTOM); };
 	const float cap_h = std::max(6.0f, fs * 0.55f);
 	auto fader_at = [&](float x) {
-		for (int i = 0; i < 3; i++)
+		for (int i = 0; i < NF; i++)
 			if (x >= fx0[i] - fgap * 0.5f && x <= fx0[i] + fw + fgap * 0.5f)
 				return i;
 		return -1;
@@ -1679,15 +1692,18 @@ void overview::filter_cell(int part, xg::model &m, bridge &br, float w, float h,
 		const int i = grab >= 0 ? grab : over;
 		if (i >= 0 && have[i]) {
 			const char *help = help_for(KEYS[i]);
-			hint("%s  %s\n%s（ドラッグかマウスホイール）", official_name(KEYS[i]).c_str(), xg::format(*ps[i], vals[i]).c_str(),
+			hint("%s  %s\n%s（ドラッグかマウスホイール）", official_name(KEYS[i]).c_str(), value_text(KEYS[i], vals[i]).c_str(),
 			     help ? help : "");
 		}
 	}
 
 	dl->AddRectFilled(pos, ImVec2(pos.x + w, pos.y + h), col(hovered || active ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg), 3.0f);
 	dl->PushClipRect(pos, ImVec2(pos.x + w, pos.y + h), true);
-	for (int i = 0; i < 3; i++) {
-		const std::string t = have[i] ? xg::format(*ps[i], vals[i]) : std::string("--");
+	for (int i = 0; i < NF; i++) {
+		// EQ の周波数は Hz で（値の棒と同じ書き方。狭いので " Hz" は外す）
+		std::string t = have[i] ? value_text(KEYS[i], vals[i]) : std::string("--");
+		if (t.size() > 3 && t.compare(t.size() - 3, 3, " Hz") == 0)
+			t.resize(t.size() - 3);
 		fader_picture(dl, fx0[i], fx0[i] + fw, ftop, fbot, vals[i], ps[i]->min, ps[i]->max, NAMES[i], t.c_str(),
 		              grab == i || over == i);
 	}
@@ -1751,19 +1767,36 @@ void overview::filter_cell(int part, xg::model &m, bridge &br, float w, float h,
 		v.blk[0x19] = u8(vals[1]);
 		if (have[2])
 			v.blk[xg::ram::PART_HPF_RAM] = u8(vals[2]);
+		if (have[3]) v.blk[xg::ram::PART_EQ_LGAIN] = u8(vals[3]);
+		if (have[4]) v.blk[xg::ram::PART_EQ_LFREQ] = u8(vals[4]);
+		if (have[5]) v.blk[xg::ram::PART_EQ_HGAIN] = u8(vals[5]);
+		if (have[6]) v.blk[xg::ram::PART_EQ_HFREQ] = u8(vals[6]);
 		const std::vector<shape::filter_line> ls = shape::filter_lines(v.rom, v.rec, v.blk, 160);
 		if (!ls.empty()) {
 			const shape::filter_line &L = lead_line(ls);
-			std::vector<ImVec2> pts;
+			std::vector<float> hz;
 			for (const shape::pt &p : L.pts)
-				pts.push_back(ImVec2(x_hz(p.ms), y_db(p.cents)));
+				hz.push_back(p.ms);
+			const std::vector<shape::pt> eq = shape::eq_response(v.rom, v.blk, hz);
+			std::vector<ImVec2> fpts, epts, tpts;
+			for (size_t i = 0; i < L.pts.size(); i++) {
+				const float x = x_hz(L.pts[i].ms);
+				const float edb = i < eq.size() ? eq[i].cents : 0.0f;
+				fpts.push_back(ImVec2(x, y_db(L.pts[i].cents)));
+				epts.push_back(ImVec2(x, y_db(edb)));
+				tpts.push_back(ImVec2(x, y_db(L.pts[i].cents + edb)));
+			}
+			// 合わせた特性を塗って太線、フィルタだけを細線、EQ だけを点線
 			dl->PathClear();
-			dl->PathLineTo(ImVec2(pts.front().x, bottom));
-			for (const ImVec2 &p : pts)
+			dl->PathLineTo(ImVec2(tpts.front().x, bottom));
+			for (const ImVec2 &p : tpts)
 				dl->PathLineTo(p);
-			dl->PathLineTo(ImVec2(pts.back().x, bottom));
+			dl->PathLineTo(ImVec2(tpts.back().x, bottom));
 			dl->PathFillConcave(col(ImGuiCol_SliderGrab, 0.18f));
-			dl->AddPolyline(pts.data(), int(pts.size()), col(ImGuiCol_SliderGrabActive), 0, std::max(1.5f, fs * 0.1f));
+			dl->AddPolyline(fpts.data(), int(fpts.size()), IM_COL32(150, 190, 255, 150), 0, 1.0f);
+			for (size_t i = 1; i < epts.size(); i += 2)
+				dl->AddLine(epts[i - 1], epts[i], IM_COL32(255, 210, 110, 200), 1.2f);
+			dl->AddPolyline(tpts.data(), int(tpts.size()), col(ImGuiCol_SliderGrabActive), 0, std::max(2.0f, fs * 0.14f));
 			// 切る周波数: いちばん大きい所から 3 dB 下がる所（山があれば山の頂）。filter_small と同じ決め方
 			float peak = -1e9f, peak_hz = 20.0f;
 			for (const shape::pt &p : L.pts)
@@ -1811,6 +1844,20 @@ void overview::filter_cell(int part, xg::model &m, bridge &br, float w, float h,
 				              xg::format(*ps[2], vals[2]).c_str(), hz_text(hpf_hz).c_str());
 				shape_value(s);
 			}
+			// 凡例（右下に小さく）
+			{
+				const float lfs = fs * 0.6f;
+				const char *const items[3] = { "合わせた特性", "フィルタ", "EQ" };
+				const ImU32 cols[3] = { col(ImGuiCol_SliderGrabActive), IM_COL32(150, 190, 255, 200), IM_COL32(255, 210, 110, 220) };
+				float ly = bottom - lfs * 4.2f;
+				for (int k = 0; k < 3; k++) {
+					const ImVec2 ts = ImGui::GetFont()->CalcTextSizeA(lfs, FLT_MAX, 0.0f, items[k]);
+					const float lx = x1 - ts.x - fs * 0.3f;
+					dl->AddLine(ImVec2(lx - fs * 0.9f, ly + ts.y * 0.5f), ImVec2(lx - fs * 0.2f, ly + ts.y * 0.5f), cols[k], k == 0 ? 2.0f : 1.2f);
+					dl->AddText(ImGui::GetFont(), lfs, ImVec2(lx, ly), col(ImGuiCol_TextDisabled, 0.9f), items[k]);
+					ly += ts.y + 1.0f;
+				}
+			}
 		}
 	} else if (!known) {
 		const ImVec2 ts = ImGui::CalcTextSize("--");
@@ -1819,6 +1866,7 @@ void overview::filter_cell(int part, xg::model &m, bridge &br, float w, float h,
 	dl->PopClipRect();
 	ImGui::PopID();
 }
+
 
 
 

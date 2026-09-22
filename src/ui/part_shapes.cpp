@@ -370,7 +370,7 @@ void part_shapes::draw(xg::model &m, const xg_snapshot &ram, bridge &br)
 		if (ImGui::BeginTabItem("形")) {
 			if (!shapes_knobs(1))
 				scope = part;
-			// 3 × 2。上に VIB・モジュレーション・FILTER（揺れの 2 つを隣に）、下に EG・ピッチ EG・EQ。
+			// 3 × 2。上に VIB・モジュレーション・EG、下にフィルタ＋EQ（2 区画ぶんの幅）・ピッチ EG。
 			// ポルタメントは「すべて」のタブにある
 			const ImVec2 room = ImGui::GetContentRegionAvail();
 			const float room_h = body_h - (ImGui::GetCursorScreenPos().y - top_y);
@@ -387,23 +387,21 @@ void part_shapes::draw(xg::model &m, const xg_snapshot &ram, bridge &br)
 			      "モジュレーションホイールを上げたときに足すビブラート。横がホイールの位置、縦が揺れの深さ。"
 			      "左のホイールが CC1、右のホイールが MW LFO PM。音色自身の揺れ（背景の帯）とは足さず、深いほうが効く");
 			ImGui::SameLine();
-			panel("filter", "フィルタ（FILTER）", w, h, part, m, br, { "part.cutoff", "part.resonance", "part.hpf_cutoff" }, 1,
-			      [](int p, xg::model &mm, bridge &b, float pw, float ph) { overview::filter_cell(p, mm, b, pw, ph, false); },
-			      "音の明るさ。横は実際の周波数で、緑がこのパートの今の音のスペクトラム、線がフィルタの実際の特性。"
-			      "右のフェーダーで Cutoff・Resonance・HPF（低い音を削る）を変える");
 			panel("eg", "音量の形（EG）", w, h, part, m, br, { "part.attack", "part.decay", "part.release" }, 2,
 			      [](int p, xg::model &mm, bridge &b, float pw, float ph) { overview::eg_cell(p, mm, b, pw, ph, false); },
 			      "音量の形（立ち上がり → 落ち着き → 伸ばし → 離して消える）。点をつまんでアタック・ディケイ・リリース");
+			panel("filter", "フィルタと EQ（FILTER・EQ）", w * 2.0f + st.ItemSpacing.x, h, part, m, br,
+			      { "part.cutoff", "part.resonance", "part.hpf_cutoff",
+			        "part.eq_bass_gain", "part.eq_bass_freq", "part.eq_treble_gain", "part.eq_treble_freq" }, 1,
+			      [](int p, xg::model &mm, bridge &b, float pw, float ph) { overview::filter_cell(p, mm, b, pw, ph, false); },
+			      "音の明るさ。横は実際の周波数で、緑がこのパートの今の音のスペクトラム。太線がフィルタとパートの EQ を"
+			      "合わせた実際の特性（細線がフィルタだけ、点線が EQ だけ）。どちらも声ごとに掛かり、EQ はフィルタのすぐ後ろ"
+			      "（インサーションより前）。右のフェーダーで Cutoff・Resonance・HPF と、EQ の低音・高音のゲインと周波数を変える");
 			ImGui::SameLine();
 			panel("peg", "音程の形（ピッチ EG）", w, h, part, m, br,
 			      { "part.peg_init_level", "part.peg_attack_time", "part.peg_rel_level", "part.peg_rel_time" }, 3,
 			      [](int p, xg::model &mm, bridge &b, float pw, float ph) { overview::peg_cell(p, mm, b, pw, ph, false); },
 			      "音程の動き（出だしの音程 → 本来の音程、離したあとの音程）。点をつまんで高さと時間");
-			ImGui::SameLine();
-			panel("eq", "パートの EQ", w, h, part, m, br,
-			      { "part.eq_bass_gain", "part.eq_bass_freq", "part.eq_treble_gain", "part.eq_treble_freq" }, 4,
-			      [](int p, xg::model &mm, bridge &b, float pw, float ph) { overview::eq_cell(p, mm, b, pw, ph, false); },
-			      "パートの EQ。低音と高音の点をつまんで、横で周波数、縦でゲイン");
 			ImGui::EndTabItem();
 		}
 		if (ImGui::BeginTabItem("マトリクス")) {
