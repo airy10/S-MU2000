@@ -297,28 +297,10 @@ struct vib_line {
 	bool active = true;
 };
 
-// 遅れて掛かる音色の、せり上がりの途中の深さ（レジスタ 0x0a の下位 8bit）。c1 は音色のぶんのカウンタ、
-// c2 は Vib Depth のぶんのカウンタ（vib_lines の説明を見よ）。dpt は Vib Depth（08 pp 16）
+// 遅れて掛かる音色の、せり上がりの途中の深さ（native と同じ式。xg/native_voice.h の vib_ramp_value）
 inline int vib_ramp_value(const u8 *rom, int dpt, int c1, int c2)
 {
-	namespace nv = xg::nv;
-	auto units = [](int d) { return (d & 0x80) ? (d & 0x7f) * 8 : (d & 0x7f); };
-	auto table = [&](int c) {
-		return int(rom[nv::VIB_REG_TAB + u32(rom[nv::VIB_CNT_TAB + u32(std::clamp(c, 0, 127))])]);
-	};
-	int own = table(c1);
-	if (dpt < 64) {
-		const int u = units(own) - (64 - dpt) * 14;
-		own = u <= 0 ? 0 : (u < 128 ? u : (0x80 | std::min(127, u / 8)));
-	}
-	const int ptop = nv::VIB_DEPTH_TAB[std::clamp(dpt, 0, 127)];
-	int pv = 0;
-	if (ptop) {
-		pv = table(c2);
-		if (units(pv) >= units(ptop))
-			pv = ptop;
-	}
-	return units(pv) > units(own) ? pv : own;
+	return xg::nv::vib_ramp_value(rom, dpt, c1, c2);
 }
 
 // せり上がりきった深さ
