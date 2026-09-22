@@ -363,36 +363,71 @@ void fx_cell(int slot, bool part_only, int part, xg::model &m, bridge &br, float
 		fx_icon(dl, ImVec2(pos.x + pad, y), line, msb, IM_COL32(250, 250, 240, 230));
 	const std::string name = type >= 0 ? xg::fx_name(type) : std::string("--");
 	dl->AddText(ImVec2(pos.x + pad + line * 1.3f, y), ImGui::GetColorU32(ImGuiCol_Text), name.c_str());
+	if (is_var) {
+		// 右から [PART] [INS] と、掛かっているパートの字。INS はインサーション接続（切ればシステム接続）、
+		// PART はこのパートに掛ける（切れば OFF）。PART はインサーション接続のときだけ意味があるので、そのときだけ触れる
+		ImGui::PushFont(nullptr, fs * 0.7f);
+		const float sfs = ImGui::GetFontSize();
+		float rx = pos.x + w - pad;
+		auto toggle = [&](const char *id, const char *text, bool on, bool enabled) {
+			const ImVec2 ts = ImGui::CalcTextSize(text);
+			const ImVec2 sz(ts.x + sfs * 0.8f, line * 0.9f);
+			rx -= sz.x;
+			const ImVec2 a(rx, y + (line - sz.y) * 0.5f), b(a.x + sz.x, a.y + sz.y);
+			rx -= sfs * 0.3f;
+			ImGui::SetCursorScreenPos(a);
+			ImGui::BeginDisabled(!enabled);
+			const bool clicked = ImGui::InvisibleButton(id, sz);
+			const bool hov = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled);
+			ImGui::EndDisabled();
+			const ImU32 fill = on ? (enabled ? IM_COL32(60, 150, 230, 255) : IM_COL32(50, 80, 110, 255))
+			                      : (hov && enabled ? IM_COL32(70, 76, 90, 255) : IM_COL32(40, 44, 54, 255));
+			dl->AddRectFilled(a, b, fill, 3.0f);
+			dl->AddRect(a, b, on ? IM_COL32(150, 200, 255, enabled ? 255 : 120) : IM_COL32(120, 125, 140, enabled ? 200 : 90), 3.0f);
+			dl->AddText(ImVec2(a.x + (sz.x - ts.x) * 0.5f, a.y + (sz.y - ts.y) * 0.5f),
+			            on ? IM_COL32(255, 255, 255, enabled ? 255 : 150) : IM_COL32(200, 200, 210, enabled ? 220 : 110), text);
+			return std::make_pair(clicked && enabled, hov);
+		};
+		const auto part_sw = toggle("##vpart", "PART", !var_sys && var_part == part, !var_sys);
+		if (part_sw.first)
+			br.send(m.set(P("variation.part"), 0, var_part == part ? 127 : part));
+		if (part_sw.second)
+			hint("%s\nオンでバリエーションをこのパートに掛ける（切るとどのパートにも掛けない）。インサーション接続（INS）のときだけ"
+			     "意味があり、触れる。INS と PART の両方が入っていれば、この区画で種類とパラメータを触れる",
+			     official_name("variation.part").c_str());
+		const auto ins_sw = toggle("##vins", "INS", !var_sys, true);
+		if (ins_sw.first)
+			br.send(m.set(P("variation.connect"), 0, var_sys ? 0 : 1));
+		if (ins_sw.second)
+			hint("%s\nオンでインサーション接続（掛けたパートの音を丸ごと通してから、乾いた音とリバーブ・コーラスへの送りに"
+			     "分かれる）、オフでシステム接続（全パートの Var Send を集めて掛け、戻りで混ぜる）。バリエーションは 1 つしか"
+			     "無いので、ほかのパートとは取り合いになる。INS と PART の両方が入っていない間は、この区画ではこのパートの "
+			     "Send だけを触れる", official_name("variation.connect").c_str());
+		// 掛かっているパート
+		std::string cap;
+		if (var_sys)
+			cap = "SYSTEM（全パートの Send）";
+		else if (var_part < XG_PARTS + 2)
+			cap = "→ " + part_name(var_part);
+		else
+			cap = "→ OFF";
+		const ImVec2 cs = ImGui::CalcTextSize(cap.c_str());
+		const ImU32 cc = var_mine ? IM_COL32(150, 230, 190, 255) : IM_COL32(200, 200, 210, 200);
+		dl->AddText(ImVec2(rx - cs.x, y + (line - cs.y) * 0.5f), cc, cap.c_str());
+		ImGui::PopFont();
+	}
 	y += line * 1.25f;
 	const int fx = scope_fx_of(slot);
 	std::string label = part_only ? "緑: 通したあと  灰: 通す前（このパートだけ）" : "緑: 出口  灰: 入口（全パートの送りを混ぜた音）";
 	if (is_var && !var_sys && !var_mine)
-		label = "ほかのパート（" + (var_part < XG_PARTS + 2 ? part_name(var_part) : std::string("OFF")) +
-		        "）のインサーション。このパートの Var Send は効かない";
+		label = var_part < XG_PARTS + 2 ? "ほかのパート（" + part_name(var_part) + "）のインサーション。このパートの Var Send は効かない"
+		                                : std::string("インサーション接続で、どのパートにも掛かっていない。このパートの Var Send は効かない");
 	overview::spectrum_view(br, part, bridge::scope_src(fx, true), bridge::scope_src(fx, false), 10 + slot,
 	                        ImVec2(pos.x + pad, y), ImVec2(pos.x + w - pad, split - pad), label.c_str());
 	dl->AddLine(ImVec2(pos.x, split), ImVec2(pos.x + w, split), ImGui::GetColorU32(ImGuiCol_Border), 1.0f);
 
-	// ---- 下の段: （バリエーションは接続のチェック）種類と、設定の窓
+	// ---- 下の段: 種類と、設定の窓
 	ImGui::SetCursorScreenPos(ImVec2(pos.x + pad, split + pad));
-	if (is_var) {
-		ImGui::PushFont(nullptr, fs * 0.8f);
-		bool mine = var_mine;
-		if (ImGui::Checkbox("このパートのインサーションにする", &mine)) {
-			if (mine) {
-				br.send(m.set(P("variation.connect"), 0, 0));
-				br.send(m.set(P("variation.part"), 0, part));
-			} else {
-				br.send(m.set(P("variation.connect"), 0, 1));
-			}
-		}
-		if (ImGui::IsItemHovered())
-			hint("%s\nオンでバリエーションをインサーション接続にし、このパートに掛ける（パートの音を丸ごと通してから、乾いた音と"
-			     "リバーブ・コーラスへの送りに分かれる。種類とパラメータもここで触れる）。オフでシステム接続（全パートの Var Send を"
-			     "集めて掛け、戻りで混ぜる）で、ここではこのパートの送り（Send）だけを触れる。"
-			     "バリエーションは 1 つしか無いので、ほかのパートとは取り合いになる", official_name("variation.connect").c_str());
-		ImGui::PopFont();
-	}
 	ImGui::BeginDisabled(locked);
 	const std::vector<xg::fx_type> &types = slot == 5 ? xg::rev_types() : slot == 6 ? xg::cho_types() : xg::ins_types();
 	ImGui::SetNextItemWidth(std::min(fs * 11.0f, w * 0.62f));
@@ -465,7 +500,7 @@ void fx_cell(int slot, bool part_only, int part, xg::model &m, bridge &br, float
 			if (fx_editor::knob(id, v, it.mp->min, it.mp->max, ksize, it.label, text.c_str(), false) && known)
 				drag_send(br, m.set(*it.mp, pp, v));
 			if (it.lock && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-				hint("%s  %s\nこのパートのインサーションにしていないので、ここでは見るだけ（上のチェックで触れる）",
+				hint("%s  %s\nこのパートのインサーションにしていないので、ここでは見るだけ（上の INS と PART を両方入れると触れる）",
 				     official_name(it.mp->key).c_str(), text.c_str());
 			else if (ImGui::IsItemHovered() || ImGui::IsItemActive()) {
 				const char *help = help_for(it.mp->key);
@@ -483,7 +518,7 @@ void fx_cell(int slot, bool part_only, int part, xg::model &m, bridge &br, float
 			if (fx_editor::knob(id, v, it.fp->lo, it.fp->hi, ksize, it.fp->label, text.c_str(), false) && known)
 				drag_send(br, m.set_raw(addr, size, v));
 			if (it.lock && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-				hint("%s  %s\nこのパートのインサーションにしていないので、ここでは見るだけ（上のチェックで触れる）",
+				hint("%s  %s\nこのパートのインサーションにしていないので、ここでは見るだけ（上の INS と PART を両方入れると触れる）",
 				     it.fp->label, text.c_str());
 			else if (ImGui::IsItemHovered() || ImGui::IsItemActive()) {
 				const char *help = fx_param_help(it.fp->label);
