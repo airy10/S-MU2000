@@ -1420,6 +1420,22 @@ void overview::mod_cell(int part, xg::model &m, bridge &br, float w, float h, bo
 	const bool hovered = ImGui::IsItemHovered();
 	const bool active = !compact && ImGui::IsItemActive();
 
+	// **マウスホイールでモジュレーションホイール（CC1）を回す**。受信チャンネルへ送る
+	// （帯のホイールと同じ。Ctrl で大きく）
+	int rcv = 127;
+	m.get(P("part.rcv_channel"), part, rcv);
+	const int slot = rcv >= 0 && rcv < PARTS ? rcv : -1;
+	const xg_snapshot *snap = current_ram();
+	const int wheel_now = snap ? mod_now(part, snap->parts[part][xg::ram::PART_MOD] & 0x7f) : 0;
+	if (hovered && !compact && slot >= 0) {
+		ImGui::SetItemKeyOwner(ImGuiKey_MouseWheelY);
+		if (io.MouseWheel != 0.0f) {
+			const int nv = std::clamp(wheel_now + (io.MouseWheel > 0 ? 1 : -1) * (io.KeyCtrl ? 10 : 2), 0, 127);
+			if (nv != wheel_now)
+				mod_send(part, slot, nv, br);
+		}
+	}
+
 	const float pad = fs * 0.25f;
 	const float x0 = pos.x + pad, x1 = pos.x + w - pad;
 	const float top = pos.y + pad + fs * 0.3f, bottom = pos.y + h - pad;
@@ -1487,7 +1503,7 @@ void overview::mod_cell(int part, xg::model &m, bridge &br, float w, float h, bo
 			}
 		}
 		// 今のホイールの位置
-		const int now = int(v.blk[xg::ram::PART_MOD]);
+		const int now = mod_now(part, int(v.blk[xg::ram::PART_MOD]) & 0x7f);
 		dl->AddLine(ImVec2(x_of(now), top), ImVec2(x_of(now), bottom), col(ImGuiCol_Text, 0.25f));
 		const float th = std::max(1.5f, fs * 0.1f);
 		// 音色自身（水平）とホイールのぶん（階段）は細く、効く深さは太く
@@ -1503,6 +1519,14 @@ void overview::mod_cell(int part, xg::model &m, bridge &br, float w, float h, bo
 		touch_point(dl, ImVec2(x1, wy), r, grab == 0);
 		touch_point(dl, ImVec2(x0, oy), r, grab == 1);
 		if (!compact) {
+			// 回し方のひとこと（右下）
+			{
+				const float gfs = fs * 0.65f;
+				const char *how = "マウスホイールで回す（Ctrl で大きく）";
+				const ImVec2 hs = ImGui::GetFont()->CalcTextSizeA(gfs, FLT_MAX, 0.0f, how);
+				if (hs.x + fs < w)
+					dl->AddText(ImGui::GetFont(), gfs, ImVec2(x1 - hs.x, bottom - hs.y - 2.0f), col(ImGuiCol_TextDisabled, 0.8f), how);
+			}
 			char s[96];
 			const ImVec2 a(pos.x, pos.y), b(pos.x + w, pos.y + h);
 			label_avoid boxes;
@@ -1712,6 +1736,23 @@ void overview::keys_cell(int part, int slot, const xg_snapshot &ram, bridge &br,
 	}
 }
 
+int overview::mod_now(int part, int ram_value)
+{
+	const bool fresh = m_mod_sent_part == part && m_mod_sent >= 0 && ImGui::GetTime() - m_mod_sent_at < 0.3;
+	return fresh ? m_mod_sent : ram_value;
+}
+
+void overview::mod_send(int part, int slot, int value, bridge &br)
+{
+	if (slot < 0)
+		return;
+	const u8 cc[3] = { u8(0xb0 | (slot & 15)), 1, u8(value) };
+	br.send_port(slot / 16, cc, 3);
+	m_mod_sent = value;
+	m_mod_sent_part = part;
+	m_mod_sent_at = ImGui::GetTime();
+}
+
 void overview::mod_wheel(int part, int slot, const xg_snapshot &ram, bridge &br, float w, float h)
 {
 	ImDrawList *dl = ImGui::GetWindowDrawList();
@@ -1722,9 +1763,7 @@ void overview::mod_wheel(int part, int slot, const xg_snapshot &ram, bridge &br,
 	const bool hovered = ImGui::IsItemHovered();
 	const bool active = ImGui::IsItemActive();
 	// 今の値。送ったばかりなら送った値（RAM の写しは 25ms ごとなので、その間は古い）
-	const int ram_value = ram.parts[part][xg::ram::PART_MOD] & 0x7f;
-	const double now = ImGui::GetTime();
-	int v = (now - m_mod_sent_at < 0.3 && m_mod_sent >= 0) ? m_mod_sent : ram_value;
+	int v = mod_now(part, ram.parts[part][xg::ram::PART_MOD] & 0x7f);
 	int nv = v;
 	if (hovered && slot >= 0) {
 		ImGui::SetItemKeyOwner(ImGuiKey_MouseWheelY);
@@ -1738,10 +1777,7 @@ void overview::mod_wheel(int part, int slot, const xg_snapshot &ram, bridge &br,
 		nv = std::clamp(int(std::lround(frac * 127.0f)), 0, 127);
 	}
 	if (nv != v && slot >= 0) {
-		const u8 cc[3] = { u8(0xb0 | (slot & 15)), 1, u8(nv) };
-		br.send_port(slot / 16, cc, 3);
-		m_mod_sent = nv;
-		m_mod_sent_at = now;
+		mod_send(part, slot, nv, br);
 		v = nv;
 	}
 	// 描く。縦の溝と、下から伸びる棒
