@@ -2011,7 +2011,7 @@ void overview::env_cell(int part, xg::model &m, bridge &br, float w, float h)
 	const float split = pos.y + h * MAISON_SPLIT;
 	dl->AddRectFilled(pos, ImVec2(pos.x + w, pos.y + h), col(hovered || active ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg), 3.0f);
 	dl->PushClipRect(pos, ImVec2(pos.x + w, pos.y + h), true);
-	fader_row(KEYS, NAMES, NF, 2, part, m, br, ImVec2(pos.x + pad, split + pad), ImVec2(pos.x + w - pad, pos.y + h - pad),
+	const int focus = fader_row(KEYS, NAMES, NF, 2, part, m, br, ImVec2(pos.x + pad, split + pad), ImVec2(pos.x + w - pad, pos.y + h - pad),
 	          hovered, active, id, vals, have, IM_COL32(150, 190, 255, 255), IM_COL32(255, 170, 130, 255));
 	dl->AddLine(ImVec2(pos.x, split), ImVec2(pos.x + w, split), col(ImGuiCol_Border), 1.0f);
 	// 絵。上に実際の時間の字を 2 行置くぶん空ける
@@ -2081,6 +2081,42 @@ void overview::env_cell(int part, xg::model &m, bridge &br, float w, float h)
 					if (p.cents <= -60.0f)
 						break;
 				}
+
+			// ---- フェーダーに対応する点（触れない）。そのフェーダーにカーソルが載っているか、つまんでいる間は大きく
+			{
+				const float r0 = std::max(3.0f, fs * 0.26f);
+				auto dot = [&](ImVec2 c, ImU32 fill, const char *mark, bool lit) {
+					const float rr = lit ? r0 * 1.5f : r0;
+					dl->AddCircleFilled(c, rr, fill);
+					dl->AddCircle(c, rr, IM_COL32(20, 20, 30, 255), 0, 1.5f);
+					const float tfs = fs * 0.6f;
+					const ImVec2 ts = ImGui::GetFont()->CalcTextSizeA(tfs, FLT_MAX, 0.0f, mark);
+					const float tx = std::clamp(c.x + rr + 1.0f, x0, x1 - ts.x);
+					const float ty = std::clamp(c.y - rr - ts.y, top, bottom - ts.y);
+					dl->AddText(ImGui::GetFont(), tfs, ImVec2(tx, ty), fill, mark);
+				};
+				// 音量: Attack は立ち上がりきった所、Decay は伸ばしの高さに落ち着いた所（2 秒で打ち切り）、
+				// Release は離してから -60 dB まで下がった所
+				auto amp_at = [&](float ms) {
+					float db = A.pts.front().cents;
+					for (const shape::pt &p : A.pts)
+						if (p.ms <= ms)
+							db = p.cents;
+					return db;
+				};
+				const ImU32 blue = IM_COL32(150, 190, 255, 255), orange = IM_COL32(255, 170, 130, 255);
+				dot(ImVec2(time_x(A.attack_ms, t.t_end, x0, x1), y_db(0.0f)), blue, "A", focus == 0);
+				const float dec_t = std::min(t.settle, t.t_off);
+				dot(ImVec2(time_x(dec_t, t.t_end, x0, x1), y_db(amp_at(dec_t))), blue, "D", focus == 1);
+				dot(ImVec2(time_x(t.t_off + rel, t.t_end, x0, x1), y_db(amp_at(t.t_off + rel))), blue, "R", focus == 2);
+				// 音程: Init は出だし、Atk は最初の段（アタック）を終えた所、RelLv・RelTm は離したあとの行き着く先
+				if (!L.pts.empty()) {
+					dot(ImVec2(time_x(0.0f, t.t_end, x0, x1), y_c(L.pts.front().cents)), orange, "I", focus == 3);
+					if (L.pts.size() > 1 && L.pts[1].ms < L.keyoff_ms - 0.5f)
+						dot(ImVec2(time_x(L.pts[1].ms, t.t_end, x0, x1), y_c(L.pts[1].cents)), orange, "A", focus == 4);
+					dot(ImVec2(time_x(L.pts.back().ms, t.t_end, x0, x1), y_c(L.pts.back().cents)), orange, "R", focus == 5 || focus == 6);
+				}
+			}
 			const float dec = std::max(0.0f, t.settle - A.attack_ms);
 			char s[128];
 			if (t.settle >= 1990.0f)
