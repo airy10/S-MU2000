@@ -479,7 +479,7 @@ std::string open_midi_file_panel()
 	[panel setCanChooseFiles:YES];
 	[panel setCanChooseDirectories:NO];
 	[panel setAllowsMultipleSelection:NO];
-	[panel setMessage:@"流す MIDI ファイル"];
+	[panel setMessage:[NSString stringWithUTF8String:UI_TEXT(dlg_midi_open, "MIDI file to play")]];
 	if (@available(macOS 11.0, *)) {
 		UTType *mid  = [UTType typeWithFilenameExtension:@"mid"];
 		UTType *midi = [UTType typeWithFilenameExtension:@"midi"];
@@ -559,7 +559,7 @@ bool confirm_modal(const char *title, const char *message, const char *ok_label)
 		[alert setInformativeText:[NSString stringWithUTF8String:message]];
 		// The accepting button is added second so it is not the default one:
 		// Return picks Cancel, and the machine only reboots on a deliberate click
-		[alert addButtonWithTitle:@"キャンセル"];
+		[alert addButtonWithTitle:[NSString stringWithUTF8String:UI_TEXT(dlg_cancel, "Cancel")]];
 		[alert addButtonWithTitle:[NSString stringWithUTF8String:ok_label]];
 		return [alert runModal] == NSAlertSecondButtonReturn;
 	}

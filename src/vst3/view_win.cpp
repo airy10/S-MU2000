@@ -176,20 +176,24 @@ std::string ask_card_path(HWND h, bool create)
 	wchar_t file[MAX_PATH] = {};
 	if (create)
 		wcscpy(file, L"smartmedia.img");
+	const std::wstring title = ui::to_wide(create
+	    ? UI_TEXT(dlg_card_save, "Where to save the new SmartMedia image")
+	    : UI_TEXT(dlg_card_open, "Insert a SmartMedia image"));
+	const std::wstring filter = ui::dlg_filter(UI_TEXT(dlg_smartmedia_desc, "SmartMedia image"), "*.img",
+	                                           UI_TEXT(dlg_all_files, "All files"), "*.*");
 	OPENFILENAMEW o{};
 	o.lStructSize = sizeof(o);
 	o.hwndOwner = h;
-	o.lpstrFilter = L"SmartMedia の中身 (*.img)\0*.img\0すべて (*.*)\0*.*\0";
+	o.lpstrFilter = filter.c_str();
 	o.lpstrFile = file;
 	o.nMaxFile = MAX_PATH;
 	o.lpstrDefExt = L"img";
+	o.lpstrTitle = title.c_str();
 	if (create) {
-		o.lpstrTitle = L"新しい SmartMedia の保存先";
 		o.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
 		if (!GetSaveFileNameW(&o))
 			return {};
 	} else {
-		o.lpstrTitle = L"差す SmartMedia";
 		o.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
 		if (!GetOpenFileNameW(&o))
 			return {};
@@ -251,7 +255,7 @@ void win_window::open_pc(ui::pc_window &w)
 {
 	std::string err;
 	if (!w.show(this_module(), err))
-		alert(err.empty() ? std::string("窓を出せない") : err);
+		alert(err.empty() ? UI_TEXT(dlg_window_fail, "Cannot open the window") : err);
 }
 
 // パネルを描き直すのと同じ周期で呼ばれる。見えていない窓は何もしない

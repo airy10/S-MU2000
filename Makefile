@@ -14,7 +14,7 @@
 #                 (mingw-w64 が要る: brew install mingw-w64)
 
 # 音を作るのは重いので最適化を上げる。-O2 より 6% 速い
-CXXFLAGS ?= -std=c++20 -O3 -Wall -Wno-unused-variable -Wno-unused-but-set-variable
+CXXFLAGS ?= -std=c++20 -O3 -Wall -Wformat-security -Wno-unused-variable -Wno-unused-but-set-variable
 
 # ---- Platform ----------------------------------------------------------------
 #

@@ -24,25 +24,28 @@
 #include "ui/midi_in.h"
 #include "ui/midi_out.h"
 #include "ui/options.h"
+#include "ui/texts.h"
 
 namespace ui {
 
-// The command line, identical on both front ends (flag order included)
+// The command line, identical on both front ends (flag order included).
+// The text lives in the texts table (help_usage), so --lang reaches it.
 inline void print_usage()
 {
-	std::fprintf(stderr,
-		"使い方: gui <rom ディレクトリ> [--midi 番号] [--midi-b 番号] [--midi-c 番号] [--midi-d 番号]"
-		" [--midiout 番号] [--midiout-b 番号] [--midiout-mu 番号]"
-		" [--latency ミリ秒] [--exclusive] [--layout panel.txt] [--play 曲.mid] [--lcd] [--fast-midi] [--host-midi]\n"
-		"        [--factory]   覚えている設定を捨てて工場出荷状態で起動する\n"
-		"        [--editor]    PC エディタも開く（窓では F2 か右クリック）\n"
-		"        [--list-window] 一覧の窓も開く（窓では F3 か右クリック）\n"
-		"        [--fx-window] インサーションの設定の窓も開く（一覧でインサーションの欄をダブルクリック）\n"
-		"        [--shapes-window] パートの音色の窓も開く（一覧で VIB などの絵をダブルクリック）\n"
-		"        [--master-window] マスターの窓も開く（一覧でマスターの行をダブルクリック）\n"
-		"        gui --dump-layout panel.txt   いまの配置を書き出す\n"
-		"        gui --list\n"
-		"        gui [<rom ディレクトリ> --boot] --shot 絵.png [--size 1000x400]\n");
+	std::fprintf(stderr, "%s", UI_TEXT(help_usage, "Usage: gui <rom directory> [--midi N] [--midi-b N] [--midi-c N] [--midi-d N]"
+                                    " [--midiout N] [--midiout-b N] [--midiout-mu N]"
+                                    " [--latency ms] [--exclusive] [--layout panel.txt] [--play song.mid] [--lcd] [--fast-midi] [--host-midi]\n"
+                                    "        [--factory]   forget remembered settings and boot factory-fresh\n"
+                                    "        [--editor]    also open the PC editor (F2 or right-click in the window)\n"
+                                    "        [--list-window] also open the list window (F3 or right-click)\n"
+                                    "        [--fx-window] also open the insertion setup window (double-click an insertion cell in the list)\n"
+                                    "        [--shapes-window] also open the part voice window (double-click a VIB picture etc. in the list)\n"
+                                    "        [--master-window] also open the master window (double-click the master row)\n"
+                                    "        [--lang ja|en] language (else lang= in editor.ini, else the locale: Japanese iff it says ja)\n"
+                                    "        [--help]      show this help\n"
+                                    "        gui --dump-layout panel.txt   write out the current layout\n"
+                                    "        gui --list\n"
+                                    "        gui [<rom directory> --boot] --shot image.png [--size 1000x400]\n"));
 }
 
 struct tool_args {
@@ -58,6 +61,7 @@ struct tool_args {
 	bool grid = false;
 	bool boot_for_shot = false;
 	bool nomidi = false;                   // open and remember no MIDI port
+	std::string lang;                      // --lang ja|en (empty: editor.ini, then locale)
 };
 
 // Parses argv into args (plus the shared engine/output/window options).
@@ -67,8 +71,20 @@ inline int parse_tool_args(int argc, char **argv, tool_args &a,
                            engine_options &eng_opts, output_options &out_opts,
                            window_options &win_opts)
 {
+	// --lang anywhere on the line already counts (so --help/--list print
+	// in the asked language); the mains resolve it again from a.lang
+	// after parsing, which is the same value.
+	for (int i = 1; i + 1 < argc; i++)
+		if (!std::strcmp(argv[i], "--lang")) {
+			pin_flag_lang(argv[i + 1]);
+			break;
+		}
 	for (int i = 1; i < argc; i++) {
-		if (!std::strcmp(argv[i], "--list")) {
+		if (!std::strcmp(argv[i], "--help")) {
+			print_usage();
+			return 0;
+		}
+		else if (!std::strcmp(argv[i], "--list")) {
 			const auto ins = midi_in::list();
 			std::printf("MIDI 入力（--midi 番号 / 画面からも選べる）:\n");
 			for (size_t k = 0; k < ins.size(); k++)
@@ -118,6 +134,7 @@ inline int parse_tool_args(int argc, char **argv, tool_args &a,
 		else if (!std::strcmp(argv[i], "--grid")) a.grid = true;
 		else if (!std::strcmp(argv[i], "--layout") && i + 1 < argc) a.layout_path = argv[++i];
 		else if (!std::strcmp(argv[i], "--play") && i + 1 < argc) a.play_path = argv[++i];
+		else if (!std::strcmp(argv[i], "--lang") && i + 1 < argc) a.lang = argv[++i];
 		else if (!std::strcmp(argv[i], "--dump-layout") && i + 1 < argc) a.dump_layout = argv[++i];
 		else if (!std::strcmp(argv[i], "--mid") && i + 2 < argc) {
 			a.shot_mid = argv[++i];

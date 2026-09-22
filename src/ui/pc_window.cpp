@@ -2,6 +2,8 @@
 
 #include "pc_window.h"
 #include "text.h"
+#include "ui/texts.h"
+#include "ui/lang.h"
 
 #include "imgui.h"
 #include "backends/imgui_impl_dx11.h"
@@ -41,10 +43,13 @@ void file_dialog(HWND owner, xgui::file_ask ask, const std::vector<u8> &bytes)
 	wchar_t path[MAX_PATH * 4] = {};
 	if (ask == xgui::file_ask::save)
 		wcscpy_s(path, L"S-MU2000.syx");
+	// Bound here: the dialog reads the filter while it runs.
+	const std::wstring filter = dlg_filter(UI_TEXT(dlg_sysex_desc, "SysEx"), "*.syx",
+	                                       UI_TEXT(dlg_all_files, "All files"), "*.*");
 	OPENFILENAMEW o{};
 	o.lStructSize = sizeof(o);
 	o.hwndOwner   = owner;
-	o.lpstrFilter = L"SysEx (*.syx)\0*.syx\0すべてのファイル\0*.*\0";
+	o.lpstrFilter = filter.c_str();
 	o.lpstrFile   = path;
 	o.nMaxFile    = DWORD(std::size(path));
 	o.lpstrDefExt = L"syx";
@@ -57,7 +62,7 @@ void file_dialog(HWND owner, xgui::file_ask ask, const std::vector<u8> &bytes)
 		if (f)
 			std::fclose(f);
 		char note[64];
-		std::snprintf(note, sizeof(note), ok ? "書き出した（%zu バイト）" : "書き出せなかった", bytes.size());
+		std::snprintf(note, sizeof(note), ok ? UI_TEXT(note_exported_fmt, "Exported (%zu bytes)") : UI_TEXT(note_export_fail, "Cannot export"), bytes.size());
 		xgui::set_file_note(note);
 		return;
 	}
@@ -73,7 +78,7 @@ void file_dialog(HWND owner, xgui::file_ask ask, const std::vector<u8> &bytes)
 		std::fclose(f);
 		xgui::give_opened_file(std::move(in));
 	} else {
-		xgui::set_file_note("読めなかった");
+		xgui::set_file_note(UI_TEXT(note_import_fail, "Could not import"));
 	}
 }
 
@@ -127,7 +132,7 @@ bool pc_window::create(HINSTANCE inst, std::string &err)
 	                         CW_USEDEFAULT, CW_USEDEFAULT, int(m_view->default_width() * scale), int(m_view->default_height() * scale),
 	                         nullptr, nullptr, inst, this);
 	if (!m_hwnd) {
-		err = "エディタの窓を出せない";
+		err = UI_TEXT(dlg_editor_fail, "Cannot open the editor window");
 		return false;
 	}
 	SetWindowLongPtrW(m_hwnd, GWLP_USERDATA, LONG_PTR(this));
@@ -183,7 +188,7 @@ bool pc_window::create_device(std::string &err)
 		                                   D3D11_SDK_VERSION, &sd, &m_swap, &m_dev, &got, &m_ctx);
 	if (FAILED(hr)) {
 		char buf[96];
-		std::snprintf(buf, sizeof(buf), "Direct3D 11 を使えない（0x%08lx）", (unsigned long)hr);
+		std::snprintf(buf, sizeof(buf), UI_TEXT(dlg_d3d_fail_fmt, "Cannot use Direct3D 11 (0x%08lx)"), (unsigned long)hr);
 		err = buf;
 		return false;
 	}
@@ -304,5 +309,26 @@ LRESULT CALLBACK pc_window::proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
 	}
 	return DefWindowProcW(h, msg, wp, lp);
 }
+
+namespace lang_detail {
+
+// The OS default locale for ui::locale_default_lang (ui/lang.h): reporting
+// the tag is all this backend does (windows.h comes with the Win32 backend
+// headers above). GUI processes here usually run without LANG set, so
+// Japanese installs would otherwise come up English.
+namespace {
+std::string query_os_locale()
+{
+	wchar_t name[LOCALE_NAME_MAX_LENGTH];
+	if (GetUserDefaultLocaleName(name, LOCALE_NAME_MAX_LENGTH) <= 0)
+		return {};
+	char narrow[LOCALE_NAME_MAX_LENGTH * 3];
+	std::snprintf(narrow, sizeof(narrow), "%ls", name);
+	return narrow;
+}
+const os_locale_registrar os_locale_reg(query_os_locale);
+} // namespace
+
+} // namespace lang_detail
 
 } // namespace ui

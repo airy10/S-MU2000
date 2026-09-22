@@ -31,6 +31,7 @@
 #include "mu2000.h"
 #include "ui/app.h"
 #include "ui/app_mac.h"
+#include "ui/lang.h"
 
 int main(int argc, char **argv)
 {
@@ -44,6 +45,9 @@ int main(int argc, char **argv)
 
 	// The flags are shared (ui/tool_args.h); only latency above stays per side
 	const int parsed = ui::parse_tool_args(argc, argv, a, eng_opts, out_opts, win_opts);
+	// The language resolves here, from the parsed --lang (then editor.ini,
+	// then the locale), before any texts() use below
+	ui::init_lang(a.lang.c_str());
 	if (parsed >= 0)
 		return parsed;
 

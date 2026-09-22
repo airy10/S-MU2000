@@ -176,11 +176,11 @@ public:
 			                   s.voices_master + s.voices_slave,
 			                   out->cpu_percent(), out->worst_ms(),
 			                   middle,
-			                   in_name[0].empty() ? "なし" : in_name[0].c_str(),
-			                   out_name.empty() ? "なし" : out_name.c_str());
+			                   in_name[0].empty() ? UI_TEXT(status_none, "none") : in_name[0].c_str(),
+			                   out_name.empty() ? UI_TEXT(status_none, "none") : out_name.c_str());
 		}
 		else
-			std::snprintf(status, sizeof(status), "起動中...");
+			std::snprintf(status, sizeof(status), "%s", UI_TEXT(status_booting, "Starting..."));
 		panel.set_volume(br.gain());
 		panel.paint(dc, s, pressed, status);
 		// The bar paints after the panel (the panel fills everything)
@@ -453,7 +453,7 @@ public:
 			in_keep[port].clear();
 		std::string err;
 		if (!midi[port].open(dev, err)) {
-			std::fprintf(stderr, "%s: %s\n", IN_LABELS[port], err.c_str());
+			std::fprintf(stderr, "%s: %s\n", in_label(port), err.c_str());
 			if (!keep)
 				menu_error(err);
 			midi[port].open(-1, err);
@@ -632,7 +632,7 @@ public:
 			return;
 		smu2000::smartmedia card;
 		if (!card.create(megabytes)) {
-			std::fprintf(stderr, "SmartMedia を作れない\n");
+			std::fprintf(stderr, "%s\n", UI_TEXT(dlg_card_create_fail, "Cannot create the SmartMedia image"));
 			return;
 		}
 		std::string err;
@@ -642,8 +642,8 @@ public:
 			return;
 		}
 		if (insert_card(path))
-			menu_note("空の SmartMedia を差しました。\n"
-			          "使う前に、本体の UTIL → CARD → Format で書式化してください。");
+			menu_note(UI_TEXT(dlg_fresh_card, "Inserted a blank SmartMedia image.\n"
+			                                  "Before use, format it on the machine: UTIL → CARD → Format."));
 	}
 
 	void do_card_open()
@@ -662,7 +662,9 @@ public:
 		std::string err;
 		if (!play.start(path, br, err)) {
 			std::fprintf(stderr, "開けない: %s\n", err.c_str());
-			menu_error("開けない: " + err);
+			char m[512];
+			std::snprintf(m, sizeof(m), UI_TEXT(dlg_cannot_fmt, "Cannot open: %s"), err.c_str());
+			menu_error(m);
 			return false;
 		}
 		std::printf("再生: %s（%.1f 秒）\n", path.c_str(), play.length());
@@ -952,7 +954,7 @@ public:
 		// A port that would not open keeps showing its remembered name
 		// until it is picked again
 		for (int p = 0; p < 4; p++)
-			show_port(IN_LABELS[p], in_name[p], in_keep[p]);
+			show_port(in_label(p), in_name[p], in_keep[p]);
 		show_port("MIDI OUT", out_name_mu, out_keep_mu);
 		show_port("MIDI THRU A", out_name, out_keep);
 		show_port("MIDI THRU B", out_name_b, out_keep_b);
@@ -1111,7 +1113,7 @@ public:
 		eng->publish();
 
 		if (!open_main_window("S-MU2000", a.win_w, a.win_h)) {
-			std::fprintf(stderr, "窓を出せない\n");
+			std::fprintf(stderr, "%s\n", UI_TEXT(dlg_window_fail, "Cannot open the window"));
 			return 1;
 		}
 

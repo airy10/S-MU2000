@@ -44,11 +44,11 @@ public:
 	}
 	std::string ask_card_open_path() override
 	{
-		return open_file_panel("差す SmartMedia", "img");
+		return open_file_panel(UI_TEXT(dlg_card_open, "Insert a SmartMedia image"), "img");
 	}
 	std::string ask_card_save_path() override
 	{
-		return save_file_panel("新しい SmartMedia の保存先", "smartmedia.img", "img");
+		return save_file_panel(UI_TEXT(dlg_card_save, "Where to save the new SmartMedia image"), "smartmedia.img", "img");
 	}
 	std::string ask_midi_file_path() override
 	{
@@ -57,24 +57,27 @@ public:
 	bool confirm_factory_reset() override
 	{
 		return confirm_modal("S-MU2000",
-		                     "MU2000 を工場出荷状態に戻して、電源を入れ直します。\n"
-		                     "ユーティリティの設定や、覚えている音量・音色の設定はすべて消えます。",
-		                     "戻す");
+		                     UI_TEXT(dlg_factory_text, "Reset the MU2000 to factory state and restart it.\n"
+		                                             "Utility settings and remembered volume/voice settings will all be erased."),
+		                     UI_TEXT(dlg_factory_ok, "Reset"));
 	}
 
 	// An editor window comes up, or says why it could not
 	void open_pc_window(pc_window &w) override
 	{
 		std::string err;
-		if (!w.show(err))
-			alert_modal("S-MU2000", ("開けない: " + err).c_str());
+		if (!w.show(err)) {
+			char m[512];
+			std::snprintf(m, sizeof(m), UI_TEXT(dlg_cannot_fmt, "Cannot open: %s"), err.c_str());
+			alert_modal("S-MU2000", m);
+		}
 	}
 
 	// starved() counts what Windows calls late(); output_ms is
 	// WASAPI-only, so only the drop count crosses over (ui/status.h)
 	void format_middle(char *dst, std::size_t n) override
 	{
-		std::snprintf(dst, n, "遅れ %llu", (unsigned long long)out->starved());
+		std::snprintf(dst, n, UI_TEXT(status_middle_mac_fmt, "late %llu"), (unsigned long long)out->starved());
 	}
 
 	void print_audio_details() override

@@ -55,7 +55,7 @@ public:
 	// output_ms and late() are Windows-only (CoreAudio has no wait number)
 	void format_middle(char *dst, std::size_t n) override
 	{
-		std::snprintf(dst, n, "待ち %.0f ms  遅れ %llu",
+		std::snprintf(dst, n, UI_TEXT(status_middle_win_fmt, "wait %.0f ms  late %llu"),
 		              out->output_ms(), (unsigned long long)out->late());
 	}
 
@@ -74,26 +74,31 @@ public:
 	}
 	std::string ask_card_open_path() override
 	{
-		return win_open_file(hwnd, L"差す SmartMedia",
-		                         L"SmartMedia の中身 (*.img)\0*.img\0すべて (*.*)\0*.*\0", L"img");
+		const std::wstring title = to_wide(UI_TEXT(dlg_card_open, "Insert a SmartMedia image"));
+		const std::wstring filter = dlg_filter(UI_TEXT(dlg_smartmedia_desc, "SmartMedia image"), "*.img",
+		                                       UI_TEXT(dlg_all_files, "All files"), "*.*");
+		return win_open_file(hwnd, title.c_str(), filter.c_str(), L"img");
 	}
 	std::string ask_card_save_path() override
 	{
-		return win_save_file(hwnd, L"新しい SmartMedia の保存先",
-		                         L"SmartMedia の中身 (*.img)\0*.img\0すべて (*.*)\0*.*\0",
+		const std::wstring title = to_wide(UI_TEXT(dlg_card_save, "Where to save the new SmartMedia image"));
+		const std::wstring filter = dlg_filter(UI_TEXT(dlg_smartmedia_desc, "SmartMedia image"), "*.img",
+		                                       UI_TEXT(dlg_all_files, "All files"), "*.*");
+		return win_save_file(hwnd, title.c_str(), filter.c_str(),
 		                         L"img", L"smartmedia.img");
 	}
 	std::string ask_midi_file_path() override
 	{
-		return win_open_file(hwnd, L"流す MIDI ファイル",
-		                         L"MIDI ファイル (*.mid;*.midi)\0*.mid;*.midi\0すべて (*.*)\0*.*\0",
+		const std::wstring title = to_wide(UI_TEXT(dlg_midi_open, "MIDI file to play"));
+		const std::wstring filter = dlg_filter(UI_TEXT(dlg_midi_desc, "MIDI files"), "*.mid;*.midi",
+		                                       UI_TEXT(dlg_all_files, "All files"), "*.*");
+		return win_open_file(hwnd, title.c_str(), filter.c_str(),
 		                         nullptr);
 	}
 	bool confirm_factory_reset() override
 	{
-		return win_confirm(hwnd,
-		                       "MU2000 を工場出荷状態に戻して、電源を入れ直します。\n"
-		                       "ユーティリティの設定や、覚えている音量・音色の設定はすべて消えます。");
+		return win_confirm(hwnd, UI_TEXT(dlg_factory_text, "Reset the MU2000 to factory state and restart it.\n"
+		                                                 "Utility settings and remembered volume/voice settings will all be erased."));
 	}
 
 	// ---- the window-system shell (ui::app::run drives these)

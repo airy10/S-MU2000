@@ -9,9 +9,9 @@
 // The layout is the three files every platform has: window system (window_sdl,
 // sdl_popup, pc_window_linux), app class (this), main (gui_linux.cpp).
 //
-// Everything the window shows is Japanese, like Windows and macOS. The
-// contributed English texts (ui/texts.h) and help language stay available
-// for a later translated table; the Linux main no longer installs them.
+// The panel language comes from ui::lang (--lang, editor.ini, locale:
+// Japanese iff the locale says ja, English otherwise). The GDI strings
+// (ui/texts.h) and the ImGui help (ui/xg_ui.cpp) follow the same choice.
 
 #ifndef S_MU2000_UI_APP_LINUX_H
 #define S_MU2000_UI_APP_LINUX_H
@@ -93,9 +93,9 @@ public:
 	bool confirm_factory_reset() override
 	{
 		return sdl_popup::confirm(win, "S-MU2000",
-		                          "MU2000 を工場出荷状態に戻して、電源を入れ直します。\n"
-		                          "ユーティリティの設定や、覚えている音量・音色の設定はすべて消えます。",
-		                          "戻す");
+		                          UI_TEXT(dlg_factory_text, "Reset the MU2000 to factory state and restart it.\n"
+		                                                  "Utility settings and remembered volume/voice settings will all be erased."),
+		                          UI_TEXT(dlg_factory_ok, "Reset"));
 	}
 
 	// ---- the shared popups, rendered through ui/sdl_popup
@@ -181,15 +181,18 @@ public:
 	// The status middle: what ALSA measures (ui/status.h keeps the shape)
 	void format_middle(char *dst, std::size_t n) override
 	{
-		std::snprintf(dst, n, "枯渇 %llu", (unsigned long long)out->starved());
+		std::snprintf(dst, n, UI_TEXT(status_middle_linux_fmt, "starved %llu"), (unsigned long long)out->starved());
 	}
 
 	// An editor window comes up, or says why it could not
 	void open_pc_window(pc_window &w) override
 	{
 		std::string err;
-		if (!w.show(err))
-			sdl_popup::alert(win, "S-MU2000", "開けない: " + err);
+		if (!w.show(err)) {
+			char m[512];
+			std::snprintf(m, sizeof(m), UI_TEXT(dlg_cannot_fmt, "Cannot open: %s"), err.c_str());
+			sdl_popup::alert(win, "S-MU2000", m);
+		}
 	}
 
 	// One frame: the shared tick/status/paint sequence (like the Mac's one

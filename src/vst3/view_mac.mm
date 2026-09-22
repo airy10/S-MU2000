@@ -413,7 +413,7 @@ private:
 
 	if (tag >= ui::ID_PLUG_CARD_NEW16 && tag <= ui::ID_PLUG_CARD_NEW128) {
 		NSSavePanel *panel = [NSSavePanel savePanel];
-		[panel setTitle:@"新しい SmartMedia の保存先"];
+		[panel setTitle:[NSString stringWithUTF8String:UI_TEXT(dlg_card_save, "Where to save the new SmartMedia image")]];
 		[panel setNameFieldStringValue:@"smartmedia.img"];
 		[panel setAllowedFileTypes:@[ @"img" ]];
 		if ([panel runModal] != NSModalResponseOK)
@@ -426,7 +426,7 @@ private:
 
 	if (tag == ui::ID_PLUG_CARD_OPEN) {                          // 差す
 		NSOpenPanel *panel = [NSOpenPanel openPanel];
-		[panel setTitle:@"差す SmartMedia"];
+		[panel setTitle:[NSString stringWithUTF8String:UI_TEXT(dlg_card_open, "Insert a SmartMedia image")]];
 		[panel setCanChooseFiles:YES];
 		[panel setCanChooseDirectories:NO];
 		[panel setAllowsMultipleSelection:NO];

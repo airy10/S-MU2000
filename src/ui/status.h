@@ -14,15 +14,16 @@
 #include <cstddef>
 #include <cstdio>
 
+#include "ui/texts.h"
+
 namespace ui {
 
 inline void format_status_line(char *dst, std::size_t n, int voices,
                                double cpu_pct, double worst_ms, const char *middle,
                                const char *in_name, const char *out_name)
 {
-	std::snprintf(dst, n,
-	              "発音 %d/128  CPU %.0f%%  最悪 %.1f ms  %s   IN: %s   OUT: %s"
-	              "   （MIDI IN A のジャックか右クリックで口を選ぶ）",
+	std::snprintf(dst, n, UI_TEXT(status_format, "Voices %d/128  CPU %.0f%%  worst %.1f ms  %s   IN: %s   OUT: %s"
+                               "   (pick ports from the MIDI IN A jack or by right-click)"),
 	              voices, cpu_pct, worst_ms, middle, in_name, out_name);
 }
 

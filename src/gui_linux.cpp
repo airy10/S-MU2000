@@ -21,6 +21,7 @@
 #include "ui/app_linux.h"
 #include "ui/bridge.h"
 #include "ui/engine.h"
+#include "ui/lang.h"
 #include "ui/midi_in.h"
 #include "ui/midi_out.h"
 #include "ui/tool_args.h"
@@ -60,6 +61,9 @@ int main(int argc, char **argv)
 
 	// The flags are shared (ui/tool_args.h); only latency above stays per side
 	const int parsed = ui::parse_tool_args(kept, argv, a, eng_opts, out_opts, win_opts);
+	// The language resolves here, from the parsed --lang (then editor.ini,
+	// then the locale), before any texts() use below
+	ui::init_lang(a.lang.c_str());
 	if (parsed >= 0)
 		return parsed;
 
