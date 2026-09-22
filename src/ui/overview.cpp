@@ -1797,6 +1797,30 @@ void overview::filter_cell(int part, xg::model &m, bridge &br, float w, float h,
 			for (size_t i = 1; i < epts.size(); i += 2)
 				dl->AddLine(epts[i - 1], epts[i], IM_COL32(255, 210, 110, 200), 1.2f);
 			dl->AddPolyline(tpts.data(), int(tpts.size()), col(ImGuiCol_SliderGrabActive), 0, std::max(2.0f, fs * 0.14f));
+			// パートの EQ の周波数の位置に ● 印（EQ だけの点線の上）。触れないが、フェーダーとの関係を見せる。
+			// そのフェーダー（ゲインか周波数）にカーソルが載っているか、つまんでいる間は大きく
+			if (have[4] && have[6]) {
+				const float fl = float(eq::HZ[std::clamp(vals[4], 0, 60)]);
+				const float fh = float(eq::HZ[std::clamp(vals[6], 0, 60)]);
+				const std::vector<shape::pt> at = shape::eq_response(v.rom, v.blk, { fl, fh });
+				const int focus = grab >= 0 ? grab : over;
+				const float r0 = std::max(3.0f, fs * 0.26f);
+				for (int k = 0; k < 2 && k < int(at.size()); k++) {
+					const bool lit = focus == 3 + k * 2 || focus == 4 + k * 2;
+					const ImVec2 c(x_hz(at[size_t(k)].ms), y_db(at[size_t(k)].cents));
+					const float rr = lit ? r0 * 1.5f : r0;
+					dl->AddCircleFilled(c, rr, IM_COL32(255, 210, 110, 255));
+					dl->AddCircle(c, rr, IM_COL32(40, 30, 10, 255), 0, 1.5f);
+					char t[16];
+					std::snprintf(t, sizeof(t), "%s %s", k ? "Hi" : "Lo", eq::hz_text(k ? vals[6] : vals[4]).c_str());
+					const float tfs = fs * 0.6f;
+					const ImVec2 ts = ImGui::GetFont()->CalcTextSizeA(tfs, FLT_MAX, 0.0f, t);
+					const float tx = std::clamp(c.x - ts.x * 0.5f, x0 + 1.0f, x1 - ts.x - 1.0f);
+					const float ty = c.y + rr + 2.0f + ts.y < bottom ? c.y + rr + 2.0f : c.y - rr - 2.0f - ts.y;
+					dl->AddRectFilled(ImVec2(tx - 2, ty - 1), ImVec2(tx + ts.x + 2, ty + ts.y + 1), IM_COL32(0, 0, 0, 140), 3.0f);
+					dl->AddText(ImGui::GetFont(), tfs, ImVec2(tx, ty), IM_COL32(255, 210, 110, lit ? 255 : 210), t);
+				}
+			}
 			// 切る周波数: いちばん大きい所から 3 dB 下がる所（山があれば山の頂）。filter_small と同じ決め方
 			float peak = -1e9f, peak_hz = 20.0f;
 			for (const shape::pt &p : L.pts)
