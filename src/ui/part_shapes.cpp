@@ -333,9 +333,16 @@ int scope_fx_of(int slot)
 // エフェクト 1 つ（メゾネット）。上の段に種類の名前と、通したあと（緑）・通す前（灰）のスペクトラム。
 // 下の段に種類の選択、設定の窓を開くボタン、つまみ（システムエフェクトは戻りとパンを先に）。
 // part_only は、このパートだけの音か（インサーション・インサーション接続のバリエーション）、
-// 全パートの送りを混ぜた音か（システムのリバーブ・コーラス・バリエーション）
+// 全パートの送りを混ぜた音か（システムのリバーブ・コーラス・バリエーション）。
+// バリエーション（slot 7）は下の段の頭に「このパートのインサーションにする」のチェックを置き、
+// 入っていなければこのパートの送り（Var Send）だけを触れるようにする（種類やパラメータは見るだけ）
 void fx_cell(int slot, bool part_only, int part, xg::model &m, bridge &br, float w, float h)
 {
+	const bool is_var = slot == 7;
+	const bool var_sys = get_value(m, "variation.connect") == 1;
+	const int var_part = get_value(m, "variation.part");
+	const bool var_mine = !var_sys && var_part == part;     // このパートのインサーションになっている
+	const bool locked = is_var && !var_mine;
 	const float fs = ImGui::GetFontSize();
 	ImDrawList *dl = ImGui::GetWindowDrawList();
 	const ImVec2 pos = ImGui::GetCursorScreenPos();
@@ -358,14 +365,35 @@ void fx_cell(int slot, bool part_only, int part, xg::model &m, bridge &br, float
 	dl->AddText(ImVec2(pos.x + pad + line * 1.3f, y), ImGui::GetColorU32(ImGuiCol_Text), name.c_str());
 	y += line * 1.25f;
 	const int fx = scope_fx_of(slot);
+	std::string label = part_only ? "緑: 通したあと  灰: 通す前（このパートだけ）" : "緑: 出口  灰: 入口（全パートの送りを混ぜた音）";
+	if (is_var && !var_sys && !var_mine)
+		label = "ほかのパート（" + (var_part < XG_PARTS + 2 ? part_name(var_part) : std::string("OFF")) +
+		        "）のインサーション。このパートの Var Send は効かない";
 	overview::spectrum_view(br, part, bridge::scope_src(fx, true), bridge::scope_src(fx, false), 10 + slot,
-	                        ImVec2(pos.x + pad, y), ImVec2(pos.x + w - pad, split - pad),
-	                        part_only ? "緑: 通したあと  灰: 通す前（このパートだけ）"
-	                                  : "緑: 出口  灰: 入口（全パートの送りを混ぜた音）");
+	                        ImVec2(pos.x + pad, y), ImVec2(pos.x + w - pad, split - pad), label.c_str());
 	dl->AddLine(ImVec2(pos.x, split), ImVec2(pos.x + w, split), ImGui::GetColorU32(ImGuiCol_Border), 1.0f);
 
-	// ---- 下の段: 種類と、設定の窓
+	// ---- 下の段: （バリエーションは接続のチェック）種類と、設定の窓
 	ImGui::SetCursorScreenPos(ImVec2(pos.x + pad, split + pad));
+	if (is_var) {
+		ImGui::PushFont(nullptr, fs * 0.8f);
+		bool mine = var_mine;
+		if (ImGui::Checkbox("このパートのインサーションにする", &mine)) {
+			if (mine) {
+				br.send(m.set(P("variation.connect"), 0, 0));
+				br.send(m.set(P("variation.part"), 0, part));
+			} else {
+				br.send(m.set(P("variation.connect"), 0, 1));
+			}
+		}
+		if (ImGui::IsItemHovered())
+			hint("%s\nオンでバリエーションをインサーション接続にし、このパートに掛ける（パートの音を丸ごと通してから、乾いた音と"
+			     "リバーブ・コーラスへの送りに分かれる。種類とパラメータもここで触れる）。オフでシステム接続（全パートの Var Send を"
+			     "集めて掛け、戻りで混ぜる）で、ここではこのパートの送り（Send）だけを触れる。"
+			     "バリエーションは 1 つしか無いので、ほかのパートとは取り合いになる", official_name("variation.connect").c_str());
+		ImGui::PopFont();
+	}
+	ImGui::BeginDisabled(locked);
 	const std::vector<xg::fx_type> &types = slot == 5 ? xg::rev_types() : slot == 6 ? xg::cho_types() : xg::ins_types();
 	ImGui::SetNextItemWidth(std::min(fs * 11.0f, w * 0.62f));
 	if (begin_fx_combo("##type", type, ImGuiComboFlags_HeightLarge)) {
@@ -385,13 +413,16 @@ void fx_cell(int slot, bool part_only, int part, xg::model &m, bridge &br, float
 		request_fx(slot);
 	if (ImGui::IsItemHovered())
 		hint("エフェクトの設定の窓\nこのエフェクトを大きなつまみと説明で触る窓を開く");
+	ImGui::EndDisabled();
 
 	// ---- つまみ。入る大きさまで縮める
-	struct knob_item { const xg::fx_param *fp; const xg::param *mp; };
+	struct knob_item { const xg::fx_param *fp; const xg::param *mp; const char *label; bool lock; };
 	std::vector<knob_item> items;
+	if (locked)
+		items.push_back({ nullptr, &P("part.variation_send"), "Send", false });
 	if (slot >= 5 && !part_only) {
-		items.push_back({ nullptr, &P((prefix + ".return").c_str()) });
-		items.push_back({ nullptr, &P((prefix + ".pan").c_str()) });
+		items.push_back({ nullptr, &P((prefix + ".return").c_str()), "Return", locked });
+		items.push_back({ nullptr, &P((prefix + ".pan").c_str()), "Pan", locked });
 	}
 	const xg::fx_def *def = type >= 0 ? xg::fx_find(type) : nullptr;
 	if (def)
@@ -399,7 +430,7 @@ void fx_cell(int slot, bool part_only, int part, xg::model &m, bridge &br, float
 			u32 a = 0;
 			int sz = 0;
 			if (fx_where(slot, def->params[i], a, sz))
-				items.push_back({ &def->params[i], nullptr });
+				items.push_back({ &def->params[i], nullptr, def->params[i].label, locked });
 		}
 	const float kx0 = pos.x + pad, kx1 = pos.x + w - pad;
 	const float ky0 = ImGui::GetCursorScreenPos().y + pad, ky1 = pos.y + h - pad;
@@ -410,7 +441,7 @@ void fx_cell(int slot, bool part_only, int part, xg::model &m, bridge &br, float
 	int per_row = 1;
 	float label_w = 0;
 	for (const knob_item &it : items)
-		label_w = std::max(label_w, ImGui::CalcTextSize(it.fp ? it.fp->label : "Return").x);
+		label_w = std::max(label_w, ImGui::CalcTextSize(it.label).x);
 	for (;; ksize -= kfs * 0.2f) {
 		cw = std::max(ksize + kfs * 1.9f, label_w + kfs * 0.8f);
 		ch = ksize + kfs * 2.8f;
@@ -424,14 +455,19 @@ void fx_cell(int slot, bool part_only, int part, xg::model &m, bridge &br, float
 		ImGui::SetCursorScreenPos(ImVec2(kx0 + float(k % per_row) * cw, ky0 + float(k / per_row) * ch));
 		char id[8];
 		std::snprintf(id, sizeof(id), "k%d", k);
+		const ImVec2 cell0 = ImGui::GetCursorScreenPos();
+		ImGui::BeginDisabled(it.lock);
 		if (it.mp) {
+			const int pp = it.mp->where == xg::area::part ? part : 0;
 			int v = it.mp->def;
-			const bool known = m.get(*it.mp, 0, v);
+			const bool known = m.get(*it.mp, pp, v);
 			const std::string text = known ? xg::format(*it.mp, v) : std::string("--");
-			const char *label = it.mp->key == items[0].mp->key ? "Return" : "Pan";
-			if (fx_editor::knob(id, v, it.mp->min, it.mp->max, ksize, label, text.c_str(), false) && known)
-				drag_send(br, m.set(*it.mp, 0, v));
-			if (ImGui::IsItemHovered() || ImGui::IsItemActive()) {
+			if (fx_editor::knob(id, v, it.mp->min, it.mp->max, ksize, it.label, text.c_str(), false) && known)
+				drag_send(br, m.set(*it.mp, pp, v));
+			if (it.lock && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+				hint("%s  %s\nこのパートのインサーションにしていないので、ここでは見るだけ（上のチェックで触れる）",
+				     official_name(it.mp->key).c_str(), text.c_str());
+			else if (ImGui::IsItemHovered() || ImGui::IsItemActive()) {
 				const char *help = help_for(it.mp->key);
 				hint("%s  %s\n%s（上下にドラッグ・ホイール・ダブルクリックで数を打つ）", official_name(it.mp->key).c_str(), text.c_str(),
 				     help ? help : "");
@@ -446,12 +482,19 @@ void fx_cell(int slot, bool part_only, int part, xg::model &m, bridge &br, float
 			const std::string text = known ? fx_value_text(*it.fp, v) : std::string("--");
 			if (fx_editor::knob(id, v, it.fp->lo, it.fp->hi, ksize, it.fp->label, text.c_str(), false) && known)
 				drag_send(br, m.set_raw(addr, size, v));
-			if (ImGui::IsItemHovered() || ImGui::IsItemActive()) {
+			if (it.lock && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+				hint("%s  %s\nこのパートのインサーションにしていないので、ここでは見るだけ（上のチェックで触れる）",
+				     it.fp->label, text.c_str());
+			else if (ImGui::IsItemHovered() || ImGui::IsItemActive()) {
 				const char *help = fx_param_help(it.fp->label);
 				hint("%s  %s\n%s（上下にドラッグ・ホイール・ダブルクリックで数を打つ）", it.fp->label, text.c_str(),
 				     help ? help : "（まだ説明が無い）");
 			}
 		}
+		ImGui::EndDisabled();
+		// 触れないつまみは暗く
+		if (it.lock)
+			dl->AddRectFilled(cell0, ImVec2(cell0.x + cw, cell0.y + ch), IM_COL32(16, 20, 28, 150), 4.0f);
 	}
 	if (!def || def->count == 0) {
 		ImGui::SetCursorScreenPos(ImVec2(kx0, ky0 + (n ? float((n + per_row - 1) / per_row) * ch : 0.0f)));
@@ -566,7 +609,7 @@ void route_cell(int part, xg::model &m, bridge &br, float w, float h)
 		dl->AddText(ImGui::GetFont(), tfs, ImVec2(mid.x - ts.x * 0.5f, mid.y - ts.y * 0.5f), t > 0.0f ? IM_COL32(210, 255, 225, 255) : IM_COL32(200, 200, 210, 150), text);
 		if (hov || act) {
 			if (var_ins_edge)
-				hint("バリエーションはインサーション接続\n%s。パートからの送り（Var Send）は効かない。下の「VAR をこのパートのインサーションに」で切り替える",
+				hint("バリエーションはインサーション接続\n%s。パートからの送り（Var Send）は効かない。バリエーションの区画の「このパートのインサーションにする」で切り替える",
 				     var_part == part ? "このパートに直に掛かっている（通したあとが乾いた音と送りに分かれる）"
 				                      : "ほかのパートに掛かっていて、このパートの音は通らない");
 			else {
@@ -634,19 +677,6 @@ void route_cell(int part, xg::model &m, bridge &br, float w, float h)
 			hint("つなぎ方: %s\n%s。XG の並びは VAR → CHO → REV に決まっていて、後ろから前へは送れない。"
 			     "パートからの送りと戻りはそのまま", pr.name, pr.about);
 	}
-	bool as_ins = !var_sys && var_part == part;
-	if (ImGui::Checkbox("VAR をこのパートのインサーションに", &as_ins)) {
-		if (as_ins) {
-			br.send(m.set(P("variation.connect"), 0, 0));
-			br.send(m.set(P("variation.part"), 0, part));
-		} else {
-			br.send(m.set(P("variation.connect"), 0, 1));
-		}
-	}
-	if (ImGui::IsItemHovered())
-		hint("%s\nオンでバリエーションをインサーション接続にし、このパートに掛ける（パートの音を丸ごと通してから、乾いた音と"
-		     "リバーブ・コーラスへの送りに分かれる）。オフでシステム接続（全パートの Var Send を集めて掛け、戻りで混ぜる）。"
-		     "バリエーションは 1 つしか無いので、ほかのパートとは取り合いになる", official_name("variation.connect").c_str());
 	ImGui::PopFont();
 	// 送りのフェーダー。左の 4 本がこのパートから、右の 3 本がエフェクトからエフェクトへ
 	static const char *const KEYS[7] = { "part.dry_level", "part.variation_send", "part.chorus_send", "part.reverb_send",
@@ -769,7 +799,8 @@ void part_shapes::draw(xg::model &m, const xg_snapshot &ram, bridge &br)
 			// つながった区画（メゾネット。上の段が絵、下の段がフェーダーやつまみ）。
 			// EG の右に、このパートに掛かっているインサーション（とインサーション接続のバリエーション）、
 			// つなぎ（送りと順序）、送っているシステムエフェクト（バリエーション・コーラス・リバーブ）。
-			// エフェクトの区画は、そのエフェクトがこのパートの音に効いているときだけ出す。
+			// エフェクトの区画は、そのエフェクトがこのパートの音に効いているときだけ出す。ただしバリエーションは
+			// いつも出す（このパートのインサーションならインサーションの並びに、でなければつなぎの右に）。
 			// ポルタメントは「すべて」のタブにある
 			const int var_type = get_value(m, "variation.type"), cho_type = get_value(m, "chorus.type"), rev_type = get_value(m, "reverb.type");
 			const bool var_sys = get_value(m, "variation.connect") == 1;
@@ -786,7 +817,8 @@ void part_shapes::draw(xg::model &m, const xg_snapshot &ram, bridge &br)
 			const bool rev_on = (rev_type >> 7) != 0 &&
 			                    (get_value(m, "part.reverb_send", part) > 0 || (cho_on && get_value(m, "chorus.to_reverb") > 0) ||
 			                     (var_on && get_value(m, "variation.to_reverb") > 0));
-			if (var_on) sys_fx.push_back({ 7, false });
+			if (!(!var_sys && get_value(m, "variation.part") == part))
+				sys_fx.push_back({ 7, false });   // バリエーションはいつも出す
 			if (cho_on) sys_fx.push_back({ 6, false });
 			if (rev_on) sys_fx.push_back({ 5, false });
 
