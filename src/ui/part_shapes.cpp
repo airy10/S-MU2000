@@ -27,6 +27,7 @@ namespace {
 // パートは口 A-D の 64（C・D は実機では USB だけの口）
 constexpr int PARTS = XG_PARTS;
 constexpr float BAR_SCALE = 0.85f;   // 下の説明の帯の字の大きさ（本文に対して）
+constexpr int FOLD_BIT = 16;         // 音色を選ぶ面を畳んでいるか（shapes_knobs のビットを借りて editor.ini に覚える）
 
 // 「グラフ ○ つまみ」の切り替え。見出しの行の右端に描き、押されたら true。
 // 見出しと並べて入らなければ字を外して切り替えだけにし、それでも入らなければ見出しを切る
@@ -926,14 +927,51 @@ void part_shapes::draw(xg::model &m, const xg_snapshot &ram, bridge &br)
 	ImGui::PopFont();
 	const float body_h = std::max(fs * 8.0f, avail.y - bar_h);
 
-	if (ImGui::BeginChild("voicepane", ImVec2(pane_w, body_h)))
-	{
-		ImGui::PushFont(nullptr, fs * 0.85f);   // 分類・音色・バンク違いの 3 つは小さめの字で
-		program_pane(part, m, &ram, br);
-		ImGui::PopFont();
+	// 音色を選ぶ面は左端に畳める（横幅を形のタブに回す）。面の右の細い取っ手を押すと畳む・開く。
+	// 畳んだかどうかは editor.ini に覚える（shapes_knobs の FOLD_BIT）
+	const bool folded = shapes_knobs(FOLD_BIT);
+	if (!folded) {
+		if (ImGui::BeginChild("voicepane", ImVec2(pane_w, body_h)))
+		{
+			ImGui::PushFont(nullptr, fs * 0.85f);   // 分類・音色・バンク違いの 3 つは小さめの字で
+			program_pane(part, m, &ram, br);
+			ImGui::PopFont();
+		}
+		ImGui::EndChild();
+		ImGui::SameLine(0, st.ItemSpacing.x * 0.5f);
 	}
-	ImGui::EndChild();
-	ImGui::SameLine();
+	{
+		const float hw = folded ? fs * 1.3f : fs * 0.8f;
+		const ImVec2 a = ImGui::GetCursorScreenPos();
+		const bool pressed = ImGui::InvisibleButton("##fold", ImVec2(hw, body_h));
+		const bool hov = ImGui::IsItemHovered();
+		if (pressed)
+			set_shapes_knobs(FOLD_BIT, !folded);
+		if (hov)
+			hint(folded ? "音色を選ぶ面を開く\n分類・音色・バンク違いの列を左に出す"
+			            : "音色を選ぶ面を畳む\n分類・音色・バンク違いの列を左端に畳んで、その幅を右のタブに回す");
+		ImDrawList *dl = ImGui::GetWindowDrawList();
+		const ImVec2 b(a.x + hw, a.y + body_h);
+		dl->AddRectFilled(a, b, ImGui::GetColorU32(hov ? ImGuiCol_ButtonHovered : ImGuiCol_FrameBg), fs * 0.25f);
+		// 向きの三角（畳んでいれば右向き = 開く、開いていれば左向き = 畳む）
+		const float cx = (a.x + b.x) * 0.5f, cy = a.y + fs * 0.9f, t = fs * 0.28f;
+		const ImU32 tc = ImGui::GetColorU32(hov ? ImGuiCol_Text : ImGuiCol_TextDisabled);
+		if (folded)
+			dl->AddTriangleFilled(ImVec2(cx - t * 0.6f, cy - t), ImVec2(cx - t * 0.6f, cy + t), ImVec2(cx + t * 0.7f, cy), tc);
+		else
+			dl->AddTriangleFilled(ImVec2(cx + t * 0.6f, cy - t), ImVec2(cx + t * 0.6f, cy + t), ImVec2(cx - t * 0.7f, cy), tc);
+		// 畳んでいるときは、縦書きで「音色」と今の音色の番号
+		if (folded) {
+			const char *const chars[] = { "音", "色" };
+			float y = cy + fs * 1.0f;
+			for (const char *c : chars) {
+				const ImVec2 ts = ImGui::CalcTextSize(c);
+				dl->AddText(ImVec2(cx - ts.x * 0.5f, y), tc, c);
+				y += ts.y;
+			}
+		}
+		ImGui::SameLine();
+	}
 
 	ImGui::BeginGroup();
 	const float top_y = ImGui::GetCursorScreenPos().y;
