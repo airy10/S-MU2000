@@ -978,33 +978,22 @@ void part_shapes::draw(xg::model &m, const xg_snapshot &ram, bridge &br)
 	if (ImGui::BeginTabBar("right")) {
 		if (ImGui::BeginTabItem("形")) {
 			scope = part;
-			// 列を音の流れの順に横へ並べ、画面に入るのは 3 列ぶん（残りは横に送って見る）。
+			// 列を横へ並べ、画面に入るのは 3 列ぶん（残りは横に送って見る）。
 			// 左に VIB（上）とモジュレーション（下）。フィルタと EQ、EG とピッチ EG、エフェクトは上下 2 段が
 			// つながった区画（メゾネット。上の段が絵、下の段がフェーダーやつまみ）。
-			// EG の右に、このパートに掛かっているインサーション（とインサーション接続のバリエーション）、
-			// つなぎ（送りと順序）、送っているシステムエフェクト（バリエーション・コーラス・リバーブ）。
-			// エフェクトの区画は、そのエフェクトがこのパートの音に効いているときだけ出す。ただしバリエーションは
-			// いつも出す（このパートのインサーションならインサーションの並びに、でなければつなぎの右に）。
-			// ポルタメントは「すべて」のタブにある
-			const int var_type = get_value(m, "variation.type"), cho_type = get_value(m, "chorus.type"), rev_type = get_value(m, "reverb.type");
+			// EG の右に、バリエーション（いつも。INS と PART の切り替えで位置が飛ばないように EG のすぐ次に固定）、
+			// このパートに掛かっているインサーション、つなぎ（送りと順序）、コーラス・リバーブ（種類が NO EFFECT で
+			// なければ、送りが 0 でも出す）。ポルタメントは「すべて」のタブにある
+			const int cho_type = get_value(m, "chorus.type"), rev_type = get_value(m, "reverb.type");
 			const bool var_sys = get_value(m, "variation.connect") == 1;
 			struct fx_col { int slot; bool part_only; };
 			std::vector<fx_col> inline_fx, sys_fx;
 			for (int n = 1; n <= 4; n++)
 				if (get_value(m, std::string(fx_prefix(n)) + ".part") == part)
 					inline_fx.push_back({ n, true });
-			if (!var_sys && get_value(m, "variation.part") == part)
-				inline_fx.push_back({ 7, true });
-			const bool var_on = var_sys && (var_type >> 7) != 0 && get_value(m, "part.variation_send", part) > 0;
-			const bool cho_on = (cho_type >> 7) != 0 &&
-			                    (get_value(m, "part.chorus_send", part) > 0 || (var_on && get_value(m, "variation.to_chorus") > 0));
-			const bool rev_on = (rev_type >> 7) != 0 &&
-			                    (get_value(m, "part.reverb_send", part) > 0 || (cho_on && get_value(m, "chorus.to_reverb") > 0) ||
-			                     (var_on && get_value(m, "variation.to_reverb") > 0));
-			if (!(!var_sys && get_value(m, "variation.part") == part))
-				sys_fx.push_back({ 7, false });   // バリエーションはいつも出す
-			if (cho_on) sys_fx.push_back({ 6, false });
-			if (rev_on) sys_fx.push_back({ 5, false });
+			const fx_col var_col = { 7, !var_sys && get_value(m, "variation.part") == part };
+			if ((cho_type >> 7) != 0) sys_fx.push_back({ 6, false });
+			if ((rev_type >> 7) != 0) sys_fx.push_back({ 5, false });
 
 			const float room_h = body_h - (ImGui::GetCursorScreenPos().y - top_y);
 			const float w = (ImGui::GetContentRegionAvail().x - st.ItemSpacing.x * 2.0f) / 3.0f;
@@ -1060,6 +1049,7 @@ void part_shapes::draw(xg::model &m, const xg_snapshot &ram, bridge &br)
 				           : "このパートが送っているシステムエフェクト。上の段は、出口（緑）と入口（灰）のスペクトラムで、"
 				             "全パートの送りを混ぜた音。下の段で種類・戻り（Return）・パン・パラメータを変える。「詳しく」で設定の窓");
 			};
+			fx_panel(var_col);
 			for (const fx_col &c : inline_fx)
 				fx_panel(c);
 			ImGui::SameLine();
@@ -1067,7 +1057,7 @@ void part_shapes::draw(xg::model &m, const xg_snapshot &ram, bridge &br)
 			      [](int p, xg::model &mm, bridge &b, float pw, float ph) { route_cell(p, mm, b, pw, ph); },
 			      "このパートの音がどのエフェクトを通って出ていくか。上の絵の数字（送りの量）を上下にドラッグ・ホイール・"
 			      "ダブルクリックで変える。XG の並びは VAR → CHO → REV に決まっていて、「つなぎ方」で前から後ろへの送りを"
-			      "開け閉めして順序（並列・直列）を選ぶ。送りが 0 のエフェクトの区画は出さない。横に送るのは Shift + ホイール");
+			      "開け閉めして順序（並列・直列）を選ぶ。横に送るのは Shift + ホイール");
 			for (const fx_col &c : sys_fx)
 				fx_panel(c);
 			ImGui::EndChild();

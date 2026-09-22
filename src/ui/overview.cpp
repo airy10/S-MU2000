@@ -1753,12 +1753,26 @@ struct spec_curve {
 	bool ok = false;
 };
 
+// 鳴っていないとみなす大きさと、目盛りの上端の下限（どちらも FFT の大きさの dB。ハン窓・2048 点では、
+// 振幅 A の正弦波の山がおよそ 20 log10(A × 512)）。MEG のリバーブは音が止まったあとも振幅 40 ほどの
+// 直流のずれと 1-2 の揺れが残り続ける（固定小数点の丸め。2026-09-22 にエミュで測った）。
+// 直流は引き、振幅 16 ほどより小さいものは鳴っていないことにし、目盛りの上端は振幅 400 ほどより下げない
+// （小さな残りかすを「いちばん大きい所から 60 dB」で画面いっぱいに引き伸ばさない）
+constexpr float SPEC_SILENT_DB = 78.0f;
+constexpr float SPEC_REF_MIN_DB = 106.0f;
+
 void spec_update(bridge &br, int part, int src, spec_curve &c)
 {
 	static std::vector<float> wave(bridge::SCOPE_N);
 	c.ok = false;
 	if (br.read_scope(wave.data(), src) != part)
 		return;
+	double mean = 0;
+	for (float v : wave)
+		mean += v;
+	mean /= double(wave.size());
+	for (float &v : wave)
+		v -= float(mean);
 	std::vector<float> db;
 	spectrum::magnitude_db(wave.data(), bridge::SCOPE_N, db);
 	if (c.part != part || c.sm.size() != db.size()) {
@@ -1772,7 +1786,7 @@ void spec_update(bridge &br, int part, int src, spec_curve &c)
 		frame_peak = std::max(frame_peak, db[k]);
 	}
 	c.peak = std::max(frame_peak, c.peak - 0.5f);
-	c.ok = c.peak > -150.0f;
+	c.ok = c.peak > SPEC_SILENT_DB;
 }
 
 // 横の位置ごとに、その幅に入る bin のいちばん大きい値を拾って折れ線に
@@ -1847,8 +1861,8 @@ void overview::spectrum_view(bridge &br, int part, int src, int ghost_src, int k
 	float ref = main.ok ? main.peak : -200.0f;
 	if (ghost)
 		ref = std::max(ref, ghost->peak);
-	if (ref > -150.0f) {
-		const float floor_db = ref - 60.0f;
+	if (ref > SPEC_SILENT_DB) {
+		const float floor_db = std::max(ref, SPEC_REF_MIN_DB) - 60.0f;
 		if (ghost) {
 			const std::vector<ImVec2> gp = spec_points(*ghost, floor_db, x0, x1, top, bottom);
 			dl->AddPolyline(gp.data(), int(gp.size()), IM_COL32(200, 200, 210, 110), 0, 1.0f);
