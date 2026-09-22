@@ -798,9 +798,9 @@ void route_cell(int part, xg::model &m, bridge &br, float w, float h)
 	struct preset { const char *name, *about; int vc, vr, cr; };
 	static const preset PRESETS[] = {
 		{ "並列", "3 つを別々に鳴らす（前から後ろへの送りを全部 0）", 0, 0, 0 },
-		{ "VAR→CHO→REV", "バリエーションの出口をコーラスへ、コーラスの出口をリバーブへ（直列）", 127, 0, 127 },
-		{ "VAR→REV", "バリエーションの出口だけをリバーブへ", 0, 127, 0 },
-		{ "CHO→REV", "コーラスの出口だけをリバーブへ", 0, 0, 127 },
+		{ "V-C-R", "バリエーションの出口をコーラスへ、コーラスの出口をリバーブへ（直列）", 127, 0, 127 },
+		{ "V-R", "バリエーションの出口だけをリバーブへ", 0, 127, 0 },
+		{ "C-R", "コーラスの出口だけをリバーブへ", 0, 0, 127 },
 	};
 	ImGui::PushFont(nullptr, fs * 0.8f);
 	ImGui::TextDisabled("つなぎ方");
