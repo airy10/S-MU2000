@@ -462,12 +462,24 @@ void fx_cell(int slot, bool part_only, int part, xg::model &m, bridge &br, float
 		const bool known = m.get(ps, part, sv);
 		ImGui::SameLine();
 		ImGui::SetNextItemWidth(std::max(fs * 3.0f, pos.x + w - pad - ImGui::GetCursorScreenPos().x));
+		// インサーション接続（ほかのパートに掛けている・OFF）の間は送りが効かないので、動かせるが色を落とす
+		const bool idle = !var_sys;
+		if (idle) {
+			ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetColorU32(ImGuiCol_TextDisabled));
+			ImGui::PushStyleColor(ImGuiCol_SliderGrab, IM_COL32(95, 98, 108, 255));
+			ImGui::PushStyleColor(ImGuiCol_SliderGrabActive, IM_COL32(120, 124, 136, 255));
+		}
 		ImGui::BeginDisabled(!known);
 		if (ImGui::SliderInt("##varsend", &sv, ps.min, ps.max, "Send %d") && known)
 			drag_send(br, m.set(ps, part, sv));
 		ImGui::EndDisabled();
+		if (idle)
+			ImGui::PopStyleColor(3);
 		if (ImGui::IsItemHovered() || ImGui::IsItemActive())
-			hint("%s  %d\nこのパートからバリエーションへの送り（システム接続のとき効く）。ドラッグで変える", official_name("part.variation_send").c_str(), sv);
+			hint(idle ? "%s  %d（効いていない）\nバリエーションがインサーション接続なので、パートからの送りは効かない。"
+			            "値は動かせて、システム接続（INS を切る）に戻すとこの値で送る"
+			          : "%s  %d\nこのパートからバリエーションへの送り。ドラッグで変える",
+			     official_name("part.variation_send").c_str(), sv);
 	}
 
 	// ---- つまみ。入る大きさまで縮める
@@ -850,7 +862,13 @@ void route_cell(int part, xg::model &m, bridge &br, float w, float h)
 	                                     "variation.to_chorus", "variation.to_reverb", "chorus.to_reverb" };
 	static const char *const NAMES[7] = { "Dry", "Var", "Cho", "Rev", "V>C", "V>R", "C>R" };
 	const ImVec2 fa = ImGui::GetCursorScreenPos();
-	overview::fader_strip("##sends", KEYS, NAMES, 7, 3, part, m, br, ImVec2(w - pad * 2.0f, std::max(fs * 3.0f, pos.y + h - pad - fa.y)));
+	// バリエーションがインサーション接続なら、パートの Var Send は効かない（動かせるが色を落とす）
+	const int ff = overview::fader_strip("##sends", KEYS, NAMES, 7, 3, part, m, br,
+	                                     ImVec2(w - pad * 2.0f, std::max(fs * 3.0f, pos.y + h - pad - fa.y)), var_sys ? 0u : 1u << 1);
+	if (ff == 1 && !var_sys)
+		hint("%s（効いていない）\nバリエーションがインサーション接続なので、パートからの送り（Var Send）は効かない。%s"
+		     "値は動かせて、システム接続に戻すとこの値で送る", official_name("part.variation_send").c_str(),
+		     var_part == part ? "このパートの音は丸ごとバリエーションを通る（絵の P→V は太さ最大で固定）。" : "");
 	ImGui::SetCursorScreenPos(pos);
 	ImGui::Dummy(ImVec2(w, h));
 }

@@ -1406,8 +1406,9 @@ void overview::vib_small(int part, xg::model &m, bridge &br, float w, float h, b
 // ミキサーのフェーダー風の絵。縦の溝と目盛り、つまみ（白い線入り）が値の高さにある。
 // 真ん中（64）の目盛りだけ明るく。上に小さく名前と値の字
 static void fader_picture(ImDrawList *dl, float x0, float x1, float top, float bottom, int value, int lo, int hi,
-                          const char *name, const char *text, bool lit, ImU32 name_col = 0)
+                          const char *name, const char *text, bool lit, ImU32 name_col = 0, bool dim = false)
 {
+	// dim は「動かせるが今は効かない」値（色を落とす）
 	const float fs = ImGui::GetFontSize();
 	const float gfs = fs * 0.6f;
 	const float cx = (x0 + x1) * 0.5f;
@@ -1428,16 +1429,18 @@ static void fader_picture(ImDrawList *dl, float x0, float x1, float top, float b
 	// つまみ
 	const float y = b - (b - a) * float(value - lo) / float(std::max(1, hi - lo));
 	const ImVec2 c0(x0 + 1.0f, y - cap_h * 0.5f), c1(x1 - 1.0f, y + cap_h * 0.5f);
-	const ImU32 top_c = lit ? IM_COL32(200, 200, 208, 255) : IM_COL32(160, 160, 168, 255);
-	const ImU32 bot_c = lit ? IM_COL32(110, 110, 118, 255) : IM_COL32(80, 80, 88, 255);
+	const ImU32 top_c = dim ? (lit ? IM_COL32(110, 110, 116, 255) : IM_COL32(88, 88, 94, 255))
+	                        : (lit ? IM_COL32(200, 200, 208, 255) : IM_COL32(160, 160, 168, 255));
+	const ImU32 bot_c = dim ? (lit ? IM_COL32(70, 70, 76, 255) : IM_COL32(56, 56, 62, 255))
+	                        : (lit ? IM_COL32(110, 110, 118, 255) : IM_COL32(80, 80, 88, 255));
 	dl->AddRectFilledMultiColor(c0, c1, top_c, top_c, bot_c, bot_c);
 	dl->AddRect(c0, c1, IM_COL32(30, 30, 34, 255), 1.5f);
-	dl->AddLine(ImVec2(c0.x + 1.0f, y), ImVec2(c1.x - 1.0f, y), IM_COL32(250, 250, 245, 255), 1.5f);
+	dl->AddLine(ImVec2(c0.x + 1.0f, y), ImVec2(c1.x - 1.0f, y), dim ? IM_COL32(140, 140, 146, 255) : IM_COL32(250, 250, 245, 255), 1.5f);
 	// 上に名前と値（2 行）
 	ImFont *font = ImGui::GetFont();
 	const ImVec2 ts = font->CalcTextSizeA(gfs, FLT_MAX, 0.0f, text);
 	const ImVec2 ns = font->CalcTextSizeA(gfs, FLT_MAX, 0.0f, name);
-	dl->AddText(font, gfs, ImVec2(cx - ts.x * 0.5f, top - ts.y - 1.0f), ImGui::GetColorU32(ImGuiCol_Text), text);
+	dl->AddText(font, gfs, ImVec2(cx - ts.x * 0.5f, top - ts.y - 1.0f), ImGui::GetColorU32(dim ? ImGuiCol_TextDisabled : ImGuiCol_Text), text);
 	dl->AddText(font, gfs, ImVec2(cx - ns.x * 0.5f, top - ts.y - ns.y - 1.0f), name_col ? name_col : ImGui::GetColorU32(ImGuiCol_TextDisabled), name);
 }
 
@@ -1597,7 +1600,7 @@ namespace {
 // 戻り値は、カーソルが載っているかつまんでいるフェーダー（無ければ -1）
 int fader_row(const char *const *keys, const char *const *names, int n, int group_after, int part, xg::model &m, bridge &br,
               ImVec2 a, ImVec2 b, bool hovered, bool active, ImGuiID id, int *vals, bool *have,
-              ImU32 col_first = 0, ImU32 col_second = 0)
+              ImU32 col_first = 0, ImU32 col_second = 0, unsigned dim_mask = 0)
 {
 	ImGuiIO &io = ImGui::GetIO();
 	const float fs = ImGui::GetFontSize();
@@ -1672,7 +1675,7 @@ int fader_row(const char *const *keys, const char *const *names, int n, int grou
 		// 名前の色は組ごと（EG の組とピッチ EG の組を絵の線と同じ色にする）
 		const ImU32 nc = (group_after >= 0 && i > group_after) ? col_second : col_first;
 		fader_picture(dl, fx0[size_t(i)], fx0[size_t(i)] + fw, ftop, fbot, vals[i], ps[size_t(i)]->min, ps[size_t(i)]->max, names[i],
-		              t.c_str(), focus == i, nc);
+		              t.c_str(), focus == i, nc, ((dim_mask >> i) & 1) != 0);
 	}
 	return focus;
 }
@@ -1814,7 +1817,7 @@ std::vector<ImVec2> spec_points(const spec_curve &c, float floor_db, float x0, f
 } // namespace
 
 int overview::fader_strip(const char *id, const char *const *keys, const char *const *names, int n, int group_after, int part,
-                          xg::model &m, bridge &br, ImVec2 size)
+                          xg::model &m, bridge &br, ImVec2 size, unsigned dim_mask)
 {
 	std::vector<int> vals(static_cast<size_t>(n));
 	std::unique_ptr<bool[]> have(new bool[size_t(n)]);
@@ -1826,7 +1829,7 @@ int overview::fader_strip(const char *id, const char *const *keys, const char *c
 	ImGui::InvisibleButton(id, size, ImGuiButtonFlags_MouseButtonLeft);
 	const bool hovered = ImGui::IsItemHovered(), active = ImGui::IsItemActive();
 	return fader_row(keys, names, n, group_after, part, m, br, pos, ImVec2(pos.x + size.x, pos.y + size.y), hovered, active,
-	                 ImGui::GetItemID(), vals.data(), have.get());
+	                 ImGui::GetItemID(), vals.data(), have.get(), 0, 0, dim_mask);
 }
 
 void overview::spectrum_view(bridge &br, int part, int src, int ghost_src, int key, ImVec2 a, ImVec2 b, const char *label,

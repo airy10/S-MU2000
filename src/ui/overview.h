@@ -62,9 +62,10 @@ public:
 	                          bool backdrop = false);
 	// フェーダーを n 本、今の位置から size の四角に横に並べる（音色の窓の下の段と同じ絵と操作）。
 	// パートのパラメータは part の値、エフェクトのパラメータ（reverb.* など）は共通の値。group_after の後ろで組を分ける。
+	// dim_mask のビットが立ったフェーダーは、動かせるが今は効かない値として色を落とす。
 	// 戻り値はカーソルが載っているかつまんでいるフェーダー（無ければ -1）
 	static int fader_strip(const char *id, const char *const *keys, const char *const *names, int n, int group_after, int part,
-	                       xg::model &m, bridge &br, ImVec2 size);
+	                       xg::model &m, bridge &br, ImVec2 size, unsigned dim_mask = 0);
 	// フィルタ: 実際の周波数特性とパートの音のスペクトラムを同じ目盛りで描き、Cutoff・Resonance・HPF のフェーダー（音色の窓）
 	static void filter_cell(int part, xg::model &m, bridge &br, float w, float h, bool compact);
 	// 一覧の小さなマスのフィルタ（目安の形。filter_cell が compact のとき使う）
