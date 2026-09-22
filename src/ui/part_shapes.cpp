@@ -559,38 +559,105 @@ void route_cell(int part, xg::model &m, bridge &br, float w, float h)
 	const bool var_sys = get_value(m, "variation.connect") == 1;
 	const int var_part = get_value(m, "variation.part");
 
-	// ---- 流れの絵。段違いに頭文字だけの節を置く: 左に背の高い P（パート）、右に背の高い O（出力）、
-	// 間に V（バリエーション・上）・C（コーラス・中）・R（リバーブ・下）を右下がりに。線は縦横だけで、
-	// 送りは前から後ろ（左上から右下）にしか流れないので、この並びなら順序がそのまま形になる
-	const float ax = pos.x + pad, ay = pos.y + pad, aw = w - pad * 2.0f, ah = split - pad * 2.0f - pos.y;
+	// ---- 流れの絵。段違いに頭文字だけの節を置く: 左に細長い P（パート）、右に細長い O（出力）、
+	// 間に V（バリエーション・上）・C（コーラス・中）・R（リバーブ・下）を右下がりに。線は縦横だけ（角は丸める）。
+	// 送りは前から後ろ（左上から右下）にしか流れないので、この並びなら順序がそのまま形になる。
+	// 線は送り元の色で、量が太さと明るさ。0 でない線には流れる粒を走らせる
+	const float ax = pos.x + pad * 2.0f, ay = pos.y + pad * 2.0f, aw = w - pad * 4.0f, ah = split - pad * 4.0f - pos.y;
 	struct box { float x0, y0, x1, y1; float cx() const { return (x0 + x1) * 0.5f; } float cy() const { return (y0 + y1) * 0.5f; } };
-	const float bw = std::max(fs * 1.3f, aw * 0.06f);
-	auto col_box = [&](float fx, float fy0, float fy1) { const float x = ax + aw * fx; return box{ x, ay + ah * fy0, x + bw, ay + ah * fy1 }; };
-	const box NP = col_box(0.02f, 0.03f, 0.97f), NV = col_box(0.22f, 0.03f, 0.30f), NC = col_box(0.44f, 0.36f, 0.60f),
-	          NR = col_box(0.66f, 0.66f, 0.90f);
-	const box NO = { ax + aw * 0.98f - bw, ay + ah * 0.03f, ax + aw * 0.98f, ay + ah * 0.97f };
+	const float rail = std::max(fs * 1.0f, aw * 0.045f);
+	const float nw = std::clamp(aw * 0.1f, fs * 1.8f, fs * 3.2f);
+	auto node_at = [&](float fx, float fy0, float fy1) { const float x = ax + aw * fx - nw * 0.5f; return box{ x, ay + ah * fy0, x + nw, ay + ah * fy1 }; };
+	const box NP = { ax, ay, ax + rail, ay + ah }, NO = { ax + aw - rail, ay, ax + aw, ay + ah };
+	const box NV = node_at(0.27f, 0.02f, 0.28f), NC = node_at(0.50f, 0.37f, 0.61f), NR = node_at(0.73f, 0.70f, 0.94f);
 	auto at = [&](const box &bx, float f) { return bx.y0 + (bx.y1 - bx.y0) * f; };
-	struct edge { const char *key; bool part_param; int n; ImVec2 pt[4]; float badge_x; };
-	const float rv = NR.cx() + bw * 0.25f, rc = NR.cx() - bw * 0.25f;
+
+	// 節の色。パートは金、出力は白っぽく、エフェクトは種類の系統ごと（設定の窓の筐体と同じ分け方）
+	auto family = [](int type) -> ImU32 {
+		const int msb = type >> 7;
+		if (msb == 0)                      return IM_COL32(120, 120, 128, 255);
+		if (msb >= 0x01 && msb <= 0x04)    return IM_COL32(95, 150, 255, 255);    // 残響
+		if (msb >= 0x05 && msb <= 0x08)    return IM_COL32(60, 205, 195, 255);    // ディレイ
+		if (msb >= 0x09 && msb <= 0x0c)    return IM_COL32(110, 140, 255, 255);   // 初期反射
+		if ((msb >= 0x41 && msb <= 0x45) || msb == 0x48) return IM_COL32(185, 125, 255, 255);   // 揺れ
+		if (msb >= 0x49 && msb <= 0x4b)    return IM_COL32(245, 100, 85, 255);    // 歪み
+		if (msb == 0x4c || msb == 0x4d)    return IM_COL32(175, 180, 190, 255);   // EQ
+		return IM_COL32(110, 215, 125, 255);
+	};
+	const int vtype = get_value(m, "variation.type"), ctype = get_value(m, "chorus.type"), rtype = get_value(m, "reverb.type");
+	const ImU32 COL_P = IM_COL32(245, 190, 70, 255), COL_O = IM_COL32(170, 185, 210, 255);
+	const ImU32 COL_V = family(vtype), COL_C = family(ctype), COL_R = family(rtype);
+	auto with_alpha = [](ImU32 c, float a) { return (c & 0x00ffffffu) | (ImU32(std::clamp(a, 0.0f, 1.0f) * 255.0f) << 24); };
+
+	// 背景に薄い点の格子
+	{
+		const float g = fs * 0.9f;
+		for (float y = ay; y <= ay + ah; y += g)
+			for (float x = ax; x <= ax + aw; x += g)
+				dl->AddRectFilled(ImVec2(x, y), ImVec2(x + 1.0f, y + 1.0f), IM_COL32(255, 255, 255, 18));
+	}
+
+	struct edge { const char *key; bool part_param; int n; ImVec2 pt[3]; float badge_x; ImU32 col; };
+	const float rv = NR.cx() + nw * 0.22f, rc = NR.cx() - nw * 0.22f;
+	const float bx_send = (NP.x1 + NV.x0) * 0.5f, bx_ret = NR.x1 + (NO.x0 - NR.x1) * 0.4f;
 	const edge EDGES[] = {
 		// パートからの送り（札は P と V の間の列にそろえる）
-		{ "part.variation_send", true, 2, { { NP.x1, NV.cy() }, { NV.x0, NV.cy() } }, (NP.x1 + NV.x0) * 0.5f },
-		{ "part.chorus_send", true, 2, { { NP.x1, at(NC, 0.6f) }, { NC.x0, at(NC, 0.6f) } }, (NP.x1 + NV.x0) * 0.5f },
-		{ "part.reverb_send", true, 2, { { NP.x1, at(NR, 0.75f) }, { NR.x0, at(NR, 0.75f) } }, (NP.x1 + NV.x0) * 0.5f },
-		{ "part.dry_level", true, 2, { { NP.x1, ay + ah * 0.955f }, { NO.x0, ay + ah * 0.955f } }, (NP.x1 + NV.x0) * 0.5f },
+		{ "part.variation_send", true, 2, { { NP.x1, NV.cy() }, { NV.x0, NV.cy() } }, bx_send, COL_P },
+		{ "part.chorus_send", true, 2, { { NP.x1, at(NC, 0.62f) }, { NC.x0, at(NC, 0.62f) } }, bx_send, COL_P },
+		{ "part.reverb_send", true, 2, { { NP.x1, at(NR, 0.72f) }, { NR.x0, at(NR, 0.72f) } }, bx_send, COL_P },
+		{ "part.dry_level", true, 2, { { NP.x1, ay + ah * 0.975f }, { NO.x0, ay + ah * 0.975f } }, bx_send, COL_P },
 		// エフェクトからエフェクトへ（右へ出て、下の節の頭へ降りる）
-		{ "variation.to_chorus", false, 3, { { NV.x1, at(NV, 0.8f) }, { NC.cx(), at(NV, 0.8f) }, { NC.cx(), NC.y0 } }, (NV.x1 + NC.cx()) * 0.5f },
-		{ "variation.to_reverb", false, 3, { { NV.x1, at(NV, 0.5f) }, { rv, at(NV, 0.5f) }, { rv, NR.y0 } }, (NC.x1 + NR.x0) * 0.5f },
-		{ "chorus.to_reverb", false, 3, { { NC.x1, at(NC, 0.7f) }, { rc, at(NC, 0.7f) }, { rc, NR.y0 } }, (NC.x1 + rc) * 0.5f },
-		// 戻り（右の O へ）
-		{ "variation.return", false, 2, { { NV.x1, at(NV, 0.2f) }, { NO.x0, at(NV, 0.2f) } }, (NR.x1 + NO.x0) * 0.5f },
-		{ "chorus.return", false, 2, { { NC.x1, at(NC, 0.25f) }, { NO.x0, at(NC, 0.25f) } }, (NR.x1 + NO.x0) * 0.5f },
-		{ "reverb.return", false, 2, { { NR.x1, NR.cy() }, { NO.x0, NR.cy() } }, (NR.x1 + NO.x0) * 0.5f },
+		{ "variation.to_chorus", false, 3, { { NV.x1, at(NV, 0.8f) }, { NC.cx(), at(NV, 0.8f) }, { NC.cx(), NC.y0 } }, (NV.x1 + NC.cx()) * 0.5f, COL_V },
+		{ "variation.to_reverb", false, 3, { { NV.x1, at(NV, 0.5f) }, { rv, at(NV, 0.5f) }, { rv, NR.y0 } }, (NC.x1 + rc) * 0.5f, COL_V },
+		{ "chorus.to_reverb", false, 3, { { NC.x1, at(NC, 0.72f) }, { rc, at(NC, 0.72f) }, { rc, NR.y0 } }, (NC.x1 + rc) * 0.5f, COL_C },
+		// 戻り（右の O へ。札は R と O の間の列にそろえる）
+		{ "variation.return", false, 2, { { NV.x1, at(NV, 0.2f) }, { NO.x0, at(NV, 0.2f) } }, bx_ret, COL_V },
+		{ "chorus.return", false, 2, { { NC.x1, at(NC, 0.25f) }, { NO.x0, at(NC, 0.25f) } }, bx_ret, COL_C },
+		{ "reverb.return", false, 2, { { NR.x1, at(NR, 0.4f) }, { NO.x0, at(NR, 0.4f) } }, bx_ret, COL_R },
 	};
+	const int NE = int(sizeof(EDGES) / sizeof(EDGES[0]));
+	// V→C と C→R は、札が同じ高さに来ないように V→R の札を C の右に寄せてある。V→C と V→R の札の高さは V の中で分けてある
+
+	// 角を丸めた縦横の線の、先頭から d の位置（粒を走らせる）
+	auto point_on = [](const edge &E, float d) {
+		for (int i = 0; i + 1 < E.n; i++) {
+			const ImVec2 p0 = E.pt[i], p1 = E.pt[i + 1];
+			const float len = std::fabs(p1.x - p0.x) + std::fabs(p1.y - p0.y);
+			if (d <= len || i + 2 == E.n) {
+				const float t = len > 0.0f ? std::clamp(d / len, 0.0f, 1.0f) : 0.0f;
+				return ImVec2(p0.x + (p1.x - p0.x) * t, p0.y + (p1.y - p0.y) * t);
+			}
+			d -= len;
+		}
+		return E.pt[E.n - 1];
+	};
+	auto length_of = [](const edge &E) {
+		float L = 0;
+		for (int i = 0; i + 1 < E.n; i++)
+			L += std::fabs(E.pt[i + 1].x - E.pt[i].x) + std::fabs(E.pt[i + 1].y - E.pt[i].y);
+		return L;
+	};
+	auto stroke = [&](const edge &E, ImU32 c, float thick) {
+		const float r = fs * 0.45f;
+		dl->PathLineTo(E.pt[0]);
+		for (int i = 1; i + 1 < E.n; i++) {
+			const ImVec2 c0 = E.pt[i], pa = E.pt[i - 1], pb = E.pt[i + 1];
+			const float la = std::fabs(c0.x - pa.x) + std::fabs(c0.y - pa.y), lb = std::fabs(pb.x - c0.x) + std::fabs(pb.y - c0.y);
+			const float rr = std::min({ r, la * 0.5f, lb * 0.5f });
+			const ImVec2 da((c0.x - pa.x) / std::max(la, 1e-3f), (c0.y - pa.y) / std::max(la, 1e-3f));
+			const ImVec2 db((pb.x - c0.x) / std::max(lb, 1e-3f), (pb.y - c0.y) / std::max(lb, 1e-3f));
+			dl->PathLineTo(ImVec2(c0.x - da.x * rr, c0.y - da.y * rr));
+			dl->PathBezierQuadraticCurveTo(c0, ImVec2(c0.x + db.x * rr, c0.y + db.y * rr), 8);
+		}
+		dl->PathLineTo(E.pt[E.n - 1]);
+		dl->PathStroke(c, 0, thick);
+	};
+
 	ImGuiStorage *st = ImGui::GetStateStorage();
-	struct badge { ImVec2 c; std::string text; ImU32 lc; float t; int e; int v; bool known; bool var_ins; };
+	struct badge { ImVec2 c; std::string text; ImU32 col; float t; int e; int v; bool known; bool var_ins; };
 	std::vector<badge> badges;
-	for (int e = 0; e < int(sizeof(EDGES) / sizeof(EDGES[0])); e++) {
+	const float now = float(ImGui::GetTime());
+	for (int e = 0; e < NE; e++) {
 		const edge &E = EDGES[e];
 		const xg::param &p = P(E.key);
 		int v = p.def;
@@ -598,16 +665,26 @@ void route_cell(int part, xg::model &m, bridge &br, float w, float h)
 		// バリエーションがインサーション接続なら、パートからの送りは効かない（掛けたパートにはつながって見せる）
 		const bool var_ins_edge = e == 0 && !var_sys;
 		const float t = var_ins_edge ? (var_part == part ? 1.0f : 0.0f) : float(v) / 127.0f;
-		const ImU32 lc = t > 0.0f ? IM_COL32(90, 170, 230, int(90 + 165 * t)) : IM_COL32(200, 200, 210, 45);
-		const float thick = t > 0.0f ? 1.0f + 2.5f * t : 1.0f;
-		dl->AddPolyline(E.pt, E.n, lc, 0, thick);
+		const float thick = 1.2f + 2.4f * t;
+		if (t > 0.0f) {
+			stroke(E, with_alpha(E.col, 0.10f + 0.15f * t), thick * 3.2f);    // にじみ
+			stroke(E, with_alpha(E.col, 0.55f + 0.45f * t), thick);
+			// 流れる粒
+			const float L = length_of(E), gap = fs * 1.6f;
+			const float off = std::fmod(now * fs * (2.0f + 4.0f * t), gap);
+			for (float d = off; d < L - fs * 0.5f; d += gap)
+				dl->AddCircleFilled(point_on(E, d), 1.2f + 1.2f * t, with_alpha(IM_COL32(255, 255, 255, 255), 0.35f + 0.5f * t), 8);
+		} else {
+			stroke(E, IM_COL32(170, 175, 190, 55), 1.0f);
+		}
 		// 矢じり（最後の線の向き）
 		const ImVec2 tip = E.pt[E.n - 1], from = E.pt[E.n - 2];
-		const float hl = fs * 0.35f;
+		const float hl = fs * (0.3f + 0.12f * t);
+		const ImU32 hc = t > 0.0f ? with_alpha(E.col, 0.7f + 0.3f * t) : IM_COL32(170, 175, 190, 70);
 		if (from.y == tip.y)
-			dl->AddTriangleFilled(tip, ImVec2(tip.x - hl, tip.y - hl * 0.6f), ImVec2(tip.x - hl, tip.y + hl * 0.6f), lc);
+			dl->AddTriangleFilled(tip, ImVec2(tip.x - hl, tip.y - hl * 0.55f), ImVec2(tip.x - hl, tip.y + hl * 0.55f), hc);
 		else
-			dl->AddTriangleFilled(tip, ImVec2(tip.x - hl * 0.6f, tip.y - hl), ImVec2(tip.x + hl * 0.6f, tip.y - hl), lc);
+			dl->AddTriangleFilled(tip, ImVec2(tip.x - hl * 0.55f, tip.y - hl), ImVec2(tip.x + hl * 0.55f, tip.y - hl), hc);
 		char text[16];
 		if (var_ins_edge)
 			std::snprintf(text, sizeof(text), "%s", var_part == part ? "INS" : "--");
@@ -615,43 +692,61 @@ void route_cell(int part, xg::model &m, bridge &br, float w, float h)
 			std::snprintf(text, sizeof(text), "%d", v);
 		else
 			std::snprintf(text, sizeof(text), "--");
-		badges.push_back({ ImVec2(E.badge_x, E.pt[0].y), text, lc, t, e, v, known, var_ins_edge });
+		badges.push_back({ ImVec2(E.badge_x, E.pt[0].y), text, E.col, t, e, v, known, var_ins_edge });
 	}
-	// 節（頭文字だけ。カーソルを載せると名前と種類）
+
+	// 節
+	auto node_face = [&](const box &bx, ImU32 c, bool on, float round) {
+		const ImVec2 a(bx.x0, bx.y0), b(bx.x1, bx.y1);
+		dl->AddRectFilled(ImVec2(a.x + 1.5f, a.y + 2.5f), ImVec2(b.x + 1.5f, b.y + 2.5f), IM_COL32(0, 0, 0, 90), round);   // 影
+		dl->AddRectFilled(a, b, on ? with_alpha(c, 0.28f) : IM_COL32(44, 46, 54, 255), round);
+		dl->AddRectFilled(a, ImVec2(b.x, a.y + std::min(b.y - a.y, fs * 0.9f)), on ? with_alpha(c, 0.22f) : IM_COL32(60, 62, 70, 120), round,
+		                  ImDrawFlags_RoundCornersTop);                                                                       // 上の照り
+		dl->AddRect(a, b, on ? with_alpha(c, 0.95f) : IM_COL32(110, 112, 124, 200), round, 0, 1.5f);
+	};
 	static const char *const NODE[5] = { "P", "V", "C", "R", "O" };
 	static const char *const NODE_NAME[5] = { "パート", "バリエーション", "コーラス", "リバーブ", "出力" };
-	static const char *const TYPE_KEY[5] = { nullptr, "variation.type", "chorus.type", "reverb.type", nullptr };
+	const int TYPES[5] = { -1, vtype, ctype, rtype, -1 };
 	const box *const NODES[5] = { &NP, &NV, &NC, &NR, &NO };
+	const ImU32 COLS[5] = { COL_P, COL_V, COL_C, COL_R, COL_O };
 	for (int i = 0; i < 5; i++) {
 		const box &bx = *NODES[i];
-		bool on = true;
+		const bool on = TYPES[i] < 0 || (TYPES[i] >> 7) != 0;
+		const bool rail_node = i == 0 || i == 4;
+		node_face(bx, COLS[i], on, rail_node ? rail * 0.5f : fs * 0.35f);
+		// 頭文字。細長い節は上に寄せる
+		const float lfs = rail_node ? fs * 0.85f : fs * 1.15f;
+		const ImVec2 ts = ImGui::GetFont()->CalcTextSizeA(lfs, FLT_MAX, 0.0f, NODE[i]);
+		const ImVec2 tp(bx.cx() - ts.x * 0.5f, rail_node ? bx.y0 + fs * 0.35f : bx.cy() - ts.y * 0.5f);
+		const ImU32 tc = on ? IM_COL32(250, 250, 252, 255) : IM_COL32(150, 150, 160, 255);
+		dl->AddText(ImGui::GetFont(), lfs, tp, tc, NODE[i]);
+		dl->AddText(ImGui::GetFont(), lfs, ImVec2(tp.x + 0.6f, tp.y), tc, NODE[i]);     // 太字の代わり
+		if (!on) {                                                                      // NO EFFECT は斜線
+			dl->AddLine(ImVec2(bx.x0 + 3.0f, bx.y1 - 3.0f), ImVec2(bx.x1 - 3.0f, bx.y0 + 3.0f), IM_COL32(150, 150, 160, 160), 1.2f);
+		}
 		std::string sub;
-		if (TYPE_KEY[i]) {
-			const int ty = get_value(m, TYPE_KEY[i]);
-			on = (ty >> 7) != 0;
-			sub = on ? xg::fx_name(ty) : std::string("NO EFFECT");
+		if (TYPES[i] >= 0) {
+			sub = on ? xg::fx_name(TYPES[i]) : std::string("NO EFFECT");
 			if (i == 1 && !var_sys)
 				sub += "（インサーション接続。" + (var_part < XG_PARTS + 2 ? part_name(var_part) : std::string("OFF")) + "）";
 		}
-		const ImVec2 a(bx.x0, bx.y0), b(bx.x1, bx.y1);
-		dl->AddRectFilled(a, b, on ? IM_COL32(245, 190, 20, 255) : IM_COL32(90, 86, 70, 255), 2.0f);
-		const ImVec2 ts = ImGui::CalcTextSize(NODE[i]);
-		dl->AddText(ImVec2(bx.cx() - ts.x * 0.5f, bx.cy() - ts.y * 0.5f), on ? IM_COL32(20, 20, 20, 255) : IM_COL32(170, 170, 170, 255), NODE[i]);
-		ImGui::SetCursorScreenPos(a);
+		ImGui::SetCursorScreenPos(ImVec2(bx.x0, bx.y0));
 		ImGui::PushID(100 + i);
-		ImGui::InvisibleButton("##node", ImVec2(b.x - a.x, b.y - a.y));
+		ImGui::InvisibleButton("##node", ImVec2(bx.x1 - bx.x0, bx.y1 - bx.y0));
 		if (ImGui::IsItemHovered())
 			hint("%s\n%s", NODE_NAME[i], sub.empty() ? (i == 0 ? "このパートの音（インサーションを通したあと）" : "乾いた音と戻りを混ぜて、マスター EQ へ")
 			                                         : sub.c_str());
 		ImGui::PopID();
 	}
-	// 値の札。上下にドラッグ・ホイール・ダブルクリックで 0 と既定を行き来
+
+	// 値の札（丸い札）。上下にドラッグ・ホイール・ダブルクリックで 0 と既定を行き来
 	for (const badge &bd : badges) {
 		const edge &E = EDGES[bd.e];
 		const xg::param &p = P(E.key);
-		const float tfs = fs * 0.62f;
+		const float tfs = fs * 0.6f;
 		const ImVec2 ts = ImGui::GetFont()->CalcTextSizeA(tfs, FLT_MAX, 0.0f, bd.text.c_str());
-		const ImVec2 r0(bd.c.x - ts.x * 0.5f - fs * 0.25f, bd.c.y - ts.y * 0.5f - 1.0f), r1(bd.c.x + ts.x * 0.5f + fs * 0.25f, bd.c.y + ts.y * 0.5f + 1.0f);
+		const float hh = ts.y * 0.5f + 2.0f, hw = std::max(ts.x * 0.5f + fs * 0.3f, hh);
+		const ImVec2 r0(bd.c.x - hw, bd.c.y - hh), r1(bd.c.x + hw, bd.c.y + hh);
 		ImGui::SetCursorScreenPos(r0);
 		ImGui::PushID(bd.e);
 		ImGui::InvisibleButton("##edge", ImVec2(r1.x - r0.x, r1.y - r0.y));
@@ -677,10 +772,11 @@ void route_cell(int part, xg::model &m, bridge &br, float w, float h)
 			if (nv != v)
 				drag_send(br, m.set(p, E.part_param ? part : 0, nv));
 		}
-		dl->AddRectFilled(r0, r1, hov || act ? IM_COL32(50, 64, 80, 255) : IM_COL32(16, 20, 26, 235), 4.0f);
-		dl->AddRect(r0, r1, bd.lc, 4.0f);
+		const bool lit = bd.t > 0.0f;
+		dl->AddRectFilled(r0, r1, hov || act ? IM_COL32(40, 48, 62, 255) : IM_COL32(18, 21, 28, 240), hh);
+		dl->AddRect(r0, r1, lit ? with_alpha(bd.col, hov || act ? 1.0f : 0.8f) : IM_COL32(120, 124, 140, hov || act ? 200 : 110), hh, 0, hov || act ? 1.6f : 1.0f);
 		dl->AddText(ImGui::GetFont(), tfs, ImVec2(bd.c.x - ts.x * 0.5f, bd.c.y - ts.y * 0.5f),
-		            bd.t > 0.0f ? IM_COL32(220, 240, 255, 255) : IM_COL32(200, 200, 210, 150), bd.text.c_str());
+		            lit ? IM_COL32(240, 244, 250, 255) : IM_COL32(160, 164, 176, 170), bd.text.c_str());
 		if (hov || act) {
 			if (bd.var_ins)
 				hint("バリエーションはインサーション接続\n%s。パートからの送り（Var Send）は効かない。バリエーションの区画の [INS] [PART] で切り替える",
