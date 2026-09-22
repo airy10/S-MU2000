@@ -56,8 +56,10 @@ public:
 	// パートの音のスペクトラムを a-b の四角に描く。横は実際の周波数（20 Hz-20 kHz の対数）、縦は出す線の
 	// いちばん大きい所から 60 dB 下まで。src は bridge::read_scope の番号（0 が声の和、bridge::scope_src で
 	// エフェクトの入口・出口）。ghost_src が 0 以上なら、それ（エフェクトの入口など）を灰色の線で同じ目盛りに重ねる。
-	// key は下がるときの滑らかさの状態を区画ごとに分ける番号。label は左上に小さく出す字（nullptr で無し）
-	static void spectrum_view(bridge &br, int part, int src, int ghost_src, int key, ImVec2 a, ImVec2 b, const char *label);
+	// key は下がるときの滑らかさの状態を区画ごとに分ける番号。label は左上に小さく出す字（nullptr で無し）。
+	// backdrop ならほかの絵の背景に薄く描く（地の四角・周波数の目盛り・「鳴っていない」の字は出さない）
+	static void spectrum_view(bridge &br, int part, int src, int ghost_src, int key, ImVec2 a, ImVec2 b, const char *label,
+	                          bool backdrop = false);
 	// フェーダーを n 本、今の位置から size の四角に横に並べる（音色の窓の下の段と同じ絵と操作）。
 	// パートのパラメータは part の値、エフェクトのパラメータ（reverb.* など）は共通の値。group_after の後ろで組を分ける。
 	// 戻り値はカーソルが載っているかつまんでいるフェーダー（無ければ -1）

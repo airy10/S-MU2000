@@ -822,8 +822,8 @@ void part_shapes::draw(xg::model &m, const xg_snapshot &ram, bridge &br)
 			      [](int p, xg::model &mm, bridge &b, float pw, float ph) { overview::env_cell(p, mm, b, pw, ph); },
 			      "音量の形（青。立ち上がり → 落ち着き → 伸ばし → 離して消える）と音程の動き（橙）を、同じ実際の時間の目盛り・"
 			      "同じ離す時刻で 1 枚に。縦は左が音量（dB）、右が音程（セント）。下のフェーダーで EG の Attack・Decay・Release と"
-			      "ピッチ EG の Init・Attack・Rel Lv・Rel Tm を変える。下の帯は EG を通したあとの音のスペクトラム"
-			      "（インサーションの前）");
+			      "ピッチ EG の Init・Attack・Rel Lv・Rel Tm を変える。緑の背景は EG を通したあとの音のスペクトラム（横は周波数。"
+			      "インサーションの前）");
 			// エフェクトの列
 			auto fx_panel = [&](const fx_col &c) {
 				ImGui::SameLine();

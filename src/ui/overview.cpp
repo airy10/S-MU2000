@@ -1815,7 +1815,8 @@ int overview::fader_strip(const char *id, const char *const *keys, const char *c
 	                 ImGui::GetItemID(), vals.data(), have.get());
 }
 
-void overview::spectrum_view(bridge &br, int part, int src, int ghost_src, int key, ImVec2 a, ImVec2 b, const char *label)
+void overview::spectrum_view(bridge &br, int part, int src, int ghost_src, int key, ImVec2 a, ImVec2 b, const char *label,
+                             bool backdrop)
 {
 	static std::map<int, spec_curve> curves;       // key * 2 が出す線、key * 2 + 1 が重ねる線
 	const float fs = ImGui::GetFontSize();
@@ -1823,8 +1824,11 @@ void overview::spectrum_view(bridge &br, int part, int src, int ghost_src, int k
 	const float F_LO = 20.0f, F_HI = 20000.0f;
 	const float x0 = a.x, x1 = b.x, top = a.y, bottom = b.y;
 	auto x_hz = [&](float f) { return x0 + (x1 - x0) * std::log(std::clamp(f, F_LO, F_HI) / F_LO) / std::log(F_HI / F_LO); };
-	dl->AddRectFilled(a, b, IM_COL32(0, 0, 0, 60), 3.0f);
+	if (!backdrop)
+		dl->AddRectFilled(a, b, IM_COL32(0, 0, 0, 60), 3.0f);
 	for (float f : { 100.0f, 1000.0f, 10000.0f }) {
+		if (backdrop)
+			break;
 		const float x = x_hz(f);
 		dl->AddLine(ImVec2(x, top), ImVec2(x, bottom), col(ImGuiCol_TextDisabled, 0.15f));
 		const char *t = f >= 10000.0f ? "10k" : f >= 1000.0f ? "1k" : "100";
@@ -1856,7 +1860,7 @@ void overview::spectrum_view(bridge &br, int part, int src, int ghost_src, int k
 				dl->AddQuadFilled(ImVec2(sp[i - 1].x, bottom), sp[i - 1], sp[i], ImVec2(sp[i].x, bottom), fill);
 			dl->AddPolyline(sp.data(), int(sp.size()), edge, 0, 1.0f);
 		}
-	} else {
+	} else if (!backdrop) {
 		const char *t = "（鳴っていない）";
 		const ImVec2 ts = ImGui::GetFont()->CalcTextSizeA(fs * 0.6f, FLT_MAX, 0.0f, t);
 		dl->AddText(ImGui::GetFont(), fs * 0.6f, ImVec2((x0 + x1 - ts.x) * 0.5f, (top + bottom - ts.y) * 0.5f), col(ImGuiCol_TextDisabled, 0.6f), t);
@@ -2134,13 +2138,12 @@ void overview::env_cell(int part, xg::model &m, bridge &br, float w, float h)
 	const int focus = fader_row(KEYS, NAMES, NF, 2, part, m, br, ImVec2(pos.x + pad, split + pad), ImVec2(pos.x + w - pad, pos.y + h - pad),
 	          hovered, active, id, vals, have, IM_COL32(150, 190, 255, 255), IM_COL32(255, 170, 130, 255));
 	dl->AddLine(ImVec2(pos.x, split), ImVec2(pos.x + w, split), col(ImGuiCol_Border), 1.0f);
-	// 絵。上に実際の時間の字を 2 行置くぶん空け、下に EG を通したあとの音のスペクトラムの帯
+	// 絵。上に実際の時間の字を 2 行置くぶん空け
 	const float line = fs * 0.75f;
 	const float x0 = pos.x + pad + fs * 1.6f, x1 = pos.x + w - pad - fs * 1.6f;
-	const float spec_h = (split - pos.y) * 0.28f;
-	const float top = pos.y + pad + line * 2.2f, bottom = split - pad * 3.0f - spec_h;
-	spectrum_view(br, part, 0, -1, 1, ImVec2(pos.x + pad, split - pad - spec_h), ImVec2(pos.x + w - pad, split - pad),
-	              "EG を通したあとの音（インサーションの前）");
+	const float top = pos.y + pad + line * 2.2f, bottom = split - pad;
+	// 背景に、EG を通したあとの音（インサーションの前）のスペクトラム。フィルタの絵と同じく横は実際の周波数
+	spectrum_view(br, part, 0, -1, 1, ImVec2(pos.x + pad, top), ImVec2(pos.x + w - pad, bottom), nullptr, true);
 	const float mid = (top + bottom) * 0.5f, half = (bottom - top) * 0.46f;
 
 	voice_ctx v;
