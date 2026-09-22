@@ -40,10 +40,14 @@ public:
 	// compact は一覧の中の小さなマスのとき。描くだけでマウスでは触れない（ダブルクリックで
 	// パートの音色の窓を頼むのは呼ぶ側）。点をつまんで変えるのは compact でないときだけ
 	//
-	// EG: アタック・ディケイ・リリースの形を描き、点をつまんで動かす
+	// EG: 音量の形を実際の時間で描き、Attack・Decay・Release のフェーダー（音色の窓。ピッチ EG と同じ時間の目盛り）
 	static void eg_cell(int part, xg::model &m, bridge &br, float w, float h, bool compact);
-	// ピッチ EG: 音程の動き（出だし → 本来の音程 → 離してからリリースレベル）を描き、点をつまんで動かす
+	// 一覧の小さなマスのEG（目安の形。eg_cell が compact のとき使う）
+	static void eg_small(int part, xg::model &m, bridge &br, float w, float h, bool compact);
+	// ピッチ EG: 音程の動きを実際の時間で描き、4 本のフェーダー（音色の窓。EG と同じ時間の目盛り）
 	static void peg_cell(int part, xg::model &m, bridge &br, float w, float h, bool compact);
+	// 一覧の小さなマスのピッチ EG（目安の形。peg_cell が compact のとき使う）
+	static void peg_small(int part, xg::model &m, bridge &br, float w, float h, bool compact);
 	// フィルタ: 実際の周波数特性とパートの音のスペクトラムを同じ目盛りで描き、Cutoff・Resonance・HPF のフェーダー（音色の窓）
 	static void filter_cell(int part, xg::model &m, bridge &br, float w, float h, bool compact);
 	// 一覧の小さなマスのフィルタ（目安の形。filter_cell が compact のとき使う）

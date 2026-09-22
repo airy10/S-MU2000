@@ -389,7 +389,8 @@ void part_shapes::draw(xg::model &m, const xg_snapshot &ram, bridge &br)
 			ImGui::SameLine();
 			panel("eg", "音量の形（EG）", w, h, part, m, br, { "part.attack", "part.decay", "part.release" }, 2,
 			      [](int p, xg::model &mm, bridge &b, float pw, float ph) { overview::eg_cell(p, mm, b, pw, ph, false); },
-			      "音量の形（立ち上がり → 落ち着き → 伸ばし → 離して消える）。点をつまんでアタック・ディケイ・リリース");
+			      "音量の形（立ち上がり → 落ち着き → 伸ばし → 離して消える）を実際の時間で。ピッチ EG と同じ時間の目盛りで、"
+			      "背景に音程の動きを薄く重ねる。右のフェーダーで Attack・Decay・Release を変える");
 			panel("filter", "フィルタと EQ（FILTER・EQ）", w * 2.0f + st.ItemSpacing.x, h, part, m, br,
 			      { "part.cutoff", "part.resonance", "part.hpf_cutoff",
 			        "part.eq_bass_gain", "part.eq_bass_freq", "part.eq_treble_gain", "part.eq_treble_freq" }, 1,
@@ -401,7 +402,8 @@ void part_shapes::draw(xg::model &m, const xg_snapshot &ram, bridge &br)
 			panel("peg", "音程の形（ピッチ EG）", w, h, part, m, br,
 			      { "part.peg_init_level", "part.peg_attack_time", "part.peg_rel_level", "part.peg_rel_time" }, 3,
 			      [](int p, xg::model &mm, bridge &b, float pw, float ph) { overview::peg_cell(p, mm, b, pw, ph, false); },
-			      "音程の動き（出だしの音程 → 本来の音程、離したあとの音程）。点をつまんで高さと時間");
+			      "音程の動き（出だしの音程 → 本来の音程、離したあとの音程）を実際の時間で。EG と同じ時間の目盛りで、"
+			      "背景に音量の形を薄く重ねる。右のフェーダーで Init・Attack・Rel Lv・Rel Tm を変える");
 			ImGui::EndTabItem();
 		}
 		if (ImGui::BeginTabItem("マトリクス")) {
