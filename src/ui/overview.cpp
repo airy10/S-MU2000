@@ -1515,6 +1515,15 @@ void overview::vib_cell(int part, xg::model &m, bridge &br, float w, float h, bo
 		}
 	}
 
+	// 説明（フェーダーの上）
+	{
+		static const char *const KEYS[3] = { "part.vib_rate", "part.vib_depth", "part.vib_delay" };
+		const int i = grab >= 0 ? grab : over;
+		if (i >= 0 && known) {
+			const char *help = help_for(KEYS[i]);
+			hint("%s  %s\n%s（ドラッグかマウスホイール）", NAMES[i], xg::format(*ps[i], vals[i]).c_str(), help ? help : "");
+		}
+	}
 	dl->AddRectFilled(pos, ImVec2(pos.x + w, pos.y + h), col(hovered || active ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg), 3.0f);
 	dl->PushClipRect(pos, ImVec2(pos.x + w, pos.y + h), true);
 	for (int i = 0; i < 3; i++) {
@@ -1723,6 +1732,14 @@ void overview::mod_cell(int part, xg::model &m, bridge &br, float w, float h, bo
 	dl->AddRectFilled(pos, ImVec2(pos.x + w, pos.y + h), col(hovered || active ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg), 3.0f);
 	dl->PushClipRect(pos, ImVec2(pos.x + w, pos.y + h), true);
 
+	// 説明（ホイールの上）。2 次元の絵の上では区画の説明（part_shapes）
+	if (!compact && (grab == 1 || (hovered && over_left)))
+		hint("モジュレーションホイール（CC1）  %d\nドラッグかマウスホイールで上下する。上げるほど、右の MW LFO PM のぶんのビブラートが掛かる"
+		     "（受信チャンネルへ CC1 を送る）", wheel_now);
+	else if (!compact && (grab == 2 || (hovered && over_right))) {
+		const char *help = help_for("part.mw_lfo_pmod");
+		hint("MW LFO PM  %d\n%s（ドラッグかマウスホイール）", vm, help ? help : "");
+	}
 	wheel_picture(dl, lx0, lx1, wt, bottom, wheel_now, 127, "MW", grab == 1 || (hovered && over_left));
 	if (!compact)
 		wheel_picture(dl, rx0, rx1, wt, bottom, vm, pm.max, "PM", grab == 2 || (hovered && over_right));

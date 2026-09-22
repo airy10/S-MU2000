@@ -70,7 +70,7 @@ bool title_toggle(const char *title, const char *id, bool knobs, bool &toggle_ho
 // 1 つの区画。見出しと、大きな絵か値の棒（右上の切り替えで選ぶ。index が負なら絵は無く棒だけ）
 template <typename Draw>
 void panel(const char *id, const char *title, float w, float h, int part, xg::model &m, bridge &br,
-           std::initializer_list<const char *> keys, int index, Draw draw, bool keys_too = false)
+           std::initializer_list<const char *> keys, int index, Draw draw, const char *about = nullptr)
 {
 	const float fs = ImGui::GetFontSize();
 	// 見出しを枠の上端に寄せる（上下の余白を詰める）
@@ -89,7 +89,7 @@ void panel(const char *id, const char *title, float w, float h, int part, xg::mo
 	else if (title_toggle(title, "##mode", knobs, toggle_hovered))
 		set_shapes_knobs(index, !knobs);
 	ImGui::PopFont();
-	begin_values();                           // 絵の点の字（実際の時間など）を集める
+	const std::string before = hint_text();
 	if (!knobs) {
 		// 絵だけ。区画の残りを全部使う
 		const ImVec2 avail = ImGui::GetContentRegionAvail();
@@ -100,31 +100,10 @@ void panel(const char *id, const char *title, float w, float h, int part, xg::mo
 			param_slider(k, part, m, br);
 		ImGui::PopItemWidth();
 	}
-	const std::vector<std::string> values = end_values();
-	// 区画にカーソルが載ったら、下の帯に区画の名前と、中の項目の名前と値を 1 行ずつ。
-	// 絵に点の字があればそれ（実際の時間などつき）、無ければ（EQ・つまみ・ポルタメント）XG の値
-	if (!toggle_hovered && ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows | ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) {
-		// 2 行目に項目を 1 行で並べる
-		std::string text = std::string(title) + "\n";
-		const char *sep = "";
-		for (const std::string &v : values) {
-			text += sep + v;
-			sep = "    ";
-		}
-		// 点の字が無ければ項目を全部。keys_too なら、点の字に出ていない項目も後ろに
-		if (values.empty() || keys_too)
-			for (const char *k : keys) {
-				const char *label = P(k).label;
-				bool shown = false;
-				for (const std::string &v : values)
-					shown = shown || v.find(label) != std::string::npos;
-				if (!shown) {
-					text += sep + param_line(k, part, m);
-					sep = "    ";
-				}
-			}
-		hint("%s", text.c_str());
-	}
+	// カーソルの下の部品が説明を出さなかったら、区画そのものの説明を
+	if (about && !toggle_hovered && hint_text() == before &&
+	    ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows | ImGuiHoveredFlags_AllowWhenBlockedByActiveItem))
+		hint("%s\n%s", title, about);
 	ImGui::EndChild();
 }
 
@@ -212,12 +191,12 @@ void part_shapes::draw(xg::model &m, const xg_snapshot &ram, bridge &br)
 	const ImVec2 avail = ImGui::GetContentRegionAvail();
 	// 音色を選ぶ面は、左に分類・右に音色とバンク違いの 2 列（xgui::program_pane）
 	const float pane_w = std::min(fs * 15.6f, avail.x * 0.3f);     // 前の 6 割
-	// 下の説明の帯（4 行ぶん。入り切らなかった字の行と、説明の 3 行）を残す
-	// 帯は小さめの字で 3 行（区画の名前と、中の項目を 1 行に並べたもの。折り返しても 3 行まで）
+	// 下の説明の帯（小さめの字で 3 行）。「説明を出す」を切っていれば帯ごと出さず、その高さを絵に回す
+	const bool show_bar = help_on();
 	ImGui::PushFont(nullptr, fs * BAR_SCALE);
-	const float bar_h = ImGui::GetTextLineHeightWithSpacing() * 3.0f + st.WindowPadding.y * 2.0f;
+	const float bar_h = show_bar ? ImGui::GetTextLineHeightWithSpacing() * 3.0f + st.WindowPadding.y * 2.0f + st.ItemSpacing.y : 0.0f;
 	ImGui::PopFont();
-	const float body_h = std::max(fs * 8.0f, avail.y - bar_h - st.ItemSpacing.y);
+	const float body_h = std::max(fs * 8.0f, avail.y - bar_h);
 
 	if (ImGui::BeginChild("voicepane", ImVec2(pane_w, body_h)))
 	{
@@ -239,24 +218,33 @@ void part_shapes::draw(xg::model &m, const xg_snapshot &ram, bridge &br)
 			const float w = (room.x - st.ItemSpacing.x * 2.0f) / 3.0f;
 			const float h = (room_h - st.ItemSpacing.y) * 0.5f;
 			panel("vib", "ビブラート（VIB）", w, h, part, m, br, { "part.vib_rate", "part.vib_depth", "part.vib_delay" }, 0,
-			      [](int p, xg::model &mm, bridge &b, float pw, float ph) { overview::vib_cell(p, mm, b, pw, ph, false); });
+			      [](int p, xg::model &mm, bridge &b, float pw, float ph) { overview::vib_cell(p, mm, b, pw, ph, false); },
+			      "音色の揺れ（ビブラート）。絵は実際の揺れで、右のフェーダーで速さ（Rate）・深さ（Depth）・"
+			      "掛かり始めるまでの時間（Delay）を変える");
 			ImGui::SameLine();
 			panel("mod", "モジュレーション（MW）", w, h, part, m, br,
 			      { "part.mw_lfo_pmod", "part.mw_pitch", "part.mw_filter", "part.mw_amp", "part.mw_lfo_fmod", "part.mw_lfo_amod" }, 5,
-			      [](int p, xg::model &mm, bridge &b, float pw, float ph) { overview::mod_cell(p, mm, b, pw, ph, false); }, true);
+			      [](int p, xg::model &mm, bridge &b, float pw, float ph) { overview::mod_cell(p, mm, b, pw, ph, false); },
+			      "モジュレーションホイールを上げたときに足すビブラート。横がホイールの位置、縦が揺れの深さ。"
+			      "左のホイールが CC1、右のホイールが MW LFO PM。音色自身の揺れ（背景の帯）とは足さず、深いほうが効く");
 			ImGui::SameLine();
 			panel("filter", "フィルタ（FILTER）", w, h, part, m, br, { "part.cutoff", "part.resonance", "part.hpf_cutoff" }, 1,
-			      [](int p, xg::model &mm, bridge &b, float pw, float ph) { overview::filter_cell(p, mm, b, pw, ph, false); });
+			      [](int p, xg::model &mm, bridge &b, float pw, float ph) { overview::filter_cell(p, mm, b, pw, ph, false); },
+			      "音の明るさ（フィルタの周波数特性）。山の頂をつまんで横でカットオフ、縦でレゾナンス、"
+			      "左の点で HPF（低い音を削る）");
 			panel("eg", "音量の形（EG）", w, h, part, m, br, { "part.attack", "part.decay", "part.release" }, 2,
-			      [](int p, xg::model &mm, bridge &b, float pw, float ph) { overview::eg_cell(p, mm, b, pw, ph, false); });
+			      [](int p, xg::model &mm, bridge &b, float pw, float ph) { overview::eg_cell(p, mm, b, pw, ph, false); },
+			      "音量の形（立ち上がり → 落ち着き → 伸ばし → 離して消える）。点をつまんでアタック・ディケイ・リリース");
 			ImGui::SameLine();
 			panel("peg", "音程の形（ピッチ EG）", w, h, part, m, br,
 			      { "part.peg_init_level", "part.peg_attack_time", "part.peg_rel_level", "part.peg_rel_time" }, 3,
-			      [](int p, xg::model &mm, bridge &b, float pw, float ph) { overview::peg_cell(p, mm, b, pw, ph, false); });
+			      [](int p, xg::model &mm, bridge &b, float pw, float ph) { overview::peg_cell(p, mm, b, pw, ph, false); },
+			      "音程の動き（出だしの音程 → 本来の音程、離したあとの音程）。点をつまんで高さと時間");
 			ImGui::SameLine();
 			panel("eq", "パートの EQ", w, h, part, m, br,
 			      { "part.eq_bass_gain", "part.eq_bass_freq", "part.eq_treble_gain", "part.eq_treble_freq" }, 4,
-			      [](int p, xg::model &mm, bridge &b, float pw, float ph) { overview::eq_cell(p, mm, b, pw, ph, false); });
+			      [](int p, xg::model &mm, bridge &b, float pw, float ph) { overview::eq_cell(p, mm, b, pw, ph, false); },
+			      "パートの EQ。低音と高音の点をつまんで、横で周波数、縦でゲイン");
 			ImGui::EndTabItem();
 		}
 		if (ImGui::BeginTabItem("すべて")) {
@@ -289,12 +277,13 @@ void part_shapes::draw(xg::model &m, const xg_snapshot &ram, bridge &br)
 	}
 	ImGui::EndGroup();
 
-	// ---- 説明の帯。カーソルを載せた絵・値・名前の説明（無ければ使い方のひとこと）
+	// ---- 説明の帯。カーソルを載せた項目の説明（無ければ使い方のひとこと）。「説明を出す」を切れば出さない
+	if (show_bar) {
 	if (ImGui::BeginChild("hint", ImVec2(0, 0), ImGuiChildFlags_Borders)) {
 		ImGui::PushFont(nullptr, fs * BAR_SCALE);
 		const std::string &t = hint_text();
 		if (t.empty()) {
-			ImGui::TextDisabled("区画や値、名前にカーソルを載せると、ここに中身や説明が出る");
+			ImGui::TextDisabled("項目にカーソルを載せると、ここに説明が出る（「説明を出す」を切るとこの欄は消える）");
 		} else {
 			// 1 行目（区画や項目の名前）は色を変える
 			const size_t nl = t.find('\n');
@@ -307,6 +296,7 @@ void part_shapes::draw(xg::model &m, const xg_snapshot &ram, bridge &br)
 		ImGui::PopFont();
 	}
 	ImGui::EndChild();
+	}
 	end_hint_bar();
 
 	ImGui::PopFont();
