@@ -48,8 +48,10 @@ public:
 	static void filter_cell(int part, xg::model &m, bridge &br, float w, float h, bool compact);
 	// パートの EQ: 低音と高音の点をつまんで、横で周波数、縦でゲイン
 	static void eq_cell(int part, xg::model &m, bridge &br, float w, float h, bool compact);
-	// ビブラート: 揺れの波の山をつまんで速さと深さ、平らな所の終わりで掛かり始め
+	// ビブラート: 実際の揺れの波と、Rate・Depth・Delay のフェーダー（音色の窓）
 	static void vib_cell(int part, xg::model &m, bridge &br, float w, float h, bool compact);
+	// 一覧の小さなマスのビブラート（波の山をつまむ前の絵。vib_cell が compact のとき使う）
+	static void vib_small(int part, xg::model &m, bridge &br, float w, float h, bool compact);
 	// モジュレーションのビブラート（ホイールの位置ごとの揺れの深さ。音色の窓）
 	static void mod_cell(int part, xg::model &m, bridge &br, float w, float h, bool compact);
 	// マスター EQ の 5 つの帯の特性。edit なら点をつまんで周波数とゲイン、ホイールで Q（マスターの窓）。
@@ -133,7 +135,7 @@ private:
 	// そのパートのホイールの今の値（送ったばかりならその値）と、回して送る
 	static int  mod_now(int part, int ram_value);
 	static void mod_send(int part, int slot, int value, bridge &br);
-	// マウスホイールの回した量 → 動かす量（速く回すほど大きく。big は Ctrl）
+	// マウスホイールの回した量 → 動かす量（1 目で 1、big（Ctrl）で 10）
 	static int  wheel_steps(float wheel, bool big);
 	xg::model *m_model = nullptr;     // 閉じたときに受信チャンネルを戻すため（draw で覚える）
 	bool   m_mute[XG_PARTS] = {}, m_solo[XG_PARTS] = {};

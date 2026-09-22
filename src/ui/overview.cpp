@@ -1293,7 +1293,7 @@ void overview::master_eq_cell(xg::model &m, bridge &br, float h)
 // そのあとの波の山の点をつまんで、横で速さ（山が近いほど速い）、縦で深さ。
 // 平らな所の終わりの点を横に動かすと Delay（つまめるのは大きな窓だけ）。どれも音色の元の値に対する増減（64 が音色のまま）で、
 // 形は 2 の (値 - 64) / 24 乗で伸び縮みさせた見た目だけのもの
-void overview::vib_cell(int part, xg::model &m, bridge &br, float w, float h, bool compact)
+void overview::vib_small(int part, xg::model &m, bridge &br, float w, float h, bool compact)
 {
 	ImGuiIO &io = ImGui::GetIO();
 	const float fs = ImGui::GetFontSize();
@@ -1398,6 +1398,183 @@ void overview::vib_cell(int part, xg::model &m, bridge &br, float w, float h, bo
 		                      compact ? BIG_HINT : "\n波の山の点: 横で速さ、縦で深さ\n平らな所の終わりの点: 横で掛かり始めるまでの時間");
 	ImGui::PopID();
 }
+
+// ミキサーのフェーダー風の絵。縦の溝と目盛り、つまみ（白い線入り）が値の高さにある。
+// 真ん中（64）の目盛りだけ明るく。上に小さく名前と値の字
+static void fader_picture(ImDrawList *dl, float x0, float x1, float top, float bottom, int value, int lo, int hi,
+                          const char *name, const char *text, bool lit)
+{
+	const float fs = ImGui::GetFontSize();
+	const float gfs = fs * 0.6f;
+	const float cx = (x0 + x1) * 0.5f;
+	const float cap_h = std::max(6.0f, fs * 0.55f);
+	const float a = top + cap_h * 0.5f, b = bottom - cap_h * 0.5f;     // つまみの中心が動く範囲
+	// 目盛り（8 つに割る。真ん中は長く明るく）
+	for (int i = 0; i <= 8; i++) {
+		const float y = b - (b - a) * float(i) / 8.0f;
+		const bool mid = i == 4;
+		const float len = (x1 - x0) * (mid ? 0.5f : 0.3f);
+		const ImU32 c = mid ? IM_COL32(170, 170, 176, 255) : IM_COL32(90, 90, 96, 255);
+		dl->AddLine(ImVec2(x0, y), ImVec2(x0 + len, y), c, 1.0f);
+		dl->AddLine(ImVec2(x1 - len, y), ImVec2(x1, y), c, 1.0f);
+	}
+	// 溝
+	const float gw = std::max(2.0f, fs * 0.14f);
+	dl->AddRectFilled(ImVec2(cx - gw, top), ImVec2(cx + gw, bottom), IM_COL32(10, 10, 12, 255), gw);
+	// つまみ
+	const float y = b - (b - a) * float(value - lo) / float(std::max(1, hi - lo));
+	const ImVec2 c0(x0 + 1.0f, y - cap_h * 0.5f), c1(x1 - 1.0f, y + cap_h * 0.5f);
+	const ImU32 top_c = lit ? IM_COL32(200, 200, 208, 255) : IM_COL32(160, 160, 168, 255);
+	const ImU32 bot_c = lit ? IM_COL32(110, 110, 118, 255) : IM_COL32(80, 80, 88, 255);
+	dl->AddRectFilledMultiColor(c0, c1, top_c, top_c, bot_c, bot_c);
+	dl->AddRect(c0, c1, IM_COL32(30, 30, 34, 255), 1.5f);
+	dl->AddLine(ImVec2(c0.x + 1.0f, y), ImVec2(c1.x - 1.0f, y), IM_COL32(250, 250, 245, 255), 1.5f);
+	// 上に名前と値（2 行）
+	ImFont *font = ImGui::GetFont();
+	const ImVec2 ts = font->CalcTextSizeA(gfs, FLT_MAX, 0.0f, text);
+	const ImVec2 ns = font->CalcTextSizeA(gfs, FLT_MAX, 0.0f, name);
+	dl->AddText(font, gfs, ImVec2(cx - ts.x * 0.5f, top - ts.y - 1.0f), ImGui::GetColorU32(ImGuiCol_Text), text);
+	dl->AddText(font, gfs, ImVec2(cx - ns.x * 0.5f, top - ts.y - ns.y - 1.0f), ImGui::GetColorU32(ImGuiCol_TextDisabled), name);
+}
+
+// ビブラート（音色の窓の大きな区画）。左に実際の揺れ（チップの LFO を回した波。横が時間 1.5 秒、
+// 縦がセント）、右に Rate・Depth・Delay のフェーダー。絵は見るだけで、フェーダーをドラッグ
+// （つまんだ高さがそのまま値）か、フェーダーの上でマウスホイール（1 目で 1、Ctrl で 10）で動かす。
+// 一覧の小さなマスは vib_small（前の絵）
+void overview::vib_cell(int part, xg::model &m, bridge &br, float w, float h, bool compact)
+{
+	if (compact) {
+		vib_small(part, m, br, w, h, compact);
+		return;
+	}
+	ImGuiIO &io = ImGui::GetIO();
+	const float fs = ImGui::GetFontSize();
+	ImDrawList *dl = ImGui::GetWindowDrawList();
+	const xg::param *ps[3] = { &P("part.vib_rate"), &P("part.vib_depth"), &P("part.vib_delay") };
+	static const char *const NAMES[3] = { "Rate", "Depth", "Delay" };
+	int vals[3] = { 64, 64, 64 };
+	const bool known = m.get(*ps[0], part, vals[0]) && m.get(*ps[1], part, vals[1]) && m.get(*ps[2], part, vals[2]);
+
+	ImGui::PushID("vibbig");
+	const ImVec2 pos = ImGui::GetCursorScreenPos();
+	ImGui::InvisibleButton("##vib", ImVec2(w, h), ImGuiButtonFlags_MouseButtonLeft);
+	const ImGuiID id = ImGui::GetItemID();
+	const bool hovered = ImGui::IsItemHovered();
+	const bool active = ImGui::IsItemActive();
+
+	// 置き場所。右にフェーダー 3 本、残りが波の絵
+	const float pad = fs * 0.25f;
+	const float gfs = fs * 0.6f;
+	const float fw = std::min(fs * 1.3f, w * 0.1f);
+	const float fgap = fs * 0.35f;
+	const float fx_right = pos.x + w - pad;
+	float fx0[3];
+	for (int i = 0; i < 3; i++)
+		fx0[i] = fx_right - fw * float(3 - i) - fgap * float(2 - i);
+	const float ftop = pos.y + pad + gfs * 2.4f, fbot = pos.y + h - pad;
+	const float x0 = pos.x + pad, x1 = fx0[0] - fs * 0.5f;
+	const float top = pos.y + pad, bottom = pos.y + h - pad;
+	const float mid = (top + bottom) * 0.5f, half = (bottom - top) * 0.5f;
+	auto fader_at = [&](float x) {
+		for (int i = 0; i < 3; i++)
+			if (x >= fx0[i] - fgap * 0.5f && x <= fx0[i] + fw + fgap * 0.5f)
+				return i;
+		return -1;
+	};
+	const float cap_h = std::max(6.0f, fs * 0.55f);
+	auto value_at = [&](float y, const xg::param &p) {
+		const float a = ftop + cap_h * 0.5f, b = fbot - cap_h * 0.5f;
+		return std::clamp(p.min + int(std::lround((b - y) / std::max(1.0f, b - a) * float(p.max - p.min))), p.min, p.max);
+	};
+	const int over = hovered ? fader_at(io.MousePos.x) : -1;
+
+	// マウスホイール（フェーダーの上）
+	if (over >= 0 && known) {
+		ImGui::SetItemKeyOwner(ImGuiKey_MouseWheelY);
+		if (io.MouseWheel != 0.0f) {
+			const int nv = std::clamp(vals[over] + wheel_steps(io.MouseWheel, io.KeyCtrl), ps[over]->min, ps[over]->max);
+			if (nv != vals[over]) {
+				br.send(m.set(*ps[over], part, nv));
+				vals[over] = nv;
+			}
+		}
+	}
+	// つまんで上下（つまんだ高さがそのまま値）
+	ImGuiStorage *st = ImGui::GetStateStorage();
+	int grab = st->GetInt(id, -1);
+	if (active && ImGui::IsItemActivated())
+		grab = fader_at(io.MousePos.x);
+	if (!active)
+		grab = -1;
+	st->SetInt(id, grab);
+	if (grab >= 0 && known) {
+		const int nv = value_at(io.MousePos.y, *ps[grab]);
+		if (nv != vals[grab]) {
+			drag_send(br, m.set(*ps[grab], part, nv));
+			vals[grab] = nv;
+		}
+	}
+
+	dl->AddRectFilled(pos, ImVec2(pos.x + w, pos.y + h), col(hovered || active ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg), 3.0f);
+	dl->PushClipRect(pos, ImVec2(pos.x + w, pos.y + h), true);
+	for (int i = 0; i < 3; i++) {
+		const std::string t = known ? xg::format(*ps[i], vals[i]) : std::string("--");
+		fader_picture(dl, fx0[i], fx0[i] + fw, ftop, fbot, vals[i], ps[i]->min, ps[i]->max, NAMES[i], t.c_str(),
+		              grab == i || over == i);
+	}
+
+	// ---- 波（実際の揺れ）
+	voice_ctx v;
+	std::vector<shape::vib_line> ls;
+	if (known && voice_of(part, v)) {
+		v.blk[0x15] = u8(vals[0]); v.blk[0x16] = u8(vals[1]); v.blk[0x17] = u8(vals[2]);
+		ls = shape::vib_lines(v.rom, v.rec, v.blk, 1500.0f);
+	}
+	if (!ls.empty()) {
+		const shape::vib_line &L = lead_line(ls);
+		// 縦の目盛り（片側）。最低 ±220 セント、深い音色はそれに合わせて広げる
+		const float span = std::max(220.0f, L.depth_cents * 1.15f);
+		auto y_of = [&](float c) { return mid - half * c / span; };
+		dl->AddLine(ImVec2(x0, mid), ImVec2(x1, mid), col(ImGuiCol_TextDisabled, 0.35f));
+		for (float c : { 50.0f, 100.0f, 200.0f, 400.0f }) {
+			if (c > span)
+				break;
+			for (float sgn : { 1.0f, -1.0f })
+				dl->AddLine(ImVec2(x0, y_of(sgn * c)), ImVec2(x1, y_of(sgn * c)), col(ImGuiCol_TextDisabled, 0.15f));
+			char g[16];
+			std::snprintf(g, sizeof(g), "%.0f", c);
+			dl->AddText(ImGui::GetFont(), fs * 0.6f, ImVec2(x0 + 2.0f, y_of(c) - fs * 0.6f), col(ImGuiCol_TextDisabled, 0.55f), g);
+		}
+		// 掛かり始め
+		if (L.delay_ms > 0.0f) {
+			const float xd = x0 + (x1 - x0) * std::min(1.0f, L.delay_ms / 1500.0f);
+			for (float y = top; y < bottom; y += fs * 0.5f)
+				dl->AddLine(ImVec2(xd, y), ImVec2(xd, std::min(bottom, y + fs * 0.25f)), col(ImGuiCol_TextDisabled, 0.5f));
+		}
+		std::vector<ImVec2> pts;
+		pts.reserve(L.pts.size());
+		for (const shape::pt &p : L.pts)
+			pts.push_back(ImVec2(x0 + (x1 - x0) * p.ms / 1500.0f, y_of(p.cents)));
+		if (pts.size() >= 2)
+			dl->AddPolyline(pts.data(), int(pts.size()), col(ImGuiCol_SliderGrabActive), 0, std::max(1.5f, fs * 0.1f));
+		// 実際の量（左上に小さく）と、帯の一覧
+		char s[96];
+		std::snprintf(s, sizeof(s), "%.2f Hz   ±%.0f cent   %.0f ms", L.hz, L.depth_cents, L.delay_ms);
+		dl->AddText(ImGui::GetFont(), fs * 0.7f, ImVec2(x0 + fs * 1.6f, top + 2.0f), col(ImGuiCol_Text, 0.85f), s);
+		std::snprintf(s, sizeof(s), "Rate : %s (%.2f Hz)", xg::format(*ps[0], vals[0]).c_str(), L.hz);
+		shape_value(s);
+		std::snprintf(s, sizeof(s), "Depth : %s (±%.0f cent)", xg::format(*ps[1], vals[1]).c_str(), L.depth_cents);
+		shape_value(s);
+		std::snprintf(s, sizeof(s), "Delay : %s (%.0f ms)", xg::format(*ps[2], vals[2]).c_str(), L.delay_ms);
+		shape_value(s);
+	} else {
+		const ImVec2 ts = ImGui::CalcTextSize("--");
+		dl->AddText(ImVec2(x0 + (x1 - x0 - ts.x) * 0.5f, mid - ts.y * 0.5f), col(ImGuiCol_TextDisabled), "--");
+	}
+	dl->PopClipRect();
+	ImGui::PopID();
+}
+
 
 
 // 鍵盤のモジュレーションホイール風の絵。溝の中に円筒が縦に立っていて、刻みが値に合わせて流れる。
@@ -1802,17 +1979,10 @@ int overview::mod_now(int part, int ram_value)
 
 int overview::wheel_steps(float wheel, bool big)
 {
-	// マウスホイールの 1 目で動かす量。続けて速く回すほど大きくする（加速）。
-	// 前の目から 0.12 秒以内なら速さを上げ、間が空いたら 1 に戻す
-	static double last = -10.0;
-	static float speed = 1.0f;
+	// マウスホイールの 1 目で 1（Ctrl で 10）。加速はしない（大きく動かすのはドラッグで）
 	if (wheel == 0.0f)
 		return 0;
-	const double now = ImGui::GetTime();
-	speed = (now - last < 0.12) ? std::min(speed * 1.6f + 1.0f, 16.0f) : 1.0f;
-	last = now;
-	const float n = std::fabs(wheel) * speed * (big ? 5.0f : 1.0f);
-	const int step = std::max(1, int(std::lround(n)));
+	const int step = std::max(1, int(std::lround(std::fabs(wheel)))) * (big ? 10 : 1);
 	return wheel > 0 ? step : -step;
 }
 
