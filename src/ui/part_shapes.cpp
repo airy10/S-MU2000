@@ -695,9 +695,24 @@ void route_cell(int part, xg::model &m, bridge &br, float w, float h)
 		const xg::param &p = P(E.key);
 		int v = p.def;
 		const bool known = m.get(p, E.part_param ? part : 0, v);
-		// バリエーションがインサーション接続なら、パートからの送りは効かない（掛けたパートにはつながって見せる）
-		const bool var_ins_edge = e == 0 && !var_sys;
-		const float t = var_ins_edge ? (var_part == part ? 1.0f : 0.0f) : float(v) / 127.0f;
+		// バリエーションがインサーション接続の間は、パートの Var Send・Dry Level（どのパートも）・V>C・V>R・
+		// Var Return は効かない（エミュで測った。XG でもシステム接続のときだけ有効な値）。その線は実際の流れで
+		// 太さを固定して札を INS にする: このパートに掛けていれば P→V と V→O が最大・P→O が 0（音は丸ごと
+		// バリエーションを通る）、掛けていなければ P→O が最大（乾いた音はいつも最大）・P→V と V→O が 0。
+		// V→C・V→R はいつも 0
+		const bool mine = var_part == part;
+		bool var_ins_edge = false;
+		float fixed_t = 0.0f;
+		if (!var_sys) {
+			switch (e) {
+			case 0: var_ins_edge = true; fixed_t = mine ? 1.0f : 0.0f; break;   // Var Send
+			case 3: var_ins_edge = true; fixed_t = mine ? 0.0f : 1.0f; break;   // Dry Level
+			case 4: case 5: var_ins_edge = true; fixed_t = 0.0f; break;        // V>C・V>R
+			case 7: var_ins_edge = true; fixed_t = mine ? 1.0f : 0.0f; break;   // Var Return
+			default: break;
+			}
+		}
+		const float t = var_ins_edge ? fixed_t : float(v) / 127.0f;
 		const float thick = 1.2f + 2.4f * t;
 		if (t > 0.0f) {
 			stroke(E, with_alpha(E.col, 0.10f + 0.15f * t), thick * 3.2f);    // にじみ
@@ -720,7 +735,7 @@ void route_cell(int part, xg::model &m, bridge &br, float w, float h)
 			dl->AddTriangleFilled(tip, ImVec2(tip.x - hl * 0.55f, tip.y - hl), ImVec2(tip.x + hl * 0.55f, tip.y - hl), hc);
 		char text[16];
 		if (var_ins_edge)
-			std::snprintf(text, sizeof(text), "%s", var_part == part ? "INS" : "--");
+			std::snprintf(text, sizeof(text), "INS");
 		else if (known)
 			std::snprintf(text, sizeof(text), "%d", v);
 		else
@@ -811,10 +826,22 @@ void route_cell(int part, xg::model &m, bridge &br, float w, float h)
 		dl->AddText(ImGui::GetFont(), tfs, ImVec2(bd.c.x - ts.x * 0.5f, bd.c.y - ts.y * 0.5f),
 		            lit ? IM_COL32(240, 244, 250, 255) : IM_COL32(160, 164, 176, 170), bd.text.c_str());
 		if (hov || act) {
-			if (bd.var_ins)
-				hint("バリエーションはインサーション接続\n%s。パートからの送り（Var Send）は効かない。バリエーションの区画の [INS] [PART] で切り替える",
-				     var_part == part ? "このパートに直に掛かっている（通したあとが乾いた音と送りに分かれる）"
-				                      : "ほかのパートに掛かっていて、このパートの音は通らない");
+			if (bd.var_ins) {
+				const bool mine = var_part == part;
+				const char *why = "";
+				switch (bd.e) {
+				case 0: why = mine ? "このパートの音は丸ごとバリエーションを通る（Var Send の値は使わない）"
+				                   : "バリエーションはほかのパートに掛かっていて（または OFF）、このパートの音は通らない"; break;
+				case 3: why = mine ? "このパートの音は丸ごとバリエーションを通るので、横を通る乾いた音は無い（Dry Level の値は使わない）"
+				                   : "インサーション接続の間は、どのパートも Dry Level が効かず、乾いた音はいつも最大"; break;
+				case 4: case 5: why = "インサーション接続の間は、バリエーションからコーラス・リバーブへの送りは効かない。"
+				                      "バリエーションを通した音は、パートの Cho Send・Rev Send で送られる"; break;
+				case 7: why = mine ? "バリエーションを通した音がそのまま出力へ行く（Var Return の値は使わない）"
+				                   : "バリエーションはこのパートの音を通していない"; break;
+				}
+				hint("%s（インサーション接続で固定）\n%s。値は%sで動かせて、システム接続に戻すと効く。バリエーションの区画の [INS] で切り替える",
+				     official_name(EDGES[bd.e].key).c_str(), why, bd.e == 7 ? "設定の窓（バリエーションの「詳しく」）" : "下のフェーダー");
+			}
 			else {
 				const char *help = help_for(E.key);
 				hint("%s  %d\n%s（上下にドラッグ・ホイール・ダブルクリックで 0 と既定を行き来）", official_name(E.key).c_str(), v, help ? help : "");
@@ -862,13 +889,13 @@ void route_cell(int part, xg::model &m, bridge &br, float w, float h)
 	                                     "variation.to_chorus", "variation.to_reverb", "chorus.to_reverb" };
 	static const char *const NAMES[7] = { "Dry", "Var", "Cho", "Rev", "V>C", "V>R", "C>R" };
 	const ImVec2 fa = ImGui::GetCursorScreenPos();
-	// バリエーションがインサーション接続なら、パートの Var Send は効かない（動かせるが色を落とす）
+	// バリエーションがインサーション接続なら、Dry・Var Send・V>C・V>R は効かない（動かせるが色を落とす）
+	const unsigned idle = var_sys ? 0u : (1u << 0) | (1u << 1) | (1u << 4) | (1u << 5);
 	const int ff = overview::fader_strip("##sends", KEYS, NAMES, 7, 3, part, m, br,
-	                                     ImVec2(w - pad * 2.0f, std::max(fs * 3.0f, pos.y + h - pad - fa.y)), var_sys ? 0u : 1u << 1);
-	if (ff == 1 && !var_sys)
-		hint("%s（効いていない）\nバリエーションがインサーション接続なので、パートからの送り（Var Send）は効かない。%s"
-		     "値は動かせて、システム接続に戻すとこの値で送る", official_name("part.variation_send").c_str(),
-		     var_part == part ? "このパートの音は丸ごとバリエーションを通る（絵の P→V は太さ最大で固定）。" : "");
+	                                     ImVec2(w - pad * 2.0f, std::max(fs * 3.0f, pos.y + h - pad - fa.y)), idle);
+	if (ff >= 0 && ((idle >> ff) & 1))
+		hint("%s（効いていない）\nバリエーションがインサーション接続の間は効かない（XG でもシステム接続のときだけ有効な値）。"
+		     "値は動かせて、システム接続に戻すとこの値で効く", official_name(KEYS[ff]).c_str());
 	ImGui::SetCursorScreenPos(pos);
 	ImGui::Dummy(ImVec2(w, h));
 }
