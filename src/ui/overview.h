@@ -50,6 +50,8 @@ public:
 	static void eq_cell(int part, xg::model &m, bridge &br, float w, float h, bool compact);
 	// ビブラート: 揺れの波の山をつまんで速さと深さ、平らな所の終わりで掛かり始め
 	static void vib_cell(int part, xg::model &m, bridge &br, float w, float h, bool compact);
+	// モジュレーションのビブラート（ホイールの位置ごとの揺れの深さ。音色の窓）
+	static void mod_cell(int part, xg::model &m, bridge &br, float w, float h, bool compact);
 	// マスター EQ の 5 つの帯の特性。edit なら点をつまんで周波数とゲイン、ホイールで Q（マスターの窓）。
 	// edit でなければ描くだけ（一覧のマスターの行）
 	static void master_eq_plot(xg::model &m, bridge &br, float w, float h, bool edit);

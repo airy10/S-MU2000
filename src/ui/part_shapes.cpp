@@ -70,7 +70,7 @@ bool title_toggle(const char *title, const char *id, bool knobs, bool &toggle_ho
 // 1 つの区画。見出しと、大きな絵か値の棒（右上の切り替えで選ぶ。index が負なら絵は無く棒だけ）
 template <typename Draw>
 void panel(const char *id, const char *title, float w, float h, int part, xg::model &m, bridge &br,
-           std::initializer_list<const char *> keys, int index, Draw draw)
+           std::initializer_list<const char *> keys, int index, Draw draw, bool keys_too = false)
 {
 	const float fs = ImGui::GetFontSize();
 	// 見出しを枠の上端に寄せる（上下の余白を詰める）
@@ -107,15 +107,21 @@ void panel(const char *id, const char *title, float w, float h, int part, xg::mo
 		// 2 行目に項目を 1 行で並べる
 		std::string text = std::string(title) + "\n";
 		const char *sep = "";
-		if (!values.empty())
-			for (const std::string &v : values) {
-				text += sep + v;
-				sep = "    ";
-			}
-		else
+		for (const std::string &v : values) {
+			text += sep + v;
+			sep = "    ";
+		}
+		// 点の字が無ければ項目を全部。keys_too なら、点の字に出ていない項目も後ろに
+		if (values.empty() || keys_too)
 			for (const char *k : keys) {
-				text += sep + param_line(k, part, m);
-				sep = "    ";
+				const char *label = P(k).label;
+				bool shown = false;
+				for (const std::string &v : values)
+					shown = shown || v.find(label) != std::string::npos;
+				if (!shown) {
+					text += sep + param_line(k, part, m);
+					sep = "    ";
+				}
 			}
 		hint("%s", text.c_str());
 	}
@@ -226,7 +232,8 @@ void part_shapes::draw(xg::model &m, const xg_snapshot &ram, bridge &br)
 	const float top_y = ImGui::GetCursorScreenPos().y;
 	if (ImGui::BeginTabBar("right")) {
 		if (ImGui::BeginTabItem("形")) {
-			// 3 × 2。上に VIB・FILTER・EG、下にピッチ EG・EQ・ポルタメント（絵は無く棒だけ）
+			// 3 × 2。上に VIB・モジュレーション・FILTER（揺れの 2 つを隣に）、下に EG・ピッチ EG・EQ。
+			// ポルタメントは「すべて」のタブにある
 			const ImVec2 room = ImGui::GetContentRegionAvail();
 			const float room_h = body_h - (ImGui::GetCursorScreenPos().y - top_y);
 			const float w = (room.x - st.ItemSpacing.x * 2.0f) / 3.0f;
@@ -234,11 +241,15 @@ void part_shapes::draw(xg::model &m, const xg_snapshot &ram, bridge &br)
 			panel("vib", "ビブラート（VIB）", w, h, part, m, br, { "part.vib_rate", "part.vib_depth", "part.vib_delay" }, 0,
 			      [](int p, xg::model &mm, bridge &b, float pw, float ph) { overview::vib_cell(p, mm, b, pw, ph, false); });
 			ImGui::SameLine();
+			panel("mod", "モジュレーション（MW）", w, h, part, m, br,
+			      { "part.mw_lfo_pmod", "part.mw_pitch", "part.mw_filter", "part.mw_amp", "part.mw_lfo_fmod", "part.mw_lfo_amod" }, 5,
+			      [](int p, xg::model &mm, bridge &b, float pw, float ph) { overview::mod_cell(p, mm, b, pw, ph, false); }, true);
+			ImGui::SameLine();
 			panel("filter", "フィルタ（FILTER）", w, h, part, m, br, { "part.cutoff", "part.resonance", "part.hpf_cutoff" }, 1,
 			      [](int p, xg::model &mm, bridge &b, float pw, float ph) { overview::filter_cell(p, mm, b, pw, ph, false); });
-			ImGui::SameLine();
 			panel("eg", "音量の形（EG）", w, h, part, m, br, { "part.attack", "part.decay", "part.release" }, 2,
 			      [](int p, xg::model &mm, bridge &b, float pw, float ph) { overview::eg_cell(p, mm, b, pw, ph, false); });
+			ImGui::SameLine();
 			panel("peg", "音程の形（ピッチ EG）", w, h, part, m, br,
 			      { "part.peg_init_level", "part.peg_attack_time", "part.peg_rel_level", "part.peg_rel_time" }, 3,
 			      [](int p, xg::model &mm, bridge &b, float pw, float ph) { overview::peg_cell(p, mm, b, pw, ph, false); });
@@ -246,9 +257,6 @@ void part_shapes::draw(xg::model &m, const xg_snapshot &ram, bridge &br)
 			panel("eq", "パートの EQ", w, h, part, m, br,
 			      { "part.eq_bass_gain", "part.eq_bass_freq", "part.eq_treble_gain", "part.eq_treble_freq" }, 4,
 			      [](int p, xg::model &mm, bridge &b, float pw, float ph) { overview::eq_cell(p, mm, b, pw, ph, false); });
-			ImGui::SameLine();
-			panel("porta", "ポルタメント", w, h, part, m, br, { "part.porta_switch", "part.porta_time" }, -1,
-			      [](int, xg::model &, bridge &, float pw, float ph) { ImGui::Dummy(ImVec2(pw, ph)); });
 			ImGui::EndTabItem();
 		}
 		if (ImGui::BeginTabItem("すべて")) {
