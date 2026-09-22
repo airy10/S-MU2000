@@ -788,7 +788,7 @@ void overview::peg_cell(int part, xg::model &m, bridge &br, float w, float h, bo
 	}
 
 	if ((hovered || active) && known)
-		hint("Init %s   Attack %s   Rel Lvl %s   Rel Time %s%s",
+		hint("PITCH EG INITIAL LEVEL %s ／ ATTACK TIME %s ／ RELEASE LEVEL %s ／ RELEASE TIME %s%s",
 		                      xg::format(pi, vi).c_str(), xg::format(pa, va).c_str(),
 		                      xg::format(pl, vl).c_str(), xg::format(pr, vr).c_str(),
 		                      compact ? BIG_HINT : "\n左の点: 縦で出だしの音程\n真ん中の点: 横でアタックの時間\n"
@@ -921,7 +921,7 @@ void overview::eg_cell(int part, xg::model &m, bridge &br, float w, float h, boo
 	}
 
 	if ((hovered || active) && known)
-		hint("Attack %s   Decay %s   Release %s%s",
+		hint("EG ATTACK TIME %s ／ EG DECAY TIME %s ／ EG RELEASE TIME %s%s",
 		                      xg::format(pa, va).c_str(), xg::format(pd, vd).c_str(), xg::format(pr, vr).c_str(),
 		                      compact ? BIG_HINT : "\n点を横につまんで動かす（右へ長く、左へ短く）");
 	ImGui::PopID();
@@ -1089,7 +1089,7 @@ void overview::filter_cell(int part, xg::model &m, bridge &br, float w, float h,
 	}
 
 	if ((hovered || active) && known)
-		hint("Cutoff %s   Resonance %s   HPF %s%s",
+		hint("FILTER CUTOFF FREQUENCY %s ／ FILTER RESONANCE %s ／ HPF CUTOFF FREQUENCY %s%s",
 		                      xg::format(pc, vc).c_str(), xg::format(pq, vq).c_str(),
 		                      known_h ? xg::format(ph, vh).c_str() : "--",
 		                      compact ? BIG_HINT : "\n右の点: 横でカットオフ（右へ明るく）、縦でレゾナンス（上へ強く）\n"
@@ -1521,7 +1521,8 @@ void overview::vib_cell(int part, xg::model &m, bridge &br, float w, float h, bo
 		const int i = grab >= 0 ? grab : over;
 		if (i >= 0 && known) {
 			const char *help = help_for(KEYS[i]);
-			hint("%s  %s\n%s（ドラッグかマウスホイール）", NAMES[i], xg::format(*ps[i], vals[i]).c_str(), help ? help : "");
+			hint("%s  %s\n%s（ドラッグかマウスホイール）", official_name(KEYS[i]).c_str(), xg::format(*ps[i], vals[i]).c_str(),
+			     help ? help : "");
 		}
 	}
 	dl->AddRectFilled(pos, ImVec2(pos.x + w, pos.y + h), col(hovered || active ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg), 3.0f);
@@ -1734,11 +1735,11 @@ void overview::mod_cell(int part, xg::model &m, bridge &br, float w, float h, bo
 
 	// 説明（ホイールの上）。2 次元の絵の上では区画の説明（part_shapes）
 	if (!compact && (grab == 1 || (hovered && over_left)))
-		hint("モジュレーションホイール（CC1）  %d\nドラッグかマウスホイールで上下する。上げるほど、右の MW LFO PM のぶんのビブラートが掛かる"
-		     "（受信チャンネルへ CC1 を送る）", wheel_now);
+		hint("MODULATION WHEEL（CC1）  %d\nモジュレーションホイール。ドラッグかマウスホイールで上下する。"
+		     "上げるほど、右の MW LFO PMOD DEPTH のぶんのビブラートが掛かる（受信チャンネルへ CC1 を送る）", wheel_now);
 	else if (!compact && (grab == 2 || (hovered && over_right))) {
 		const char *help = help_for("part.mw_lfo_pmod");
-		hint("MW LFO PM  %d\n%s（ドラッグかマウスホイール）", vm, help ? help : "");
+		hint("%s  %d\n%s（ドラッグかマウスホイール）", official_name("part.mw_lfo_pmod").c_str(), vm, help ? help : "");
 	}
 	wheel_picture(dl, lx0, lx1, wt, bottom, wheel_now, 127, "MW", grab == 1 || (hovered && over_left));
 	if (!compact)
@@ -2442,10 +2443,20 @@ void overview::part_strip(int part, xg::model &m, const xg_snapshot &ram, bridge
 		// 見出しの行か棒にカーソルが載ったら、名前と今の値と説明を下の帯へ
 		const bool over = ct.hovered || ImGui::IsMouseHoveringRect(ImVec2(x, origin.y), ImVec2(x + w, origin.y + label_h));
 		if (over && ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows)) {
+			// 1 行目は正式名（XG のパートの項目なら番地も、CC なら番号も）
+			static const std::pair<const char *, const char *> OFFICIAL[] = {
+				{ "VOL", "part.volume" }, { "EXP", "EXPRESSION（CC11）" }, { "PAN", "part.pan" },
+				{ "P.BEND", "PITCH BEND" }, { "MOD", "MODULATION WHEEL（CC1）" }, { "HOLD", "HOLD1（CC64）" },
+				{ "VAR", "part.variation_send" }, { "CHO", "part.chorus_send" }, { "REV", "part.reverb_send" },
+			};
+			std::string name = title;
+			for (const auto &o : OFFICIAL)
+				if (!std::strcmp(o.first, title))
+					name = std::strncmp(o.second, "part.", 5) ? std::string(o.second) : official_name(o.second);
 			if (const char *help = help_for(title))
-				hint("%s  %s\n%s", title, ct.text.c_str(), help);
+				hint("%s  %s\n%s", name.c_str(), ct.text.c_str(), help);
 			else if (!ct.hovered)
-				hint("%s  %s", title, ct.text.c_str());
+				hint("%s  %s", name.c_str(), ct.text.c_str());
 		}
 		x += unit;
 	};

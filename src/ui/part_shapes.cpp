@@ -183,9 +183,13 @@ void mod_matrix(int part, xg::model &m, bridge &br, float w, float h)
 		}
 		const ImVec2 ls = ImGui::CalcTextSize(label.c_str());
 		dl->AddText(ImVec2(org.x + fs * 0.3f, y + (ch - gap - ls.y) * 0.5f), ImGui::GetColorU32(ImGuiCol_Text), label.c_str());
-		if (row_hover)
-			hint(r >= 4 ? "%s\nこの行の 6 つのマスが、この操作子で動かす量。見出しの上でマウスホイールを回すと CC の番号が変わる"
-			            : "%s\nこの行の 6 つのマスが、この操作子で動かす量", SRCS[r].about);
+		if (row_hover) {
+			if (r >= 4)
+				hint("%s\n%s。この行の 6 つのマスが、この操作子で動かす量。見出しの上でマウスホイールを回すと CC の番号が変わる",
+				     official_name((std::string("part.") + SRCS[r].key + "_cc").c_str()).c_str(), SRCS[r].about);
+			else
+				hint("%s\nこの行の 6 つのマスが、この操作子で動かす量", SRCS[r].about);
+		}
 
 		for (int c = 0; c < 6; c++) {
 			const std::string key = std::string("part.") + SRCS[r].key + "_" + DSTS[c].key;
@@ -247,8 +251,9 @@ void mod_matrix(int part, xg::model &m, bridge &br, float w, float h)
 			if (hov || act) {
 				const char *help = help_for(key.c_str());
 				const std::string to = c >= 3 ? std::string(DSTS[c].name) + "（" + DSTS[c].sub + "）" : std::string(DSTS[c].name);
-				hint("%s → %s  %s\n%s（上下にドラッグ・マウスホイール・ダブルクリックで既定の %s）",
-				     SRCS[r].name, to.c_str(), text.c_str(), help ? help : "", xg::format(p, p.def).c_str());
+				hint("%s  %s\n%s → %s。%s（上下にドラッグ・マウスホイール・ダブルクリックで既定の %s）",
+				     official_name(key.c_str()).c_str(), text.c_str(), SRCS[r].name, to.c_str(), help ? help : "",
+				     xg::format(p, p.def).c_str());
 			}
 			ImGui::PopID();
 		}

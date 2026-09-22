@@ -1291,11 +1291,73 @@ void help_tip(const char *name)
 	if (!help_on() || !ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
 		return;
 	if (const char *t = find_help(name)) {
-		if (g_hint_bar)
-			g_hint = t;                   // 説明の帯のある窓では帯へ
+		if (g_hint_bar) {
+			// 説明の帯のある窓では帯へ。1 行目に XG の正式名（あれば）
+			const std::string on = official_name(name);
+			g_hint = on.empty() ? std::string(t) : on + "\n" + t;
+		}
 		else
 			ImGui::SetTooltip("%s", t);
 	}
+}
+
+std::string official_name(const char *key)
+{
+	// XG の仕様書のパラメータ名（パートの番地 08 pp xx の表の名前）
+	static const std::pair<const char *, const char *> NAMES[] = {
+		{ "part.element_reserve", "ELEMENT RESERVE" }, { "part.bank_msb", "BANK SELECT MSB" },
+		{ "part.bank_lsb", "BANK SELECT LSB" }, { "part.program", "PROGRAM NUMBER" },
+		{ "part.rcv_channel", "Rcv CHANNEL" }, { "part.mono_poly", "MONO/POLY MODE" },
+		{ "part.key_assign", "SAME NOTE NUMBER KEY ON ASSIGN" }, { "part.mode", "PART MODE" },
+		{ "part.note_shift", "NOTE SHIFT" }, { "part.detune", "DETUNE" }, { "part.volume", "VOLUME" },
+		{ "part.vel_depth", "VELOCITY SENSE DEPTH" }, { "part.vel_offset", "VELOCITY SENSE OFFSET" },
+		{ "part.pan", "PAN" }, { "part.note_low", "NOTE LIMIT LOW" }, { "part.note_high", "NOTE LIMIT HIGH" },
+		{ "part.dry_level", "DRY LEVEL" }, { "part.chorus_send", "CHORUS SEND" },
+		{ "part.reverb_send", "REVERB SEND" }, { "part.variation_send", "VARIATION SEND" },
+		{ "part.vib_rate", "VIBRATO RATE" }, { "part.vib_depth", "VIBRATO DEPTH" },
+		{ "part.vib_delay", "VIBRATO DELAY" }, { "part.cutoff", "FILTER CUTOFF FREQUENCY" },
+		{ "part.resonance", "FILTER RESONANCE" }, { "part.attack", "EG ATTACK TIME" },
+		{ "part.decay", "EG DECAY TIME" }, { "part.release", "EG RELEASE TIME" },
+		{ "part.ac1_cc", "AC1 CONTROLLER NUMBER" }, { "part.ac2_cc", "AC2 CONTROLLER NUMBER" },
+		{ "part.porta_switch", "PORTAMENTO SWITCH" }, { "part.porta_time", "PORTAMENTO TIME" },
+		{ "part.peg_init_level", "PITCH EG INITIAL LEVEL" }, { "part.peg_attack_time", "PITCH EG ATTACK TIME" },
+		{ "part.peg_rel_level", "PITCH EG RELEASE LEVEL" }, { "part.peg_rel_time", "PITCH EG RELEASE TIME" },
+		{ "part.vel_limit_low", "VELOCITY LIMIT LOW" }, { "part.vel_limit_high", "VELOCITY LIMIT HIGH" },
+		{ "part.hpf_cutoff", "HPF CUTOFF FREQUENCY" }, { "part.eq_bass_gain", "EQ BASS GAIN" },
+		{ "part.eq_treble_gain", "EQ TREBLE GAIN" }, { "part.eq_bass_freq", "EQ BASS FREQUENCY" },
+		{ "part.eq_treble_freq", "EQ TREBLE FREQUENCY" },
+	};
+	// 操作子 × 行き先の 36 個は形がそろっている（MW LFO PMOD DEPTH など）
+	static const std::pair<const char *, const char *> SRC[] = {
+		{ "part.mw_", "MW" }, { "part.bend_", "BEND" }, { "part.cat_", "CAT" },
+		{ "part.pat_", "PAT" }, { "part.ac1_", "AC1" }, { "part.ac2_", "AC2" },
+	};
+	static const std::pair<const char *, const char *> DST[] = {
+		{ "pitch", "PITCH CONTROL" }, { "filter", "FILTER CONTROL" }, { "amp", "AMPLITUDE CONTROL" },
+		{ "lfo_pmod", "LFO PMOD DEPTH" }, { "lfo_fmod", "LFO FMOD DEPTH" }, { "lfo_amod", "LFO AMOD DEPTH" },
+	};
+	std::string name;
+	for (const auto &n : NAMES)
+		if (!std::strcmp(n.first, key))
+			name = n.second;
+	if (name.empty())
+		for (const auto &s : SRC) {
+			const size_t len = std::strlen(s.first);
+			if (std::strncmp(key, s.first, len))
+				continue;
+			for (const auto &d : DST)
+				if (!std::strcmp(key + len, d.first))
+					name = std::string(s.second) + " " + d.second;
+		}
+	if (name.empty())
+		return std::string();
+	// 番地も添える（08 pp 20 のように。pp はパート）
+	if (const xg::param *p = xg::find(key)) {
+		char b[24];
+		std::snprintf(b, sizeof(b), "（%02X pp %02X）", p->hi, p->lo);
+		name += b;
+	}
+	return name;
 }
 
 const char *help_for(const char *name)
