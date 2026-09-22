@@ -937,7 +937,7 @@ void overview::eg_cell(int part, xg::model &m, bridge &br, float w, float h, boo
 // ハイパスにレゾナンスは効かない（Q は 0.707 の平ら）。
 // 点の高さは、カットオフでの持ち上がり 20log10(Q) dB。Q = 2 の (値 - 64) / 16 乗なので、
 // 高さも値に比例する。どれも見た目だけで、実際の周波数や Q ではない
-void overview::filter_cell(int part, xg::model &m, bridge &br, float w, float h, bool compact)
+void overview::filter_small(int part, xg::model &m, bridge &br, float w, float h, bool compact)
 {
 	ImGuiIO &io = ImGui::GetIO();
 	const float fs = ImGui::GetFontSize();
@@ -1004,66 +1004,6 @@ void overview::filter_cell(int part, xg::model &m, bridge &br, float w, float h,
 	// 描く
 	dl->AddRectFilled(pos, ImVec2(pos.x + w, pos.y + h), col(hovered || active ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg), 3.0f);
 
-	// ---- 背景: このパートが今出している音のスペクトラム（大きな窓だけ）。
-	// 横は**実際の周波数**（30 Hz-20 kHz の対数。上のフィルタの絵の横軸は目安で Hz ではないので、
-	// 別の目盛り）。縦はいちばん大きい所から 60 dB 下まで。下がるときはゆっくり落とす
-	struct scope_state { int part = -1; std::vector<float> sm; float peak = -200.0f; };
-	static scope_state ss;
-	const float F_LO = 30.0f, F_HI = 20000.0f;
-	auto x_hz = [&](float f) { return x0 + span * std::log(std::max(f, F_LO) / F_LO) / std::log(F_HI / F_LO); };
-	bool scope_drawn = false;
-	if (!compact) {
-		static float wave[bridge::SCOPE_N];
-		const int got = br.read_scope(wave);
-		if (got == part) {
-			std::vector<float> db;
-			spectrum::magnitude_db(wave, bridge::SCOPE_N, db);
-			if (ss.part != part || ss.sm.size() != db.size()) {
-				ss.part = part;
-				ss.sm.assign(db.size(), -200.0f);
-				ss.peak = -200.0f;
-			}
-			float frame_peak = -200.0f;
-			for (size_t k = 1; k < db.size(); k++) {
-				ss.sm[k] = std::max(db[k], ss.sm[k] - 1.5f);
-				frame_peak = std::max(frame_peak, db[k]);
-			}
-			ss.peak = std::max(frame_peak, ss.peak - 0.5f);
-			if (ss.peak > -150.0f) {
-				const float floor_db = ss.peak - 60.0f;
-				std::vector<ImVec2> sp;
-				const float step = std::max(1.5f, fs * 0.12f);
-				for (float x = x0; x <= x1; x += step) {
-					// この列にかかる bin のうちいちばん大きいもの
-					const float f0 = F_LO * std::pow(F_HI / F_LO, (x - x0) / span);
-					const float f1 = F_LO * std::pow(F_HI / F_LO, (x + step - x0) / span);
-					size_t k0 = size_t(f0 * float(bridge::SCOPE_N) / 44100.0f), k1 = size_t(f1 * float(bridge::SCOPE_N) / 44100.0f);
-					k0 = std::clamp<size_t>(k0, 1, ss.sm.size() - 1);
-					k1 = std::clamp<size_t>(std::max(k1, k0), 1, ss.sm.size() - 1);
-					float v = -200.0f;
-					for (size_t k = k0; k <= k1; k++)
-						v = std::max(v, ss.sm[k]);
-					const float t = std::clamp((v - floor_db) / 60.0f, 0.0f, 1.0f);
-					sp.push_back(ImVec2(x, bottom - (bottom - top) * t));
-				}
-				dl->PushClipRect(pos, ImVec2(pos.x + w, pos.y + h), true);
-				const ImU32 fill = IM_COL32(120, 220, 170, 60), edge = IM_COL32(140, 240, 190, 150);
-				for (size_t i = 1; i < sp.size(); i++)
-					dl->AddQuadFilled(ImVec2(sp[i - 1].x, bottom), sp[i - 1], sp[i], ImVec2(sp[i].x, bottom), fill);
-				dl->AddPolyline(sp.data(), int(sp.size()), edge, 0, 1.0f);
-				// 実際の周波数の目盛り
-				for (float f : { 100.0f, 1000.0f, 10000.0f }) {
-					const float x = x_hz(f);
-					dl->AddLine(ImVec2(x, bottom - fs * 0.3f), ImVec2(x, bottom), col(ImGuiCol_TextDisabled, 0.6f));
-					const char *t = f >= 10000.0f ? "10k" : f >= 1000.0f ? "1k" : "100";
-					dl->AddText(ImGui::GetFont(), fs * 0.55f, ImVec2(x + 2.0f, bottom - fs * 0.6f), col(ImGuiCol_TextDisabled, 0.7f), t);
-				}
-				dl->PopClipRect();
-				scope_drawn = true;
-			}
-		}
-	}
-
 	if (known) {
 		// 目安の線。0 dB と、音色のままのカットオフ
 		const ImU32 guide = col(ImGuiCol_TextDisabled, 0.35f);
@@ -1128,19 +1068,6 @@ void overview::filter_cell(int part, xg::model &m, bridge &br, float w, float h,
 					else std::snprintf(t, sizeof(t), "%.0f Hz", f);
 					return std::string(t);
 				};
-				// スペクトラムを描いたときは、**実際の**切る高さにも印（スペクトラムと同じ目盛り）
-				if (scope_drawn) {
-					auto mark = [&](float f, ImU32 c) {
-						if (f <= 0.0f || f >= 19000.0f)
-							return;
-						const float x = x_hz(f);
-						for (float y = top; y < bottom; y += fs * 0.4f)
-							dl->AddLine(ImVec2(x, y), ImVec2(x, std::min(bottom, y + fs * 0.2f)), c, 1.5f);
-					};
-					mark(lpf_hz, IM_COL32(255, 170, 60, 200));
-					if (L.hpf)
-						mark(hpf_hz, IM_COL32(255, 120, 200, 200));
-				}
 				char s[96];
 				const ImVec2 a(pos.x, pos.y), b(pos.x + w, pos.y + h);
 				std::snprintf(s, sizeof(s), "Cutoff : %s (%s)\nReso : %s", xg::format(pc, vc).c_str(),
@@ -1659,6 +1586,240 @@ void overview::vib_cell(int part, xg::model &m, bridge &br, float w, float h, bo
 	dl->PopClipRect();
 	ImGui::PopID();
 }
+
+// フィルタ（音色の窓の大きな区画）。左に絵、右に Cutoff・Resonance・HPF のフェーダー。
+// 絵の横は**実際の周波数**（20 Hz-20 kHz の対数）で、次の 2 つを同じ目盛りで重ねる:
+//   * このパートが今出している音のスペクトラム（緑。声ごとの出力をパートに振り分けて足したもの。6.216）
+//   * フィルタの実際の周波数特性（音色の元の値と合わせたレジスタを、チップのフィルタに通して出したもの）
+// 実際に切る周波数に縦の点線（LPF 橙・HPF 桃色）。絵は見るだけで、フェーダーをドラッグ
+// （つまんだ高さがそのまま値）か、フェーダーの上でマウスホイール（1 目で 1、Ctrl で 10）で動かす。
+// 一覧の小さなマスは filter_small（目安の形）
+void overview::filter_cell(int part, xg::model &m, bridge &br, float w, float h, bool compact)
+{
+	if (compact) {
+		filter_small(part, m, br, w, h, compact);
+		return;
+	}
+	ImGuiIO &io = ImGui::GetIO();
+	const float fs = ImGui::GetFontSize();
+	ImDrawList *dl = ImGui::GetWindowDrawList();
+	static const char *const KEYS[3] = { "part.cutoff", "part.resonance", "part.hpf_cutoff" };
+	static const char *const NAMES[3] = { "Cutoff", "Reso", "HPF" };
+	const xg::param *ps[3] = { &P(KEYS[0]), &P(KEYS[1]), &P(KEYS[2]) };
+	int vals[3] = { 64, 64, 64 };
+	bool have[3];
+	for (int i = 0; i < 3; i++)
+		have[i] = m.get(*ps[i], part, vals[i]);
+	const bool known = have[0] && have[1];
+
+	ImGui::PushID("filterbig");
+	const ImVec2 pos = ImGui::GetCursorScreenPos();
+	ImGui::InvisibleButton("##filter", ImVec2(w, h), ImGuiButtonFlags_MouseButtonLeft);
+	const ImGuiID id = ImGui::GetItemID();
+	const bool hovered = ImGui::IsItemHovered();
+	const bool active = ImGui::IsItemActive();
+
+	// 置き場所。右にフェーダー 3 本、残りが絵
+	const float pad = fs * 0.25f;
+	const float gfs = fs * 0.6f;
+	const float fw = std::min(fs * 1.3f, w * 0.1f);
+	const float fgap = fs * 0.35f;
+	float fx0[3];
+	for (int i = 0; i < 3; i++)
+		fx0[i] = pos.x + w - pad - fw * float(3 - i) - fgap * float(2 - i);
+	const float ftop = pos.y + pad + gfs * 2.4f, fbot = pos.y + h - pad;
+	const float x0 = pos.x + pad, x1 = fx0[0] - fs * 0.5f;
+	const float top = pos.y + pad, bottom = pos.y + h - pad;
+	const float span = x1 - x0;
+	const float F_LO = 20.0f, F_HI = 20000.0f;
+	auto x_hz = [&](float f) { return x0 + span * std::log(std::clamp(f, F_LO, F_HI) / F_LO) / std::log(F_HI / F_LO); };
+	const float DB_TOP = 24.0f, DB_BOTTOM = -36.0f;
+	auto y_db = [&](float db) { return top + (bottom - top) * (DB_TOP - std::clamp(db, DB_BOTTOM, DB_TOP)) / (DB_TOP - DB_BOTTOM); };
+	const float cap_h = std::max(6.0f, fs * 0.55f);
+	auto fader_at = [&](float x) {
+		for (int i = 0; i < 3; i++)
+			if (x >= fx0[i] - fgap * 0.5f && x <= fx0[i] + fw + fgap * 0.5f)
+				return i;
+		return -1;
+	};
+	auto value_at = [&](float y, const xg::param &p) {
+		const float a = ftop + cap_h * 0.5f, b = fbot - cap_h * 0.5f;
+		return std::clamp(p.min + int(std::lround((b - y) / std::max(1.0f, b - a) * float(p.max - p.min))), p.min, p.max);
+	};
+	const int over = hovered ? fader_at(io.MousePos.x) : -1;
+
+	// マウスホイール（フェーダーの上）
+	if (over >= 0 && have[over]) {
+		ImGui::SetItemKeyOwner(ImGuiKey_MouseWheelY);
+		if (io.MouseWheel != 0.0f) {
+			const int nv = std::clamp(vals[over] + wheel_steps(io.MouseWheel, io.KeyCtrl), ps[over]->min, ps[over]->max);
+			if (nv != vals[over]) {
+				br.send(m.set(*ps[over], part, nv));
+				vals[over] = nv;
+			}
+		}
+	}
+	// つまんで上下（つまんだ高さがそのまま値）
+	ImGuiStorage *st = ImGui::GetStateStorage();
+	int grab = st->GetInt(id, -1);
+	if (active && ImGui::IsItemActivated())
+		grab = fader_at(io.MousePos.x);
+	if (!active)
+		grab = -1;
+	st->SetInt(id, grab);
+	if (grab >= 0 && have[grab]) {
+		const int nv = value_at(io.MousePos.y, *ps[grab]);
+		if (nv != vals[grab]) {
+			drag_send(br, m.set(*ps[grab], part, nv));
+			vals[grab] = nv;
+		}
+	}
+	// 説明（フェーダーの上）
+	{
+		const int i = grab >= 0 ? grab : over;
+		if (i >= 0 && have[i]) {
+			const char *help = help_for(KEYS[i]);
+			hint("%s  %s\n%s（ドラッグかマウスホイール）", official_name(KEYS[i]).c_str(), xg::format(*ps[i], vals[i]).c_str(),
+			     help ? help : "");
+		}
+	}
+
+	dl->AddRectFilled(pos, ImVec2(pos.x + w, pos.y + h), col(hovered || active ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg), 3.0f);
+	dl->PushClipRect(pos, ImVec2(pos.x + w, pos.y + h), true);
+	for (int i = 0; i < 3; i++) {
+		const std::string t = have[i] ? xg::format(*ps[i], vals[i]) : std::string("--");
+		fader_picture(dl, fx0[i], fx0[i] + fw, ftop, fbot, vals[i], ps[i]->min, ps[i]->max, NAMES[i], t.c_str(),
+		              grab == i || over == i);
+	}
+
+	// ---- 目盛り（実際の周波数と 0 dB）
+	for (float f : { 100.0f, 1000.0f, 10000.0f }) {
+		const float x = x_hz(f);
+		dl->AddLine(ImVec2(x, top), ImVec2(x, bottom), col(ImGuiCol_TextDisabled, 0.15f));
+		const char *t = f >= 10000.0f ? "10k" : f >= 1000.0f ? "1k" : "100";
+		dl->AddText(ImGui::GetFont(), fs * 0.55f, ImVec2(x + 2.0f, bottom - fs * 0.6f), col(ImGuiCol_TextDisabled, 0.7f), t);
+	}
+	dl->AddLine(ImVec2(x0, y_db(0.0f)), ImVec2(x1, y_db(0.0f)), col(ImGuiCol_TextDisabled, 0.35f));
+
+	// ---- このパートの音のスペクトラム（緑）。縦はいちばん大きい所から 60 dB 下まで。下がるときはゆっくり
+	{
+		struct scope_state { int part = -1; std::vector<float> sm; float peak = -200.0f; };
+		static scope_state ss;
+		static float wave[bridge::SCOPE_N];
+		if (br.read_scope(wave) == part) {
+			std::vector<float> db;
+			spectrum::magnitude_db(wave, bridge::SCOPE_N, db);
+			if (ss.part != part || ss.sm.size() != db.size()) {
+				ss.part = part;
+				ss.sm.assign(db.size(), -200.0f);
+				ss.peak = -200.0f;
+			}
+			float frame_peak = -200.0f;
+			for (size_t k = 1; k < db.size(); k++) {
+				ss.sm[k] = std::max(db[k], ss.sm[k] - 1.5f);
+				frame_peak = std::max(frame_peak, db[k]);
+			}
+			ss.peak = std::max(frame_peak, ss.peak - 0.5f);
+			if (ss.peak > -150.0f) {
+				const float floor_db = ss.peak - 60.0f;
+				std::vector<ImVec2> sp;
+				const float step = std::max(1.5f, fs * 0.12f);
+				for (float x = x0; x <= x1; x += step) {
+					const float f0 = F_LO * std::pow(F_HI / F_LO, (x - x0) / span);
+					const float f1 = F_LO * std::pow(F_HI / F_LO, (x + step - x0) / span);
+					size_t k0 = size_t(f0 * float(bridge::SCOPE_N) / 44100.0f), k1 = size_t(f1 * float(bridge::SCOPE_N) / 44100.0f);
+					k0 = std::clamp<size_t>(k0, 1, ss.sm.size() - 1);
+					k1 = std::clamp<size_t>(std::max(k1, k0), 1, ss.sm.size() - 1);
+					float v = -200.0f;
+					for (size_t k = k0; k <= k1; k++)
+						v = std::max(v, ss.sm[k]);
+					const float t = std::clamp((v - floor_db) / 60.0f, 0.0f, 1.0f);
+					sp.push_back(ImVec2(x, bottom - (bottom - top) * t));
+				}
+				const ImU32 fill = IM_COL32(120, 220, 170, 55), edge = IM_COL32(140, 240, 190, 140);
+				for (size_t i = 1; i < sp.size(); i++)
+					dl->AddQuadFilled(ImVec2(sp[i - 1].x, bottom), sp[i - 1], sp[i], ImVec2(sp[i].x, bottom), fill);
+				dl->AddPolyline(sp.data(), int(sp.size()), edge, 0, 1.0f);
+			}
+		}
+	}
+
+	// ---- フィルタの実際の周波数特性と、切る周波数の印
+	voice_ctx v;
+	if (known && voice_of(part, v)) {
+		v.blk[0x18] = u8(vals[0]);
+		v.blk[0x19] = u8(vals[1]);
+		if (have[2])
+			v.blk[xg::ram::PART_HPF_RAM] = u8(vals[2]);
+		const std::vector<shape::filter_line> ls = shape::filter_lines(v.rom, v.rec, v.blk, 160);
+		if (!ls.empty()) {
+			const shape::filter_line &L = lead_line(ls);
+			std::vector<ImVec2> pts;
+			for (const shape::pt &p : L.pts)
+				pts.push_back(ImVec2(x_hz(p.ms), y_db(p.cents)));
+			dl->PathClear();
+			dl->PathLineTo(ImVec2(pts.front().x, bottom));
+			for (const ImVec2 &p : pts)
+				dl->PathLineTo(p);
+			dl->PathLineTo(ImVec2(pts.back().x, bottom));
+			dl->PathFillConcave(col(ImGuiCol_SliderGrab, 0.18f));
+			dl->AddPolyline(pts.data(), int(pts.size()), col(ImGuiCol_SliderGrabActive), 0, std::max(1.5f, fs * 0.1f));
+			// 切る周波数: いちばん大きい所から 3 dB 下がる所（山があれば山の頂）。filter_small と同じ決め方
+			float peak = -1e9f, peak_hz = 20.0f;
+			for (const shape::pt &p : L.pts)
+				if (p.cents > peak) { peak = p.cents; peak_hz = p.ms; }
+			float lpf_hz = 0;
+			for (size_t i = L.pts.size(); i-- > 0;)
+				if (L.pts[i].cents >= peak - 3.0f) { lpf_hz = L.pts[i].ms; break; }
+			if (peak > 3.0f)
+				lpf_hz = peak_hz;
+			float hpf_hz = 0;
+			for (const shape::pt &p : L.pts)
+				if (p.cents >= peak - 3.0f) { hpf_hz = p.ms; break; }
+			auto hz_text = [](float f) {
+				char t[24];
+				if (f >= 19000.0f) std::snprintf(t, sizeof(t), "20 kHz 以上");
+				else if (f >= 1000.0f) std::snprintf(t, sizeof(t), "%.1f kHz", f / 1000.0f);
+				else std::snprintf(t, sizeof(t), "%.0f Hz", f);
+				return std::string(t);
+			};
+			auto mark = [&](float f, ImU32 c, const char *label, int row) {
+				if (f <= 0.0f || f >= 19000.0f)
+					return;
+				const float x = x_hz(f);
+				for (float y = top; y < bottom; y += fs * 0.4f)
+					dl->AddLine(ImVec2(x, y), ImVec2(x, std::min(bottom, y + fs * 0.2f)), c, 1.5f);
+				char t[40];
+				std::snprintf(t, sizeof(t), "%s %s", label, hz_text(f).c_str());
+				const float tfs = fs * 0.65f;
+				const ImVec2 ts = ImGui::GetFont()->CalcTextSizeA(tfs, FLT_MAX, 0.0f, t);
+				const float tx = std::min(x + 3.0f, x1 - ts.x - 2.0f);
+				const float ty = top + 2.0f + float(row) * (ts.y + 2.0f);
+				dl->AddRectFilled(ImVec2(tx - 2, ty - 1), ImVec2(tx + ts.x + 2, ty + ts.y + 1), IM_COL32(0, 0, 0, 140), 3.0f);
+				dl->AddText(ImGui::GetFont(), tfs, ImVec2(tx, ty), c, t);
+			};
+			mark(lpf_hz, IM_COL32(255, 170, 60, 230), "LPF", 0);
+			if (L.hpf)
+				mark(hpf_hz, IM_COL32(255, 120, 200, 230), "HPF", 1);
+			char s[96];
+			std::snprintf(s, sizeof(s), "Cutoff : %s (%s)", xg::format(*ps[0], vals[0]).c_str(), hz_text(lpf_hz).c_str());
+			shape_value(s);
+			std::snprintf(s, sizeof(s), "Reso : %s", xg::format(*ps[1], vals[1]).c_str());
+			shape_value(s);
+			if (have[2]) {
+				std::snprintf(s, sizeof(s), L.hpf ? "HPF : %s (%s)" : "HPF : %s (掛かっていない)",
+				              xg::format(*ps[2], vals[2]).c_str(), hz_text(hpf_hz).c_str());
+				shape_value(s);
+			}
+		}
+	} else if (!known) {
+		const ImVec2 ts = ImGui::CalcTextSize("--");
+		dl->AddText(ImVec2(x0 + (span - ts.x) * 0.5f, (top + bottom - ts.y) * 0.5f), col(ImGuiCol_TextDisabled), "--");
+	}
+	dl->PopClipRect();
+	ImGui::PopID();
+}
+
 
 
 

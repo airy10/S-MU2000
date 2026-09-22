@@ -44,8 +44,10 @@ public:
 	static void eg_cell(int part, xg::model &m, bridge &br, float w, float h, bool compact);
 	// ピッチ EG: 音程の動き（出だし → 本来の音程 → 離してからリリースレベル）を描き、点をつまんで動かす
 	static void peg_cell(int part, xg::model &m, bridge &br, float w, float h, bool compact);
-	// フィルタ: 周波数特性の山を描き、山の頂をつまんで横でカットオフ、縦でレゾナンス
+	// フィルタ: 実際の周波数特性とパートの音のスペクトラムを同じ目盛りで描き、Cutoff・Resonance・HPF のフェーダー（音色の窓）
 	static void filter_cell(int part, xg::model &m, bridge &br, float w, float h, bool compact);
+	// 一覧の小さなマスのフィルタ（目安の形。filter_cell が compact のとき使う）
+	static void filter_small(int part, xg::model &m, bridge &br, float w, float h, bool compact);
 	// パートの EQ: 低音と高音の点をつまんで、横で周波数、縦でゲイン
 	static void eq_cell(int part, xg::model &m, bridge &br, float w, float h, bool compact);
 	// ビブラート: 実際の揺れの波と、Rate・Depth・Delay のフェーダー（音色の窓）

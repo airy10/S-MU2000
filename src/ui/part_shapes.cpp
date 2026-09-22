@@ -389,8 +389,8 @@ void part_shapes::draw(xg::model &m, const xg_snapshot &ram, bridge &br)
 			ImGui::SameLine();
 			panel("filter", "フィルタ（FILTER）", w, h, part, m, br, { "part.cutoff", "part.resonance", "part.hpf_cutoff" }, 1,
 			      [](int p, xg::model &mm, bridge &b, float pw, float ph) { overview::filter_cell(p, mm, b, pw, ph, false); },
-			      "音の明るさ（フィルタの周波数特性）。山の頂をつまんで横でカットオフ、縦でレゾナンス、"
-			      "左の点で HPF（低い音を削る）");
+			      "音の明るさ。横は実際の周波数で、緑がこのパートの今の音のスペクトラム、線がフィルタの実際の特性。"
+			      "右のフェーダーで Cutoff・Resonance・HPF（低い音を削る）を変える");
 			panel("eg", "音量の形（EG）", w, h, part, m, br, { "part.attack", "part.decay", "part.release" }, 2,
 			      [](int p, xg::model &mm, bridge &b, float pw, float ph) { overview::eg_cell(p, mm, b, pw, ph, false); },
 			      "音量の形（立ち上がり → 落ち着き → 伸ばし → 離して消える）。点をつまんでアタック・ディケイ・リリース");
