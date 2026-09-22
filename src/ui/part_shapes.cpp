@@ -1070,8 +1070,8 @@ void part_shapes::draw(xg::model &m, const xg_snapshot &ram, bridge &br)
 			ImGui::BeginGroup();
 			panel("vib", "ビブラート（VIB）", w, h, part, m, br, { "part.vib_rate", "part.vib_depth", "part.vib_delay" }, 0,
 			      [](int p, xg::model &mm, bridge &b, float pw, float ph) { overview::vib_cell(p, mm, b, pw, ph, false); },
-			      "音色の揺れ（ビブラート）。絵は実際の揺れで、右のフェーダーで速さ（Rate）・深さ（Depth）・"
-			      "掛かり始めるまでの時間（Delay）を変える");
+			      "音色の揺れ（ビブラート）。絵は Depth 込みの実際の揺れ（薄い灰色の線は Depth を既定の 64 にしたときの"
+			      "音色自身の揺れ）。右のフェーダーで速さ（Rate）・深さ（Depth）・掛かり始めるまでの時間（Delay）を変える");
 			panel("mod", "モジュレーション（MW）", w, h, part, m, br,
 			      { "part.mw_lfo_pmod", "part.mw_pitch", "part.mw_filter", "part.mw_amp", "part.mw_lfo_fmod", "part.mw_lfo_amod" }, 5,
 			      [](int p, xg::model &mm, bridge &b, float pw, float ph) { overview::mod_cell(p, mm, b, pw, ph, false); },
