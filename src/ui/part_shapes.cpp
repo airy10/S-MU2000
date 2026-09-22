@@ -981,9 +981,10 @@ void part_shapes::draw(xg::model &m, const xg_snapshot &ram, bridge &br)
 			// 列を横へ並べ、画面に入るのは 3 列ぶん（残りは横に送って見る）。
 			// 左に VIB（上）とモジュレーション（下）。フィルタと EQ、EG とピッチ EG、エフェクトは上下 2 段が
 			// つながった区画（メゾネット。上の段が絵、下の段がフェーダーやつまみ）。
-			// EG の右に、バリエーション（いつも。INS と PART の切り替えで位置が飛ばないように EG のすぐ次に固定）、
-			// このパートに掛かっているインサーション、つなぎ（送りと順序）、コーラス・リバーブ（種類が NO EFFECT で
-			// なければ、送りが 0 でも出す）。ポルタメントは「すべて」のタブにある
+			// EG の右に、このパートに掛かっているインサーション、バリエーション（いつも。INS と PART の切り替えで
+			// 位置が飛ばないように、つねにインサーションの次）、つなぎ（送りと順序）、コーラス・リバーブ（種類が
+			// NO EFFECT でなければ、送りが 0 でも出す）。音の流れ（声 → インサーション → バリエーション）と同じ順。
+			// ポルタメントは「すべて」のタブにある
 			const int cho_type = get_value(m, "chorus.type"), rev_type = get_value(m, "reverb.type");
 			const bool var_sys = get_value(m, "variation.connect") == 1;
 			struct fx_col { int slot; bool part_only; };
@@ -1049,9 +1050,9 @@ void part_shapes::draw(xg::model &m, const xg_snapshot &ram, bridge &br)
 				           : "このパートが送っているシステムエフェクト。上の段は、出口（緑）と入口（灰）のスペクトラムで、"
 				             "全パートの送りを混ぜた音。下の段で種類・戻り（Return）・パン・パラメータを変える。「詳しく」で設定の窓");
 			};
-			fx_panel(var_col);
 			for (const fx_col &c : inline_fx)
 				fx_panel(c);
+			fx_panel(var_col);
 			ImGui::SameLine();
 			panel("route", "つなぎ（送りと順序）", w, tall, part, m, br, {}, PANEL_FIXED,
 			      [](int p, xg::model &mm, bridge &b, float pw, float ph) { route_cell(p, mm, b, pw, ph); },
