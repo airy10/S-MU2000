@@ -48,6 +48,10 @@ public:
 	static void peg_cell(int part, xg::model &m, bridge &br, float w, float h, bool compact);
 	// 一覧の小さなマスのピッチ EG（目安の形。peg_cell が compact のとき使う）
 	static void peg_small(int part, xg::model &m, bridge &br, float w, float h, bool compact);
+	// EG とピッチ EG を 1 枚に（同じ時間の目盛り）。上の段に絵、下の段に 7 本のフェーダー（音色の窓の右の列）
+	static void env_cell(int part, xg::model &m, bridge &br, float w, float h);
+	// 音色の窓の縦 2 段つなぎの区画（フィルタと EQ、EG とピッチ EG）で、絵の段が占める割合
+	static constexpr float MAISON_SPLIT = 0.5f;
 	// フィルタ: 実際の周波数特性とパートの音のスペクトラムを同じ目盛りで描き、Cutoff・Resonance・HPF のフェーダー（音色の窓）
 	static void filter_cell(int part, xg::model &m, bridge &br, float w, float h, bool compact);
 	// 一覧の小さなマスのフィルタ（目安の形。filter_cell が compact のとき使う）

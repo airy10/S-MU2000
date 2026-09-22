@@ -370,40 +370,41 @@ void part_shapes::draw(xg::model &m, const xg_snapshot &ram, bridge &br)
 		if (ImGui::BeginTabItem("形")) {
 			if (!shapes_knobs(1))
 				scope = part;
-			// 3 × 2。上に VIB・モジュレーション・EG、下にフィルタ＋EQ（2 区画ぶんの幅）・ピッチ EG。
+			// 3 列。左に VIB（上）とモジュレーション（下）。中央と右は上下 2 段がつながった区画（メゾネット）で、
+			// 中央がフィルタと EQ、右が EG とピッチ EG（どちらも上の段が絵、下の段がフェーダー）。
 			// ポルタメントは「すべて」のタブにある
 			const ImVec2 room = ImGui::GetContentRegionAvail();
 			const float room_h = body_h - (ImGui::GetCursorScreenPos().y - top_y);
 			const float w = (room.x - st.ItemSpacing.x * 2.0f) / 3.0f;
 			const float h = (room_h - st.ItemSpacing.y) * 0.5f;
+			ImGui::BeginGroup();
 			panel("vib", "ビブラート（VIB）", w, h, part, m, br, { "part.vib_rate", "part.vib_depth", "part.vib_delay" }, 0,
 			      [](int p, xg::model &mm, bridge &b, float pw, float ph) { overview::vib_cell(p, mm, b, pw, ph, false); },
 			      "音色の揺れ（ビブラート）。絵は実際の揺れで、右のフェーダーで速さ（Rate）・深さ（Depth）・"
 			      "掛かり始めるまでの時間（Delay）を変える");
-			ImGui::SameLine();
 			panel("mod", "モジュレーション（MW）", w, h, part, m, br,
 			      { "part.mw_lfo_pmod", "part.mw_pitch", "part.mw_filter", "part.mw_amp", "part.mw_lfo_fmod", "part.mw_lfo_amod" }, 5,
 			      [](int p, xg::model &mm, bridge &b, float pw, float ph) { overview::mod_cell(p, mm, b, pw, ph, false); },
 			      "モジュレーションホイールを上げたときに足すビブラート。横がホイールの位置、縦が揺れの深さ。"
 			      "左のホイールが CC1、右のホイールが MW LFO PM。音色自身の揺れ（背景の帯）とは足さず、深いほうが効く");
+			ImGui::EndGroup();
 			ImGui::SameLine();
-			panel("eg", "音量の形（EG）", w, h, part, m, br, { "part.attack", "part.decay", "part.release" }, 2,
-			      [](int p, xg::model &mm, bridge &b, float pw, float ph) { overview::eg_cell(p, mm, b, pw, ph, false); },
-			      "音量の形（立ち上がり → 落ち着き → 伸ばし → 離して消える）を実際の時間で。ピッチ EG と同じ時間の目盛りで、"
-			      "背景に音程の動きを薄く重ねる。右のフェーダーで Attack・Decay・Release を変える");
-			panel("filter", "フィルタと EQ（FILTER・EQ）", w * 2.0f + st.ItemSpacing.x, h, part, m, br,
+			const float tall = h * 2.0f + st.ItemSpacing.y;
+			panel("filter", "フィルタと EQ（FILTER・EQ）", w, tall, part, m, br,
 			      { "part.cutoff", "part.resonance", "part.hpf_cutoff",
 			        "part.eq_bass_gain", "part.eq_bass_freq", "part.eq_treble_gain", "part.eq_treble_freq" }, 1,
 			      [](int p, xg::model &mm, bridge &b, float pw, float ph) { overview::filter_cell(p, mm, b, pw, ph, false); },
 			      "音の明るさ。横は実際の周波数で、緑がこのパートの今の音のスペクトラム。太線がフィルタとパートの EQ を"
 			      "合わせた実際の特性（細線がフィルタだけ、点線が EQ だけ）。どちらも声ごとに掛かり、EQ はフィルタのすぐ後ろ"
-			      "（インサーションより前）。右のフェーダーで Cutoff・Resonance・HPF と、EQ の低音・高音のゲインと周波数を変える");
+			      "（インサーションより前）。下のフェーダーで Cutoff・Resonance・HPF と、EQ の低音・高音のゲインと周波数を変える");
 			ImGui::SameLine();
-			panel("peg", "音程の形（ピッチ EG）", w, h, part, m, br,
-			      { "part.peg_init_level", "part.peg_attack_time", "part.peg_rel_level", "part.peg_rel_time" }, 3,
-			      [](int p, xg::model &mm, bridge &b, float pw, float ph) { overview::peg_cell(p, mm, b, pw, ph, false); },
-			      "音程の動き（出だしの音程 → 本来の音程、離したあとの音程）を実際の時間で。EG と同じ時間の目盛りで、"
-			      "背景に音量の形を薄く重ねる。右のフェーダーで Init・Attack・Rel Lv・Rel Tm を変える");
+			panel("env", "EG とピッチ EG（EG・PEG）", w, tall, part, m, br,
+			      { "part.attack", "part.decay", "part.release",
+			        "part.peg_init_level", "part.peg_attack_time", "part.peg_rel_level", "part.peg_rel_time" }, 2,
+			      [](int p, xg::model &mm, bridge &b, float pw, float ph) { overview::env_cell(p, mm, b, pw, ph); },
+			      "音量の形（青。立ち上がり → 落ち着き → 伸ばし → 離して消える）と音程の動き（橙）を、同じ実際の時間の目盛り・"
+			      "同じ離す時刻で 1 枚に。縦は左が音量（dB）、右が音程（セント）。下のフェーダーで EG の Attack・Decay・Release と"
+			      "ピッチ EG の Init・Attack・Rel Lv・Rel Tm を変える");
 			ImGui::EndTabItem();
 		}
 		if (ImGui::BeginTabItem("マトリクス")) {

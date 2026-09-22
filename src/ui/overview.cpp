@@ -1404,7 +1404,7 @@ void overview::vib_small(int part, xg::model &m, bridge &br, float w, float h, b
 // ミキサーのフェーダー風の絵。縦の溝と目盛り、つまみ（白い線入り）が値の高さにある。
 // 真ん中（64）の目盛りだけ明るく。上に小さく名前と値の字
 static void fader_picture(ImDrawList *dl, float x0, float x1, float top, float bottom, int value, int lo, int hi,
-                          const char *name, const char *text, bool lit)
+                          const char *name, const char *text, bool lit, ImU32 name_col = 0)
 {
 	const float fs = ImGui::GetFontSize();
 	const float gfs = fs * 0.6f;
@@ -1436,7 +1436,7 @@ static void fader_picture(ImDrawList *dl, float x0, float x1, float top, float b
 	const ImVec2 ts = font->CalcTextSizeA(gfs, FLT_MAX, 0.0f, text);
 	const ImVec2 ns = font->CalcTextSizeA(gfs, FLT_MAX, 0.0f, name);
 	dl->AddText(font, gfs, ImVec2(cx - ts.x * 0.5f, top - ts.y - 1.0f), ImGui::GetColorU32(ImGuiCol_Text), text);
-	dl->AddText(font, gfs, ImVec2(cx - ns.x * 0.5f, top - ts.y - ns.y - 1.0f), ImGui::GetColorU32(ImGuiCol_TextDisabled), name);
+	dl->AddText(font, gfs, ImVec2(cx - ns.x * 0.5f, top - ts.y - ns.y - 1.0f), name_col ? name_col : ImGui::GetColorU32(ImGuiCol_TextDisabled), name);
 }
 
 // ビブラート（音色の窓の大きな区画）。左に実際の揺れ（チップの LFO を回した波。横が時間 1.5 秒、
@@ -1587,14 +1587,171 @@ void overview::vib_cell(int part, xg::model &m, bridge &br, float w, float h, bo
 	ImGui::PopID();
 }
 
-// フィルタとパートの EQ（音色の窓の、2 区画ぶんの幅の区画）。左に絵、右に Cutoff・Resonance・HPF と
-// EQ の 4 つ（低音のゲイン・周波数、高音のゲイン・周波数）のフェーダー。
-// 絵の横は**実際の周波数**（20 Hz-20 kHz の対数）で、次の 2 つを同じ目盛りで重ねる:
+// ---- 音色の窓の大きな区画の、フェーダーの並び（フィルタと EQ、EG とピッチ EG）
+namespace {
+
+// フェーダーを n 本、a-b の四角の中に横に並べて、操作（ドラッグ・マウスホイール）と描画をする。
+// group_after の後ろは少し空けて組を分ける（-1 なら分けない）。値の字は値の棒と同じ書き方（EQ の周波数は Hz）。
+// 戻り値は、カーソルが載っているかつまんでいるフェーダー（無ければ -1）
+int fader_row(const char *const *keys, const char *const *names, int n, int group_after, int part, xg::model &m, bridge &br,
+              ImVec2 a, ImVec2 b, bool hovered, bool active, ImGuiID id, int *vals, bool *have,
+              ImU32 col_first = 0, ImU32 col_second = 0)
+{
+	ImGuiIO &io = ImGui::GetIO();
+	const float fs = ImGui::GetFontSize();
+	ImDrawList *dl = ImGui::GetWindowDrawList();
+	const float gfs = fs * 0.6f;
+	const float gap = fs * 0.5f, group = fs * 1.4f;
+	const float room = b.x - a.x - gap * float(n - 1) - (group_after >= 0 ? group - gap : 0.0f);
+	const float fw = std::clamp(room / float(n), fs * 1.0f, fs * 1.8f);
+	const float total = fw * float(n) + gap * float(n - 1) + (group_after >= 0 ? group - gap : 0.0f);
+	std::vector<float> fx0(static_cast<size_t>(n));
+	{
+		float x = a.x + std::max(0.0f, (b.x - a.x - total) * 0.5f);
+		for (int i = 0; i < n; i++) {
+			fx0[size_t(i)] = x;
+			x += fw + (i == group_after ? group : gap);
+		}
+	}
+	const float ftop = a.y + gfs * 2.4f, fbot = b.y;
+	const float cap_h = std::max(6.0f, fs * 0.55f);
+	std::vector<const xg::param *> ps(static_cast<size_t>(n));
+	for (int i = 0; i < n; i++)
+		ps[size_t(i)] = &P(keys[i]);
+	auto fader_at = [&](ImVec2 p) {
+		if (p.y < a.y || p.y > b.y)
+			return -1;
+		for (int i = 0; i < n; i++)
+			if (p.x >= fx0[size_t(i)] - gap * 0.5f && p.x <= fx0[size_t(i)] + fw + gap * 0.5f)
+				return i;
+		return -1;
+	};
+	auto value_at = [&](float y, const xg::param &p) {
+		const float lo = ftop + cap_h * 0.5f, hi = fbot - cap_h * 0.5f;
+		return std::clamp(p.min + int(std::lround((hi - y) / std::max(1.0f, hi - lo) * float(p.max - p.min))), p.min, p.max);
+	};
+	const int over = hovered ? fader_at(io.MousePos) : -1;
+	if (over >= 0 && have[over]) {
+		ImGui::SetItemKeyOwner(ImGuiKey_MouseWheelY);
+		if (io.MouseWheel != 0.0f) {
+			// 1 目で 1（Ctrl で 10）。overview::wheel_steps と同じ
+			const int step = std::max(1, int(std::lround(std::fabs(io.MouseWheel)))) * (io.KeyCtrl ? 10 : 1);
+			const int nv = std::clamp(vals[over] + (io.MouseWheel > 0 ? step : -step), ps[size_t(over)]->min, ps[size_t(over)]->max);
+			if (nv != vals[over]) {
+				br.send(m.set(*ps[size_t(over)], part, nv));
+				vals[over] = nv;
+			}
+		}
+	}
+	ImGuiStorage *st = ImGui::GetStateStorage();
+	int grab = st->GetInt(id, -1);
+	if (active && ImGui::IsItemActivated())
+		grab = fader_at(io.MousePos);
+	if (!active)
+		grab = -1;
+	st->SetInt(id, grab);
+	if (grab >= 0 && have[grab]) {
+		const int nv = value_at(io.MousePos.y, *ps[size_t(grab)]);
+		if (nv != vals[grab]) {
+			drag_send(br, m.set(*ps[size_t(grab)], part, nv));
+			vals[grab] = nv;
+		}
+	}
+	const int focus = grab >= 0 ? grab : over;
+	if (focus >= 0 && have[focus]) {
+		const char *help = help_for(keys[focus]);
+		hint("%s  %s\n%s（ドラッグかマウスホイール）", official_name(keys[focus]).c_str(), value_text(keys[focus], vals[focus]).c_str(),
+		     help ? help : "");
+	}
+	for (int i = 0; i < n; i++) {
+		std::string t = have[i] ? value_text(keys[i], vals[i]) : std::string("--");
+		if (t.size() > 3 && t.compare(t.size() - 3, 3, " Hz") == 0)
+			t.resize(t.size() - 3);
+		// 名前の色は組ごと（EG の組とピッチ EG の組を絵の線と同じ色にする）
+		const ImU32 nc = (group_after >= 0 && i > group_after) ? col_second : col_first;
+		fader_picture(dl, fx0[size_t(i)], fx0[size_t(i)] + fw, ftop, fbot, vals[i], ps[size_t(i)]->min, ps[size_t(i)]->max, names[i],
+		              t.c_str(), focus == i, nc);
+	}
+	return focus;
+}
+
+// 音量と音程の動きを、同じ鍵を離す時刻で組む
+struct env_timeline {
+	std::vector<shape::amp_line> amp;
+	std::vector<shape::peg_line> peg;
+	float t_off = 0, t_end = 1;
+	float settle = 0;             // 音量が伸ばしの高さに落ち着くまで（2 秒で打ち切り）
+	bool ok = false;
+};
+
+env_timeline make_timeline(const voice_ctx &v)
+{
+	namespace nv = xg::nv;
+	env_timeline t;
+	if (!v.rom || !v.rec)
+		return t;
+	const int n = nv::element_count(v.rom, v.rec);
+	// 落ち着くまで。音量は減衰 2 の終わり（2 秒で打ち切り）、音程は段 2 の終わり
+	float amp_settle = 0;
+	for (int e = 0; e < n; e++) {
+		const shape::amp_line a = shape::amp_run(v.rom, nv::element(v.rom, v.rec, e), v.blk, -1.0f, 2000.0f);
+		amp_settle = std::max(amp_settle, a.pts.back().ms);
+	}
+	const std::vector<shape::peg_line> p0 = shape::peg_lines(v.rom, v.rec, v.blk, 0.0f);
+	float peg_settle = 0;
+	for (const shape::peg_line &l : p0)
+		peg_settle = std::max(peg_settle, l.keyoff_ms);
+	t.settle = amp_settle;
+	t.t_off = std::max({ amp_settle, peg_settle, 50.0f }) + 250.0f;
+	for (int e = 0; e < n; e++)
+		t.amp.push_back(shape::amp_run(v.rom, nv::element(v.rom, v.rec, e), v.blk, t.t_off, t.t_off + 6000.0f));
+	t.peg = shape::peg_lines(v.rom, v.rec, v.blk, t.t_off - peg_settle);
+	float end = t.t_off + 100.0f;
+	for (const shape::amp_line &a : t.amp)
+		end = std::max(end, a.pts.back().ms);
+	for (const shape::peg_line &l : t.peg)
+		end = std::max(end, l.pts.back().ms);
+	t.t_end = std::min(end, t.t_off + 5000.0f);
+	t.ok = !t.amp.empty();
+	return t;
+}
+
+// 時間 → 横の位置（log(1 + t / 10ms) の目盛り。数 ms の立ち上がりから数秒の余韻まで 1 枚に入る）
+float time_x(float t, float t_end, float x0, float x1)
+{
+	const float T0 = 10.0f;
+	return x0 + (x1 - x0) * std::log1p(std::max(t, 0.0f) / T0) / std::log1p(std::max(t_end, 1.0f) / T0);
+}
+
+// 時間の目盛り（10 ms・100 ms・1 s・2 s・4 s）と、鍵を離す時刻の縦の点線
+void time_grid(ImDrawList *dl, float t_end, float t_off, float x0, float x1, float top, float bottom)
+{
+	const float fs = ImGui::GetFontSize();
+	for (float t : { 10.0f, 100.0f, 1000.0f, 2000.0f, 4000.0f }) {
+		if (t > t_end)
+			break;
+		const float x = time_x(t, t_end, x0, x1);
+		dl->AddLine(ImVec2(x, top), ImVec2(x, bottom), col(ImGuiCol_TextDisabled, 0.15f));
+		char g[16];
+		if (t >= 1000.0f) std::snprintf(g, sizeof(g), "%.0fs", t / 1000.0f);
+		else              std::snprintf(g, sizeof(g), "%.0fms", t);
+		dl->AddText(ImGui::GetFont(), fs * 0.55f, ImVec2(x + 2.0f, bottom - fs * 0.6f), col(ImGuiCol_TextDisabled, 0.7f), g);
+	}
+	const float xo = time_x(t_off, t_end, x0, x1);
+	for (float y = top; y < bottom; y += fs * 0.5f)
+		dl->AddLine(ImVec2(xo, y), ImVec2(xo, std::min(bottom, y + fs * 0.25f)), col(ImGuiCol_TextDisabled, 0.5f));
+	dl->AddText(ImGui::GetFont(), fs * 0.55f, ImVec2(xo + 2.0f, bottom - fs * 1.2f), col(ImGuiCol_TextDisabled, 0.8f), "離す");
+}
+
+} // namespace
+
+// フィルタとパートの EQ（音色の窓の中央の列。上下 2 段がつながったメゾネット）。上の段が絵、下の段が
+// Cutoff・Resonance・HPF と EQ の 4 つ（低音・高音のゲインと周波数）のフェーダー。
+// 絵の横は**実際の周波数**（20 Hz-20 kHz の対数）で、次を同じ目盛りで重ねる:
 //   * このパートが今出している音のスペクトラム（緑。声ごとの出力をパートに振り分けて足したもの。6.216）
 //   * フィルタとパートの EQ を合わせた実際の周波数特性（太線）。フィルタだけ（細線）と EQ だけ（点線）も。
 //     どちらも声ごとに掛かり、EQ はフィルタのすぐ後ろ（インサーションより前）
-// 実際に切る周波数に縦の点線（LPF 橙・HPF 桃色）。絵は見るだけで、フェーダーをドラッグ
-// （つまんだ高さがそのまま値）か、フェーダーの上でマウスホイール（1 目で 1、Ctrl で 10）で動かす。
+// 実際に切る周波数に縦の点線（LPF 橙・HPF 桃色）、EQ の周波数に ● 印。絵は見るだけ。
 // 一覧の小さなマスは filter_small（目安の形）
 void overview::filter_cell(int part, xg::model &m, bridge &br, float w, float h, bool compact)
 {
@@ -1602,7 +1759,6 @@ void overview::filter_cell(int part, xg::model &m, bridge &br, float w, float h,
 		filter_small(part, m, br, w, h, compact);
 		return;
 	}
-	ImGuiIO &io = ImGui::GetIO();
 	const float fs = ImGui::GetFontSize();
 	ImDrawList *dl = ImGui::GetWindowDrawList();
 	constexpr int NF = 7;
@@ -1626,87 +1782,21 @@ void overview::filter_cell(int part, xg::model &m, bridge &br, float w, float h,
 	const bool hovered = ImGui::IsItemHovered();
 	const bool active = ImGui::IsItemActive();
 
-	// 置き場所。右にフェーダー 7 本（フィルタの 3 本と EQ の 4 本の間を少し空ける）、残りが絵
+	// メゾネット: 上の段に絵、下の段にフェーダー。境目に床の線
 	const float pad = fs * 0.25f;
-	const float gfs = fs * 0.6f;
-	const float fw = std::min(fs * 1.3f, w * 0.06f);
-	const float fgap = fs * 0.35f, group = fs * 0.8f;
-	float fx0[NF];
-	{
-		float x = pos.x + w - pad;
-		for (int i = NF - 1; i >= 0; i--) {
-			x -= fw;
-			fx0[i] = x;
-			x -= (i == 3) ? group : fgap;
-		}
-	}
-	const float ftop = pos.y + pad + gfs * 2.4f, fbot = pos.y + h - pad;
-	const float x0 = pos.x + pad, x1 = fx0[0] - fs * 0.5f;
-	const float top = pos.y + pad, bottom = pos.y + h - pad;
+	const float split = pos.y + h * MAISON_SPLIT;
+	dl->AddRectFilled(pos, ImVec2(pos.x + w, pos.y + h), col(hovered || active ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg), 3.0f);
+	dl->PushClipRect(pos, ImVec2(pos.x + w, pos.y + h), true);
+	const int focus = fader_row(KEYS, NAMES, NF, 2, part, m, br, ImVec2(pos.x + pad, split + pad), ImVec2(pos.x + w - pad, pos.y + h - pad),
+	                            hovered, active, id, vals, have);
+	dl->AddLine(ImVec2(pos.x, split), ImVec2(pos.x + w, split), col(ImGuiCol_Border), 1.0f);
+	const float x0 = pos.x + pad, x1 = pos.x + w - pad;
+	const float top = pos.y + pad, bottom = split - pad;
 	const float span = x1 - x0;
 	const float F_LO = 20.0f, F_HI = 20000.0f;
 	auto x_hz = [&](float f) { return x0 + span * std::log(std::clamp(f, F_LO, F_HI) / F_LO) / std::log(F_HI / F_LO); };
 	const float DB_TOP = 24.0f, DB_BOTTOM = -36.0f;
 	auto y_db = [&](float db) { return top + (bottom - top) * (DB_TOP - std::clamp(db, DB_BOTTOM, DB_TOP)) / (DB_TOP - DB_BOTTOM); };
-	const float cap_h = std::max(6.0f, fs * 0.55f);
-	auto fader_at = [&](float x) {
-		for (int i = 0; i < NF; i++)
-			if (x >= fx0[i] - fgap * 0.5f && x <= fx0[i] + fw + fgap * 0.5f)
-				return i;
-		return -1;
-	};
-	auto value_at = [&](float y, const xg::param &p) {
-		const float a = ftop + cap_h * 0.5f, b = fbot - cap_h * 0.5f;
-		return std::clamp(p.min + int(std::lround((b - y) / std::max(1.0f, b - a) * float(p.max - p.min))), p.min, p.max);
-	};
-	const int over = hovered ? fader_at(io.MousePos.x) : -1;
-
-	// マウスホイール（フェーダーの上）
-	if (over >= 0 && have[over]) {
-		ImGui::SetItemKeyOwner(ImGuiKey_MouseWheelY);
-		if (io.MouseWheel != 0.0f) {
-			const int nv = std::clamp(vals[over] + wheel_steps(io.MouseWheel, io.KeyCtrl), ps[over]->min, ps[over]->max);
-			if (nv != vals[over]) {
-				br.send(m.set(*ps[over], part, nv));
-				vals[over] = nv;
-			}
-		}
-	}
-	// つまんで上下（つまんだ高さがそのまま値）
-	ImGuiStorage *st = ImGui::GetStateStorage();
-	int grab = st->GetInt(id, -1);
-	if (active && ImGui::IsItemActivated())
-		grab = fader_at(io.MousePos.x);
-	if (!active)
-		grab = -1;
-	st->SetInt(id, grab);
-	if (grab >= 0 && have[grab]) {
-		const int nv = value_at(io.MousePos.y, *ps[grab]);
-		if (nv != vals[grab]) {
-			drag_send(br, m.set(*ps[grab], part, nv));
-			vals[grab] = nv;
-		}
-	}
-	// 説明（フェーダーの上）
-	{
-		const int i = grab >= 0 ? grab : over;
-		if (i >= 0 && have[i]) {
-			const char *help = help_for(KEYS[i]);
-			hint("%s  %s\n%s（ドラッグかマウスホイール）", official_name(KEYS[i]).c_str(), value_text(KEYS[i], vals[i]).c_str(),
-			     help ? help : "");
-		}
-	}
-
-	dl->AddRectFilled(pos, ImVec2(pos.x + w, pos.y + h), col(hovered || active ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg), 3.0f);
-	dl->PushClipRect(pos, ImVec2(pos.x + w, pos.y + h), true);
-	for (int i = 0; i < NF; i++) {
-		// EQ の周波数は Hz で（値の棒と同じ書き方。狭いので " Hz" は外す）
-		std::string t = have[i] ? value_text(KEYS[i], vals[i]) : std::string("--");
-		if (t.size() > 3 && t.compare(t.size() - 3, 3, " Hz") == 0)
-			t.resize(t.size() - 3);
-		fader_picture(dl, fx0[i], fx0[i] + fw, ftop, fbot, vals[i], ps[i]->min, ps[i]->max, NAMES[i], t.c_str(),
-		              grab == i || over == i);
-	}
 
 	// ---- 目盛り（実際の周波数と 0 dB）
 	for (float f : { 100.0f, 1000.0f, 10000.0f }) {
@@ -1803,7 +1893,6 @@ void overview::filter_cell(int part, xg::model &m, bridge &br, float w, float h,
 				const float fl = float(eq::HZ[std::clamp(vals[4], 0, 60)]);
 				const float fh = float(eq::HZ[std::clamp(vals[6], 0, 60)]);
 				const std::vector<shape::pt> at = shape::eq_response(v.rom, v.blk, { fl, fh });
-				const int focus = grab >= 0 ? grab : over;
 				const float r0 = std::max(3.0f, fs * 0.26f);
 				for (int k = 0; k < 2 && k < int(at.size()); k++) {
 					const bool lit = focus == 3 + k * 2 || focus == 4 + k * 2;
@@ -1891,209 +1980,77 @@ void overview::filter_cell(int part, xg::model &m, bridge &br, float w, float h,
 	ImGui::PopID();
 }
 
-// ---- EG とピッチ EG（音色の窓の大きな区画）。どちらも絵は見るだけで、右のフェーダーで動かす。
-//
-// 2 つの絵は**同じ時間の目盛り**（実際の ms。数 ms の立ち上がりから数秒の余韻まで 1 枚に入るよう、
-// log(1 + t / 10ms) の目盛り）と、**同じ「鍵を離す時刻」**を使う。互いの形を背景に薄く重ねる
-// （EG の背景に音程の動き、ピッチ EG の背景に音量の形）。一覧の小さなマスは eg_small・peg_small
-
-namespace {
-
-// 音量と音程の動きを、同じ鍵を離す時刻で組む
-struct env_timeline {
-	std::vector<shape::amp_line> amp;
-	std::vector<shape::peg_line> peg;
-	float t_off = 0, t_end = 1;
-	float settle = 0;             // 音量が伸ばしの高さに落ち着くまで（2 秒で打ち切り）
-	bool ok = false;
-};
-
-env_timeline make_timeline(const voice_ctx &v)
+// EG とピッチ EG（音色の窓の右の列。上下 2 段がつながったメゾネット）。上の段に、音量の形（青・塗り）と
+// 音程の動き（橙の線）を**同じ実際の時間の目盛り・同じ鍵を離す時刻**で 1 枚に描く。縦は、左が音量
+// （0 dB-−60 dB）、右が音程（± セント）。下の段に EG の 3 つとピッチ EG の 4 つのフェーダー。絵は見るだけ。
+// 一覧の小さなマスは eg_small・peg_small（目安の形）
+void overview::env_cell(int part, xg::model &m, bridge &br, float w, float h)
 {
-	namespace nv = xg::nv;
-	env_timeline t;
-	if (!v.rom || !v.rec)
-		return t;
-	const int n = nv::element_count(v.rom, v.rec);
-	// 落ち着くまで。音量は減衰 2 の終わり（2 秒で打ち切り）、音程は段 2 の終わり
-	float amp_settle = 0;
-	for (int e = 0; e < n; e++) {
-		const shape::amp_line a = shape::amp_run(v.rom, nv::element(v.rom, v.rec, e), v.blk, -1.0f, 2000.0f);
-		amp_settle = std::max(amp_settle, a.pts.back().ms);
-	}
-	const std::vector<shape::peg_line> p0 = shape::peg_lines(v.rom, v.rec, v.blk, 0.0f);
-	float peg_settle = 0;
-	for (const shape::peg_line &l : p0)
-		peg_settle = std::max(peg_settle, l.keyoff_ms);
-	t.settle = amp_settle;
-	t.t_off = std::max({ amp_settle, peg_settle, 50.0f }) + 250.0f;
-	for (int e = 0; e < n; e++)
-		t.amp.push_back(shape::amp_run(v.rom, nv::element(v.rom, v.rec, e), v.blk, t.t_off, t.t_off + 6000.0f));
-	t.peg = shape::peg_lines(v.rom, v.rec, v.blk, t.t_off - peg_settle);
-	float end = t.t_off + 100.0f;
-	for (const shape::amp_line &a : t.amp)
-		end = std::max(end, a.pts.back().ms);
-	for (const shape::peg_line &l : t.peg)
-		end = std::max(end, l.pts.back().ms);
-	t.t_end = std::min(end, t.t_off + 5000.0f);
-	t.ok = !t.amp.empty();
-	return t;
-}
-
-// 時間 → 横の位置（log(1 + t / 10ms) の目盛り）
-float time_x(float t, float t_end, float x0, float x1)
-{
-	const float T0 = 10.0f;
-	return x0 + (x1 - x0) * std::log1p(std::max(t, 0.0f) / T0) / std::log1p(std::max(t_end, 1.0f) / T0);
-}
-
-// 時間の目盛り（10 ms・100 ms・1 s・2 s・4 s）と、鍵を離す時刻の縦の点線
-void time_grid(ImDrawList *dl, float t_end, float t_off, float x0, float x1, float top, float bottom)
-{
-	const float fs = ImGui::GetFontSize();
-	for (float t : { 10.0f, 100.0f, 1000.0f, 2000.0f, 4000.0f }) {
-		if (t > t_end)
-			break;
-		const float x = time_x(t, t_end, x0, x1);
-		dl->AddLine(ImVec2(x, top), ImVec2(x, bottom), col(ImGuiCol_TextDisabled, 0.15f));
-		char g[16];
-		if (t >= 1000.0f) std::snprintf(g, sizeof(g), "%.0fs", t / 1000.0f);
-		else              std::snprintf(g, sizeof(g), "%.0fms", t);
-		dl->AddText(ImGui::GetFont(), fs * 0.55f, ImVec2(x + 2.0f, bottom - fs * 0.6f), col(ImGuiCol_TextDisabled, 0.7f), g);
-	}
-	const float xo = time_x(t_off, t_end, x0, x1);
-	for (float y = top; y < bottom; y += fs * 0.5f)
-		dl->AddLine(ImVec2(xo, y), ImVec2(xo, std::min(bottom, y + fs * 0.25f)), col(ImGuiCol_TextDisabled, 0.5f));
-	dl->AddText(ImGui::GetFont(), fs * 0.55f, ImVec2(xo + 2.0f, top + 1.0f), col(ImGuiCol_TextDisabled, 0.8f), "離す");
-}
-
-// フェーダーを n 本、区画の右端に並べて、操作（ドラッグ・マウスホイール）と描画をする。
-// 戻り値は、絵に使える右端（フェーダーの手前）
-struct fader_bank_out { float x_right; int focus; };
-fader_bank_out fader_bank(const char *const *keys, const char *const *names, int n, int part, xg::model &m, bridge &br,
-                          ImVec2 pos, float w, float h, bool hovered, bool active, ImGuiID id, int *vals, bool *have)
-{
-	ImGuiIO &io = ImGui::GetIO();
 	const float fs = ImGui::GetFontSize();
 	ImDrawList *dl = ImGui::GetWindowDrawList();
-	const float pad = fs * 0.25f, gfs = fs * 0.6f;
-	const float fw = std::min(fs * 1.3f, w * 0.1f);
-	const float fgap = fs * 0.35f;
-	std::vector<float> fx0(static_cast<size_t>(n));
-	for (int i = 0; i < n; i++)
-		fx0[size_t(i)] = pos.x + w - pad - fw * float(n - i) - fgap * float(n - 1 - i);
-	const float ftop = pos.y + pad + gfs * 2.4f, fbot = pos.y + h - pad;
-	const float cap_h = std::max(6.0f, fs * 0.55f);
-	std::vector<const xg::param *> ps(static_cast<size_t>(n));
-	for (int i = 0; i < n; i++)
-		ps[size_t(i)] = &P(keys[i]);
-	auto fader_at = [&](float x) {
-		for (int i = 0; i < n; i++)
-			if (x >= fx0[size_t(i)] - fgap * 0.5f && x <= fx0[size_t(i)] + fw + fgap * 0.5f)
-				return i;
-		return -1;
-	};
-	auto value_at = [&](float y, const xg::param &p) {
-		const float a = ftop + cap_h * 0.5f, b = fbot - cap_h * 0.5f;
-		return std::clamp(p.min + int(std::lround((b - y) / std::max(1.0f, b - a) * float(p.max - p.min))), p.min, p.max);
-	};
-	const int over = hovered ? fader_at(io.MousePos.x) : -1;
-	if (over >= 0 && have[over]) {
-		ImGui::SetItemKeyOwner(ImGuiKey_MouseWheelY);
-		if (io.MouseWheel != 0.0f) {
-			// 1 目で 1（Ctrl で 10）。overview::wheel_steps と同じ
-			const int step = std::max(1, int(std::lround(std::fabs(io.MouseWheel)))) * (io.KeyCtrl ? 10 : 1);
-			const int nv = std::clamp(vals[over] + (io.MouseWheel > 0 ? step : -step), ps[size_t(over)]->min, ps[size_t(over)]->max);
-			if (nv != vals[over]) {
-				br.send(m.set(*ps[size_t(over)], part, nv));
-				vals[over] = nv;
-			}
-		}
-	}
-	ImGuiStorage *st = ImGui::GetStateStorage();
-	int grab = st->GetInt(id, -1);
-	if (active && ImGui::IsItemActivated())
-		grab = fader_at(io.MousePos.x);
-	if (!active)
-		grab = -1;
-	st->SetInt(id, grab);
-	if (grab >= 0 && have[grab]) {
-		const int nv = value_at(io.MousePos.y, *ps[size_t(grab)]);
-		if (nv != vals[grab]) {
-			drag_send(br, m.set(*ps[size_t(grab)], part, nv));
-			vals[grab] = nv;
-		}
-	}
-	const int focus = grab >= 0 ? grab : over;
-	if (focus >= 0 && have[focus]) {
-		const char *help = help_for(keys[focus]);
-		hint("%s  %s\n%s（ドラッグかマウスホイール）", official_name(keys[focus]).c_str(), xg::format(*ps[size_t(focus)], vals[focus]).c_str(),
-		     help ? help : "");
-	}
-	for (int i = 0; i < n; i++) {
-		const std::string t = have[i] ? xg::format(*ps[size_t(i)], vals[i]) : std::string("--");
-		fader_picture(dl, fx0[size_t(i)], fx0[size_t(i)] + fw, ftop, fbot, vals[i], ps[size_t(i)]->min, ps[size_t(i)]->max, names[i],
-		              t.c_str(), focus == i);
-	}
-	return { fx0[0] - fs * 0.5f, focus };
-}
-
-} // namespace
-
-void overview::eg_cell(int part, xg::model &m, bridge &br, float w, float h, bool compact)
-{
-	if (compact) {
-		eg_small(part, m, br, w, h, compact);
-		return;
-	}
-	const float fs = ImGui::GetFontSize();
-	ImDrawList *dl = ImGui::GetWindowDrawList();
-	static const char *const KEYS[3] = { "part.attack", "part.decay", "part.release" };
-	static const char *const NAMES[3] = { "Attack", "Decay", "Release" };
-	int vals[3] = { 64, 64, 64 };
-	bool have[3];
-	for (int i = 0; i < 3; i++)
+	constexpr int NF = 7;
+	static const char *const KEYS[NF] = { "part.attack", "part.decay", "part.release",
+		"part.peg_init_level", "part.peg_attack_time", "part.peg_rel_level", "part.peg_rel_time" };
+	// ピッチ EG の組は名前を短く（組の色で EG と分ける）
+	static const char *const NAMES[NF] = { "Attack", "Decay", "Release", "Init", "Atk", "RelLv", "RelTm" };
+	int vals[NF];
+	bool have[NF];
+	bool known = true;
+	for (int i = 0; i < NF; i++) {
+		vals[i] = P(KEYS[i]).def;
 		have[i] = m.get(P(KEYS[i]), part, vals[i]);
+		known = known && have[i];
+	}
 
-	ImGui::PushID("egbig");
+	ImGui::PushID("envbig");
 	const ImVec2 pos = ImGui::GetCursorScreenPos();
-	ImGui::InvisibleButton("##eg", ImVec2(w, h), ImGuiButtonFlags_MouseButtonLeft);
+	ImGui::InvisibleButton("##env", ImVec2(w, h), ImGuiButtonFlags_MouseButtonLeft);
 	const ImGuiID id = ImGui::GetItemID();
 	const bool hovered = ImGui::IsItemHovered(), active = ImGui::IsItemActive();
+	const float pad = fs * 0.25f;
+	const float split = pos.y + h * MAISON_SPLIT;
 	dl->AddRectFilled(pos, ImVec2(pos.x + w, pos.y + h), col(hovered || active ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg), 3.0f);
 	dl->PushClipRect(pos, ImVec2(pos.x + w, pos.y + h), true);
-	const fader_bank_out fb = fader_bank(KEYS, NAMES, 3, part, m, br, pos, w, h, hovered, active, id, vals, have);
-	const float pad = fs * 0.25f;
-	const float x0 = pos.x + pad, x1 = fb.x_right, top = pos.y + pad + fs * 0.9f, bottom = pos.y + h - pad;
+	fader_row(KEYS, NAMES, NF, 2, part, m, br, ImVec2(pos.x + pad, split + pad), ImVec2(pos.x + w - pad, pos.y + h - pad),
+	          hovered, active, id, vals, have, IM_COL32(150, 190, 255, 255), IM_COL32(255, 170, 130, 255));
+	dl->AddLine(ImVec2(pos.x, split), ImVec2(pos.x + w, split), col(ImGuiCol_Border), 1.0f);
+	// 絵。上に実際の時間の字を 2 行置くぶん空ける
+	const float line = fs * 0.75f;
+	const float x0 = pos.x + pad + fs * 1.6f, x1 = pos.x + w - pad - fs * 1.6f;
+	const float top = pos.y + pad + line * 2.2f, bottom = split - pad;
+	const float mid = (top + bottom) * 0.5f, half = (bottom - top) * 0.46f;
 
 	voice_ctx v;
-	if (have[0] && have[1] && have[2] && voice_of(part, v)) {
+	if (known && voice_of(part, v)) {
 		v.blk[0x1a] = u8(vals[0]); v.blk[0x1b] = u8(vals[1]); v.blk[0x1c] = u8(vals[2]);
-		// ピッチ EG は今の値のまま（背景に重ねる）
+		v.blk[0x62] = u8(vals[3]); v.blk[0x63] = u8(vals[4]); v.blk[0x64] = u8(vals[5]); v.blk[0x65] = u8(vals[6]);
 		const env_timeline t = make_timeline(v);
 		if (t.ok) {
 			time_grid(dl, t.t_end, t.t_off, x0, x1, top, bottom);
+			// 縦の目盛り。左は音量（0 dB が上、-60 dB が下）、右は音程（真ん中が 0 セント）
 			auto y_db = [&](float db) { return top + (bottom - top) * std::clamp(-db / 60.0f, 0.0f, 1.0f); };
-			// 背景: 音程の動き（高さは区画いっぱいに合わせる）
-			const shape::peg_line &pl = lead_line(t.peg);
-			float pspan = 50.0f;
-			for (const shape::pt &p : pl.pts)
-				pspan = std::max(pspan, std::fabs(p.cents));
-			std::vector<ImVec2> bg;
-			for (size_t i = 0; i < pl.pts.size(); i++) {
-				bg.push_back(ImVec2(time_x(pl.pts[i].ms, t.t_end, x0, x1), (top + bottom) * 0.5f - (bottom - top) * 0.45f * pl.pts[i].cents / pspan));
-				if (i + 1 == pl.pts.size())
-					bg.push_back(ImVec2(x1, bg.back().y));
-			}
-			if (bg.size() >= 2)
-				dl->AddPolyline(bg.data(), int(bg.size()), IM_COL32(255, 160, 120, 90), 0, 1.5f);
-			// 音量の形（鳴る要素ごと。最初のものを太く）
-			const shape::amp_line &L = lead_line(t.amp);
+			float span = 50.0f;
+			for (const shape::peg_line &l : t.peg)
+				for (const shape::pt &p : l.pts)
+					span = std::max(span, std::fabs(p.cents) * 1.1f);
+			auto y_c = [&](float c) { return mid - half * c / span; };
+			const float tfs = fs * 0.55f;
+			dl->AddText(ImGui::GetFont(), tfs, ImVec2(pos.x + pad, top - tfs * 0.5f), IM_COL32(120, 170, 255, 200), "0dB");
+			dl->AddText(ImGui::GetFont(), tfs, ImVec2(pos.x + pad, bottom - tfs), IM_COL32(120, 170, 255, 200), "-60");
+			char g[24];
+			std::snprintf(g, sizeof(g), "+%.0f", span);
+			dl->AddText(ImGui::GetFont(), tfs, ImVec2(x1 + 2.0f, y_c(span) - tfs * 0.5f), IM_COL32(255, 160, 120, 220), g);
+			dl->AddText(ImGui::GetFont(), tfs, ImVec2(x1 + 2.0f, mid - tfs * 0.5f), IM_COL32(255, 160, 120, 220), "0c");
+			std::snprintf(g, sizeof(g), "-%.0f", span);
+			dl->AddText(ImGui::GetFont(), tfs, ImVec2(x1 + 2.0f, y_c(-span) - tfs * 0.5f), IM_COL32(255, 160, 120, 220), g);
+			dl->AddLine(ImVec2(x0, mid), ImVec2(x1, mid), IM_COL32(255, 160, 120, 50));
+			// 音量の形（鳴る要素ごと。最初のものを塗って太く）
+			const shape::amp_line &A = lead_line(t.amp);
 			for (const shape::amp_line &a : t.amp) {
 				std::vector<ImVec2> pts;
 				for (const shape::pt &p : a.pts)
 					pts.push_back(ImVec2(time_x(p.ms, t.t_end, x0, x1), y_db(p.cents)));
-				if (&a == &L) {
+				if (&a == &A) {
 					dl->PathClear();
 					dl->PathLineTo(ImVec2(pts.front().x, bottom));
 					for (const ImVec2 &p : pts)
@@ -2101,26 +2058,44 @@ void overview::eg_cell(int part, xg::model &m, bridge &br, float w, float h, boo
 					dl->PathLineTo(ImVec2(pts.back().x, bottom));
 					dl->PathFillConcave(col(ImGuiCol_SliderGrab, 0.22f));
 				}
-				dl->AddPolyline(pts.data(), int(pts.size()), &a == &L ? col(ImGuiCol_SliderGrabActive) : col(ImGuiCol_SliderGrabActive, 0.4f),
-				                0, &a == &L ? std::max(2.0f, fs * 0.12f) : 1.0f);
+				dl->AddPolyline(pts.data(), int(pts.size()), &a == &A ? col(ImGuiCol_SliderGrabActive) : col(ImGuiCol_SliderGrabActive, 0.4f),
+				                0, &a == &A ? std::max(2.0f, fs * 0.12f) : 1.0f);
 			}
-			// 実際の時間（上に小さく）と、帯の一覧
+			// 音程の動き
+			const shape::peg_line &L = lead_line(t.peg);
+			for (const shape::peg_line &l : t.peg) {
+				std::vector<ImVec2> pts;
+				for (size_t i = 0; i < l.pts.size(); i++) {
+					pts.push_back(ImVec2(time_x(l.pts[i].ms, t.t_end, x0, x1), y_c(l.pts[i].cents)));
+					if (i + 1 == l.pts.size())
+						pts.push_back(ImVec2(x1, pts.back().y));
+				}
+				dl->AddPolyline(pts.data(), int(pts.size()), &l == &L ? IM_COL32(255, 160, 120, 255) : IM_COL32(255, 160, 120, 110),
+				                0, &l == &L ? std::max(2.0f, fs * 0.12f) : 1.0f);
+			}
+			// 実際の時間（上に 2 行）と、帯の一覧
 			float rel = 0;
-			for (const shape::pt &p : L.pts)
+			for (const shape::pt &p : A.pts)
 				if (p.ms > t.t_off) {
 					rel = p.ms - t.t_off;
 					if (p.cents <= -60.0f)
 						break;
 				}
-			const float dec = std::max(0.0f, t.settle - L.attack_ms);
+			const float dec = std::max(0.0f, t.settle - A.attack_ms);
 			char s[128];
 			if (t.settle >= 1990.0f)
-				std::snprintf(s, sizeof(s), "Attack %.0f ms   Decay 2000+ ms   Release %.0f ms", L.attack_ms, rel);
+				std::snprintf(s, sizeof(s), "音量  Attack %.0f ms   Decay 2000+ ms   Release %.0f ms", A.attack_ms, rel);
 			else
-				std::snprintf(s, sizeof(s), "Attack %.0f ms   Decay %.0f ms   Release %.0f ms", L.attack_ms, dec, rel);
-			dl->PushClipRect(ImVec2(x0, pos.y), ImVec2(x1, pos.y + h), true);
-			dl->AddText(ImGui::GetFont(), fs * 0.7f, ImVec2(x0 + 2.0f, pos.y + pad), col(ImGuiCol_Text, 0.85f), s);
-			dl->PopClipRect();
+				std::snprintf(s, sizeof(s), "音量  Attack %.0f ms   Decay %.0f ms   Release %.0f ms", A.attack_ms, dec, rel);
+			dl->AddText(ImGui::GetFont(), line, ImVec2(pos.x + pad + 2.0f, pos.y + pad), IM_COL32(150, 190, 255, 255), s);
+			shape_value(s);
+			float atk = 0;
+			for (const shape::pt &p : L.pts)
+				if (p.ms < L.keyoff_ms - 0.5f)      // 離す時刻の点は数えない
+					atk = p.ms;
+			std::snprintf(s, sizeof(s), "音程  Init %+.0f cent   Attack %.0f ms   Release %.0f ms → %+.0f cent",
+			              L.pts.front().cents, atk, L.pts.back().ms - L.keyoff_ms, L.pts.back().cents);
+			dl->AddText(ImGui::GetFont(), line, ImVec2(pos.x + pad + 2.0f, pos.y + pad + line * 1.1f), IM_COL32(255, 170, 130, 255), s);
 			shape_value(s);
 		}
 	}
@@ -2128,90 +2103,20 @@ void overview::eg_cell(int part, xg::model &m, bridge &br, float w, float h, boo
 	ImGui::PopID();
 }
 
+void overview::eg_cell(int part, xg::model &m, bridge &br, float w, float h, bool compact)
+{
+	if (compact)
+		eg_small(part, m, br, w, h, compact);
+	else
+		env_cell(part, m, br, w, h);
+}
+
 void overview::peg_cell(int part, xg::model &m, bridge &br, float w, float h, bool compact)
 {
-	if (compact) {
+	if (compact)
 		peg_small(part, m, br, w, h, compact);
-		return;
-	}
-	const float fs = ImGui::GetFontSize();
-	ImDrawList *dl = ImGui::GetWindowDrawList();
-	static const char *const KEYS[4] = { "part.peg_init_level", "part.peg_attack_time", "part.peg_rel_level", "part.peg_rel_time" };
-	static const char *const NAMES[4] = { "Init", "Attack", "Rel Lv", "Rel Tm" };
-	int vals[4] = { 64, 64, 64, 64 };
-	bool have[4];
-	for (int i = 0; i < 4; i++)
-		have[i] = m.get(P(KEYS[i]), part, vals[i]);
-
-	ImGui::PushID("pegbig");
-	const ImVec2 pos = ImGui::GetCursorScreenPos();
-	ImGui::InvisibleButton("##peg", ImVec2(w, h), ImGuiButtonFlags_MouseButtonLeft);
-	const ImGuiID id = ImGui::GetItemID();
-	const bool hovered = ImGui::IsItemHovered(), active = ImGui::IsItemActive();
-	dl->AddRectFilled(pos, ImVec2(pos.x + w, pos.y + h), col(hovered || active ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg), 3.0f);
-	dl->PushClipRect(pos, ImVec2(pos.x + w, pos.y + h), true);
-	const fader_bank_out fb = fader_bank(KEYS, NAMES, 4, part, m, br, pos, w, h, hovered, active, id, vals, have);
-	const float pad = fs * 0.25f;
-	const float x0 = pos.x + pad, x1 = fb.x_right, top = pos.y + pad + fs * 0.9f, bottom = pos.y + h - pad;
-	const float mid = (top + bottom) * 0.5f, half = (bottom - top) * 0.45f;
-
-	voice_ctx v;
-	if (have[0] && have[1] && have[2] && have[3] && voice_of(part, v)) {
-		v.blk[0x62] = u8(vals[0]); v.blk[0x63] = u8(vals[1]); v.blk[0x64] = u8(vals[2]); v.blk[0x65] = u8(vals[3]);
-		const env_timeline t = make_timeline(v);
-		if (t.ok) {
-			time_grid(dl, t.t_end, t.t_off, x0, x1, top, bottom);
-			dl->AddLine(ImVec2(x0, mid), ImVec2(x1, mid), col(ImGuiCol_TextDisabled, 0.35f));
-			// 背景: 音量の形（0 dB が上、-60 dB が下）
-			const shape::amp_line &al = lead_line(t.amp);
-			std::vector<ImVec2> bg;
-			for (const shape::pt &p : al.pts)
-				bg.push_back(ImVec2(time_x(p.ms, t.t_end, x0, x1), top + (bottom - top) * std::clamp(-p.cents / 60.0f, 0.0f, 1.0f)));
-			if (bg.size() >= 2) {
-				dl->PathClear();
-				dl->PathLineTo(ImVec2(bg.front().x, bottom));
-				for (const ImVec2 &p : bg)
-					dl->PathLineTo(p);
-				dl->PathLineTo(ImVec2(bg.back().x, bottom));
-				dl->PathFillConcave(col(ImGuiCol_SliderGrab, 0.10f));
-				dl->AddPolyline(bg.data(), int(bg.size()), col(ImGuiCol_SliderGrabActive, 0.35f), 0, 1.0f);
-			}
-			// 音程の動き（セント。縦はいちばん大きいずれに合わせ、最低 ±50 セント）
-			float span = 50.0f;
-			for (const shape::peg_line &l : t.peg)
-				for (const shape::pt &p : l.pts)
-					span = std::max(span, std::fabs(p.cents) * 1.1f);
-			const shape::peg_line &L = lead_line(t.peg);
-			for (const shape::peg_line &l : t.peg) {
-				std::vector<ImVec2> pts;
-				for (size_t i = 0; i < l.pts.size(); i++) {
-					pts.push_back(ImVec2(time_x(l.pts[i].ms, t.t_end, x0, x1), mid - half * l.pts[i].cents / span));
-					if (i + 1 == l.pts.size())
-						pts.push_back(ImVec2(x1, pts.back().y));
-				}
-				dl->AddPolyline(pts.data(), int(pts.size()), &l == &L ? IM_COL32(255, 160, 120, 255) : IM_COL32(255, 160, 120, 110),
-				                0, &l == &L ? std::max(2.0f, fs * 0.12f) : 1.0f);
-			}
-			// 実際の量（上に小さく）と、帯の一覧
-			float atk = 0;
-			for (const shape::pt &p : L.pts)
-				if (p.ms < L.keyoff_ms - 0.5f)      // 離す時刻の点は数えない
-					atk = p.ms;
-			const float rel_ms = L.pts.back().ms - L.keyoff_ms;
-			char s[128];
-			std::snprintf(s, sizeof(s), "Init %+.0f cent   Attack %.0f ms   Release %.0f ms → %+.0f cent",
-			              L.pts.front().cents, atk, rel_ms, L.pts.back().cents);
-			dl->PushClipRect(ImVec2(x0, pos.y), ImVec2(x1, pos.y + h), true);
-			dl->AddText(ImGui::GetFont(), fs * 0.7f, ImVec2(x0 + 2.0f, pos.y + pad), col(ImGuiCol_Text, 0.85f), s);
-			dl->PopClipRect();
-			shape_value(s);
-			char g[24];
-			std::snprintf(g, sizeof(g), "±%.0f cent", span);
-			dl->AddText(ImGui::GetFont(), fs * 0.55f, ImVec2(x0 + 2.0f, top + 1.0f), col(ImGuiCol_TextDisabled, 0.7f), g);
-		}
-	}
-	dl->PopClipRect();
-	ImGui::PopID();
+	else
+		env_cell(part, m, br, w, h);
 }
 
 
