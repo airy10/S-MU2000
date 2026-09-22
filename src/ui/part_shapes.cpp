@@ -107,6 +107,157 @@ void panel(const char *id, const char *title, float w, float h, int part, xg::mo
 	ImGui::EndChild();
 }
 
+// ---- モジュレーションのマトリクス。操作子 6 つ（行）× 行き先 6 つ（列）の深さ
+//
+// 行き先の 3 つ（音程・切る高さ・音量）は「動かす」量で 64 が 0（±）、残りの 3 つは LFO の揺れの深さ（0-127）。
+// マスの色は、± の量なら + が青・− が赤、深さなら橙で、濃さが量。既定から外れたマスは枠を明るく。
+// マスを上下にドラッグ（2 ドットで 1）、マウスホイール（1 目で 1、Ctrl で 10）、ダブルクリックで既定に戻す
+void mod_matrix(int part, xg::model &m, bridge &br, float w, float h)
+{
+	struct src { const char *key, *name, *about; };
+	static const src SRCS[6] = {
+		{ "mw",   "モジュレーション",   "モジュレーションホイール（CC1）" },
+		{ "bend", "ピッチベンド",       "ピッチベンド（中央から離した量。向きは問わない）" },
+		{ "cat",  "チャンネル AT",      "チャンネルアフタータッチ（鍵盤を押し込む強さ。チャンネルに 1 つ）" },
+		{ "pat",  "ポリ AT",            "ポリアフタータッチ（鍵ごとの押し込む強さ）" },
+		{ "ac1",  "AC1",                "AC1（AC1 CC No で選んだコントロールチェンジ）" },
+		{ "ac2",  "AC2",                "AC2（AC2 CC No で選んだコントロールチェンジ）" },
+	};
+	struct dst { const char *key, *name, *sub; };
+	static const dst DSTS[6] = {
+		{ "pitch",    "音程",     "Pitch" },
+		{ "filter",   "音色",     "Filter" },
+		{ "amp",      "音量",     "Amp" },
+		{ "lfo_pmod", "LFO 音程", "ビブラート" },
+		{ "lfo_fmod", "LFO 音色", "ワウ" },
+		{ "lfo_amod", "LFO 音量", "トレモロ" },
+	};
+	ImGuiIO &io = ImGui::GetIO();
+	const float fs = ImGui::GetFontSize();
+	ImDrawList *dl = ImGui::GetWindowDrawList();
+	const ImVec2 org = ImGui::GetCursorScreenPos();
+	const float head_w = std::min(fs * 8.0f, w * 0.26f);
+	const float head_h = ImGui::GetTextLineHeight() * 2.2f;
+	const float gap = std::max(2.0f, fs * 0.15f);
+	const float cw = (w - head_w) / 6.0f, ch = std::max(fs * 1.6f, (h - head_h) / 6.0f);
+	ImGuiStorage *st = ImGui::GetStateStorage();
+
+	// 列の見出し（2 行: 行き先と、揺れなら何になるか）。動かすのと揺らすのの間に線
+	for (int c = 0; c < 6; c++) {
+		const float x = org.x + head_w + cw * float(c);
+		const ImVec2 a = ImGui::CalcTextSize(DSTS[c].name), b = ImGui::CalcTextSize(DSTS[c].sub);
+		dl->AddText(ImVec2(x + (cw - a.x) * 0.5f, org.y), ImGui::GetColorU32(ImGuiCol_Text), DSTS[c].name);
+		dl->AddText(ImVec2(x + (cw - b.x) * 0.5f, org.y + ImGui::GetTextLineHeight()), ImGui::GetColorU32(ImGuiCol_TextDisabled), DSTS[c].sub);
+	}
+	{
+		const float x = org.x + head_w + cw * 3.0f - gap * 0.5f;
+		dl->AddLine(ImVec2(x, org.y), ImVec2(x, org.y + head_h + ch * 6.0f), ImGui::GetColorU32(ImGuiCol_Separator), 1.0f);
+	}
+
+	for (int r = 0; r < 6; r++) {
+		const float y = org.y + head_h + ch * float(r);
+		// 行の見出し。AC1・AC2 は CC の番号もここで（マウスホイールで変える）
+		ImGui::SetCursorScreenPos(ImVec2(org.x, y));
+		ImGui::PushID(r);
+		ImGui::InvisibleButton("##row", ImVec2(head_w - gap, ch - gap));
+		const bool row_hover = ImGui::IsItemHovered();
+		dl->AddRectFilled(ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), ImGui::GetColorU32(row_hover ? ImGuiCol_HeaderHovered : ImGuiCol_Header, 0.35f), 3.0f);
+		std::string label = SRCS[r].name;
+		if (r >= 4) {
+			const std::string cck = std::string("part.") + SRCS[r].key + "_cc";
+			const xg::param &cp = P(cck.c_str());
+			int ccv = 0;
+			if (m.get(cp, part, ccv)) {
+				char b[32];
+				std::snprintf(b, sizeof(b), "  CC%d", ccv);
+				label += b;
+				if (row_hover) {
+					ImGui::SetItemKeyOwner(ImGuiKey_MouseWheelY);
+					if (io.MouseWheel != 0.0f) {
+						const int nv = std::clamp(ccv + (io.MouseWheel > 0 ? 1 : -1) * (io.KeyCtrl ? 10 : 1), cp.min, cp.max);
+						if (nv != ccv)
+							br.send(m.set(cp, part, nv));
+					}
+				}
+			}
+		}
+		const ImVec2 ls = ImGui::CalcTextSize(label.c_str());
+		dl->AddText(ImVec2(org.x + fs * 0.3f, y + (ch - gap - ls.y) * 0.5f), ImGui::GetColorU32(ImGuiCol_Text), label.c_str());
+		if (row_hover)
+			hint(r >= 4 ? "%s\nこの行の 6 つのマスが、この操作子で動かす量。見出しの上でマウスホイールを回すと CC の番号が変わる"
+			            : "%s\nこの行の 6 つのマスが、この操作子で動かす量", SRCS[r].about);
+
+		for (int c = 0; c < 6; c++) {
+			const std::string key = std::string("part.") + SRCS[r].key + "_" + DSTS[c].key;
+			const xg::param &p = P(key.c_str());
+			int v = p.def;
+			const bool known = m.get(p, part, v);
+			const float x = org.x + head_w + cw * float(c);
+			ImGui::SetCursorScreenPos(ImVec2(x, y));
+			ImGui::PushID(c);
+			ImGui::InvisibleButton("##cell", ImVec2(cw - gap, ch - gap));
+			const ImGuiID id = ImGui::GetItemID();
+			const bool hov = ImGui::IsItemHovered(), act = ImGui::IsItemActive();
+			if (known) {
+				int nv = v;
+				if (ImGui::IsItemActivated()) {
+					st->SetInt(id, v);
+					st->SetFloat(id + 1, io.MousePos.y);
+				}
+				if (act && !ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+					nv = st->GetInt(id, v) + int((st->GetFloat(id + 1, io.MousePos.y) - io.MousePos.y) / 2.0f);
+				if (hov) {
+					ImGui::SetItemKeyOwner(ImGuiKey_MouseWheelY);
+					if (io.MouseWheel != 0.0f)
+						nv = v + (io.MouseWheel > 0 ? 1 : -1) * (io.KeyCtrl ? 10 : 1);
+					if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+						nv = p.def;
+				}
+				nv = std::clamp(nv, p.min, p.max);
+				if (nv != v) {
+					drag_send(br, m.set(p, part, nv));
+					v = nv;
+				}
+			}
+			// 描く
+			const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+			const bool bip = p.how == xg::view::center;
+			float t = 0.0f;
+			ImU32 fill;
+			if (bip) {
+				const float span = float(v >= p.center ? p.max - p.center : p.center - p.min);
+				t = span > 0 ? float(v - p.center) / span : 0.0f;
+				fill = t >= 0 ? IM_COL32(70, 140, 235, int(40 + 190 * t)) : IM_COL32(230, 80, 70, int(40 - 190 * t));
+			} else {
+				t = float(v - p.min) / float(std::max(1, p.max - p.min));
+				fill = IM_COL32(235, 160, 50, int(30 + 200 * t));
+			}
+			dl->AddRectFilled(a, b, ImGui::GetColorU32(ImGuiCol_FrameBg), 3.0f);
+			if ((bip && v != p.center) || (!bip && v != p.min))
+				dl->AddRectFilled(a, b, fill, 3.0f);
+			const bool changed = known && v != p.def;
+			dl->AddRect(a, b, changed ? IM_COL32(250, 230, 150, 255)
+			                          : ImGui::GetColorU32(hov || act ? ImGuiCol_Border : ImGuiCol_BorderShadow), 3.0f,
+			            0, changed ? 1.5f : 1.0f);
+			const std::string text = known ? xg::format(p, v) : std::string("--");
+			const ImVec2 ts = ImGui::CalcTextSize(text.c_str());
+			dl->AddText(ImVec2((a.x + b.x - ts.x) * 0.5f, (a.y + b.y - ts.y) * 0.5f),
+			            ImGui::GetColorU32(known && ((bip && v != p.center) || (!bip && v != p.min)) ? ImGuiCol_Text : ImGuiCol_TextDisabled),
+			            text.c_str());
+			if (hov || act) {
+				const char *help = help_for(key.c_str());
+				const std::string to = c >= 3 ? std::string(DSTS[c].name) + "（" + DSTS[c].sub + "）" : std::string(DSTS[c].name);
+				hint("%s → %s  %s\n%s（上下にドラッグ・マウスホイール・ダブルクリックで既定の %s）",
+				     SRCS[r].name, to.c_str(), text.c_str(), help ? help : "", xg::format(p, p.def).c_str());
+			}
+			ImGui::PopID();
+		}
+		ImGui::PopID();
+	}
+	ImGui::SetCursorScreenPos(ImVec2(org.x, org.y + head_h + ch * 6.0f));
+	ImGui::Dummy(ImVec2(w, 0));
+}
+
 } // namespace
 
 
@@ -245,6 +396,16 @@ void part_shapes::draw(xg::model &m, const xg_snapshot &ram, bridge &br)
 			      { "part.eq_bass_gain", "part.eq_bass_freq", "part.eq_treble_gain", "part.eq_treble_freq" }, 4,
 			      [](int p, xg::model &mm, bridge &b, float pw, float ph) { overview::eq_cell(p, mm, b, pw, ph, false); },
 			      "パートの EQ。低音と高音の点をつまんで、横で周波数、縦でゲイン");
+			ImGui::EndTabItem();
+		}
+		if (ImGui::BeginTabItem("マトリクス")) {
+			// 操作子 6 つ × 行き先 6 つ（モジュレーションのマトリクス）
+			const float room_h = body_h - (ImGui::GetCursorScreenPos().y - top_y);
+			if (ImGui::BeginChild("matrix", ImVec2(0, room_h), ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar)) {
+				const ImVec2 r = ImGui::GetContentRegionAvail();
+				mod_matrix(part, m, br, r.x, r.y);
+			}
+			ImGui::EndChild();
 			ImGui::EndTabItem();
 		}
 		if (ImGui::BeginTabItem("すべて")) {
