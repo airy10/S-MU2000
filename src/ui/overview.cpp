@@ -1780,6 +1780,8 @@ struct spec_curve {
 // 直流は引き、振幅 16 ほどより小さいものは鳴っていないことにし、目盛りの上端は振幅 400 ほどより下げない
 // （小さな残りかすを「いちばん大きい所から 60 dB」で画面いっぱいに引き伸ばさない）
 constexpr float SPEC_SILENT_DB = 78.0f;
+// 20Hz より下の bin は見ない（音ではなく、窓の中での音量の変わりぶん＝包絡線がここに出る）
+constexpr size_t SPEC_BIN0 = size_t(20.0 * double(bridge::SCOPE_N) / 44100.0) + 1;
 constexpr float SPEC_REF_MIN_DB = 106.0f;
 
 void spec_update(bridge &br, int part, int src, spec_curve &c)
@@ -1802,14 +1804,16 @@ void spec_update(bridge &br, int part, int src, spec_curve &c)
 		c.pw.assign(db.size(), 0.0f);
 		c.peak = -200.0f;
 	}
-	// **力で 2 コマぶんならしてから** dB に戻す（雑音のコマごとの揺れを落とす。山はほとんど動かない）
+	// **力でならす**（雑音のコマごとの揺れを落とす。山はほとんど動かない）。
+	// 前は「下がるときは 1 コマ 1.5dB まで」と持ちこたえさせていたが、押した瞬間の立ち上がりには
+	// 低いほうまで音が入っているので、その持ちこたえが 0.8 秒ほど平たい山として居座っていた（2026-09-23）。
+	// 持ちこたえはやめて、ならしだけにする（1 コマで 5dB ほど下がる）
 	float frame_peak = -200.0f;
-	for (size_t k = 1; k < db.size(); k++) {
+	for (size_t k = SPEC_BIN0; k < db.size(); k++) {
 		const float p = float(std::pow(10.0, double(db[k]) / 10.0));
-		c.pw[k] = c.pw[k] > 0.0f ? c.pw[k] * 0.5f + p * 0.5f : p;
-		const float d = float(10.0 * std::log10(std::max(double(c.pw[k]), 1e-20)));
-		c.sm[k] = std::max(d, c.sm[k] - 1.5f);
-		frame_peak = std::max(frame_peak, d);
+		c.pw[k] = c.pw[k] > 0.0f ? c.pw[k] * 0.3f + p * 0.7f : p;
+		c.sm[k] = float(10.0 * std::log10(std::max(double(c.pw[k]), 1e-20)));
+		frame_peak = std::max(frame_peak, c.sm[k]);
 	}
 	c.peak = std::max(frame_peak, c.peak - 0.5f);
 	c.ok = c.peak > SPEC_SILENT_DB;
@@ -1834,7 +1838,7 @@ std::vector<ImVec2> spec_points(const spec_curve &c, float floor_db, float x0, f
 			k0 = mid - 1;
 			k1 = mid + 1;
 		}
-		k0 = std::clamp<long>(k0, 1, last);
+		k0 = std::clamp<long>(k0, long(SPEC_BIN0), last);
 		k1 = std::clamp<long>(std::max(k1, k0), 1, last);
 		double pw = 0;
 		for (long k = k0; k <= k1; k++)
