@@ -133,6 +133,8 @@ private:
 	// そのパートのホイールの今の値（送ったばかりならその値）と、回して送る
 	static int  mod_now(int part, int ram_value);
 	static void mod_send(int part, int slot, int value, bridge &br);
+	// マウスホイールの回した量 → 動かす量（速く回すほど大きく。big は Ctrl）
+	static int  wheel_steps(float wheel, bool big);
 	xg::model *m_model = nullptr;     // 閉じたときに受信チャンネルを戻すため（draw で覚える）
 	bool   m_mute[XG_PARTS] = {}, m_solo[XG_PARTS] = {};
 	int    m_saved_rcv[XG_PARTS];     // ミュートで OFF にする前の受信チャンネル（-1 は消していない）
