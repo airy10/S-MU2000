@@ -185,50 +185,31 @@ public:
 	static constexpr size_t SCOPE_N = 2048;
 	void want_scope(int part) { m_scope_want.store(part, std::memory_order_relaxed); }
 	int scope_wanted() const { return m_scope_want.load(std::memory_order_relaxed); }
-	// post はインサーションを通したあとの音（mu2000::scope_read_post）、ins はその番号（1-4。無ければ 0 で、
-	// post は s と同じ）
-	void publish_scope(const float *s, const float *post, int part, int ins)
+	// 置くもの: 0 が声の和（mu2000::scope_read）、1 + fx × 2 + out がエフェクト fx（mu2000::scope_fx）の
+	// 入口（out = 0。MEG への送り）と出口（out = 1）。all は SCOPE_SRCS × SCOPE_N 個を続けて
+	static constexpr int SCOPE_SRCS = 1 + 2 * mu2000::SCOPE_FX_N;
+	static constexpr int scope_src(int fx, bool out) { return 1 + fx * 2 + (out ? 1 : 0); }
+	void publish_scope(const float *all, int part)
 	{
 		m_scope_seq.fetch_add(1, std::memory_order_release);
-		std::memcpy(m_scope, s, sizeof(m_scope));
-		std::memcpy(m_scope_post, post, sizeof(m_scope_post));
+		std::memcpy(m_scope.data(), all, m_scope.size() * sizeof(float));
 		m_scope_part = part;
-		m_scope_ins = ins;
 		m_scope_seq.fetch_add(1, std::memory_order_release);
 	}
-	// 置いてあれば、そのパートの番号を返す（無ければ -1）
-	int read_scope(float *out) const
+	// 置いてあれば、そのパートの番号を返す（無ければ -1）。src は上の番号（既定は声の和）
+	int read_scope(float *out, int src = 0) const
 	{
+		if (src < 0 || src >= SCOPE_SRCS)
+			return -1;
 		for (int tries = 0; tries < 8; tries++) {
 			const unsigned a = m_scope_seq.load(std::memory_order_acquire);
 			if (a & 1)
 				continue;
-			std::memcpy(out, m_scope, sizeof(m_scope));
+			std::memcpy(out, m_scope.data() + size_t(src) * SCOPE_N, SCOPE_N * sizeof(float));
 			const int part = m_scope_part;
 			if (m_scope_seq.load(std::memory_order_acquire) == a)
 				return a ? part : -1;
 		}
-		return -1;
-	}
-	// 同じパートの、インサーションを通したあとの音。*ins に通したインサーションの番号（1-4。
-	// 付いていなければ 0 で、中身は read_scope と同じ）。返り値は read_scope と同じ
-	int read_scope_post(float *out, int *ins) const
-	{
-		for (int tries = 0; tries < 8; tries++) {
-			const unsigned a = m_scope_seq.load(std::memory_order_acquire);
-			if (a & 1)
-				continue;
-			std::memcpy(out, m_scope_post, sizeof(m_scope_post));
-			const int part = m_scope_part;
-			const int n = m_scope_ins;
-			if (m_scope_seq.load(std::memory_order_acquire) == a) {
-				if (ins)
-					*ins = a ? n : 0;
-				return a ? part : -1;
-			}
-		}
-		if (ins)
-			*ins = 0;
 		return -1;
 	}
 
@@ -299,10 +280,8 @@ private:
 	std::atomic<unsigned> m_xg_seq{0};
 	std::atomic<int>      m_scope_want{-1};
 	std::atomic<unsigned> m_scope_seq{0};
-	float                 m_scope[SCOPE_N] = {};
-	float                 m_scope_post[SCOPE_N] = {};
+	std::vector<float>    m_scope = std::vector<float>(size_t(SCOPE_SRCS) * SCOPE_N);
 	int                   m_scope_part = -1;
-	int                   m_scope_ins = 0;
 	xg_snapshot           m_xg;
 	std::atomic<bool>     m_want_defaults{false};
 	std::atomic<bool>     m_have_defaults{false};

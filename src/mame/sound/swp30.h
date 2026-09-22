@@ -116,9 +116,10 @@ public:
 	using voice_tap_fn = void (*)(void *ctx, const s32 *samples_per_chan);
 	voice_tap_fn m_voice_tap = nullptr;
 	void *m_voice_tap_ctx = nullptr;
-	// S-MU2000: MEG を回した直後の m20-m2f（エフェクトの出口。次のサンプルでミキサの入力 0x40-0x4f に
-	// なる）を 1 サンプルごとに渡す口。インサーションを通したあとのパートの音を拾うのに使う。音には触らない
-	using meg_tap_fn = void (*)(void *ctx, const s32 *m20);
+	// S-MU2000: MEG の m20-m2f を 1 サンプルごとに渡す口。in は MEG を回す前（ミキサからの送り = エフェクトの入口）、
+	// out は回した直後（エフェクトの出口。次のサンプルでミキサの入力 0x40-0x4f になる）。firmware の組む MEG は
+	// どのエフェクトも出口を入口と同じ番地に書き戻す。音色の窓のエフェクトのスペクトラムに使う。音には触らない
+	using meg_tap_fn = void (*)(void *ctx, const s32 *in, const s32 *out);
 	meg_tap_fn m_meg_tap = nullptr;
 	void *m_meg_tap_ctx = nullptr;
 

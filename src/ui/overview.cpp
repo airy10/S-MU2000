@@ -16,6 +16,8 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -1743,7 +1745,125 @@ void time_grid(ImDrawList *dl, float t_end, float t_off, float x0, float x1, flo
 	dl->AddText(ImGui::GetFont(), fs * 0.55f, ImVec2(xo + 2.0f, bottom - fs * 1.2f), col(ImGuiCol_TextDisabled, 0.8f), "離す");
 }
 
+// spectrum_view の線 1 本ぶんの状態。下がるときはゆっくり（1 コマ 1.5 dB）、山の高さはさらにゆっくり
+struct spec_curve {
+	int part = -1;
+	std::vector<float> sm;
+	float peak = -200.0f;
+	bool ok = false;
+};
+
+void spec_update(bridge &br, int part, int src, spec_curve &c)
+{
+	static std::vector<float> wave(bridge::SCOPE_N);
+	c.ok = false;
+	if (br.read_scope(wave.data(), src) != part)
+		return;
+	std::vector<float> db;
+	spectrum::magnitude_db(wave.data(), bridge::SCOPE_N, db);
+	if (c.part != part || c.sm.size() != db.size()) {
+		c.part = part;
+		c.sm.assign(db.size(), -200.0f);
+		c.peak = -200.0f;
+	}
+	float frame_peak = -200.0f;
+	for (size_t k = 1; k < db.size(); k++) {
+		c.sm[k] = std::max(db[k], c.sm[k] - 1.5f);
+		frame_peak = std::max(frame_peak, db[k]);
+	}
+	c.peak = std::max(frame_peak, c.peak - 0.5f);
+	c.ok = c.peak > -150.0f;
+}
+
+// 横の位置ごとに、その幅に入る bin のいちばん大きい値を拾って折れ線に
+std::vector<ImVec2> spec_points(const spec_curve &c, float floor_db, float x0, float x1, float top, float bottom)
+{
+	const float F_LO = 20.0f, F_HI = 20000.0f;
+	const float span = x1 - x0;
+	std::vector<ImVec2> sp;
+	const float step = std::max(1.5f, ImGui::GetFontSize() * 0.12f);
+	for (float x = x0; x <= x1; x += step) {
+		const float f0 = F_LO * std::pow(F_HI / F_LO, (x - x0) / span);
+		const float f1 = F_LO * std::pow(F_HI / F_LO, (x + step - x0) / span);
+		size_t k0 = size_t(f0 * float(bridge::SCOPE_N) / 44100.0f), k1 = size_t(f1 * float(bridge::SCOPE_N) / 44100.0f);
+		k0 = std::clamp<size_t>(k0, 1, c.sm.size() - 1);
+		k1 = std::clamp<size_t>(std::max(k1, k0), 1, c.sm.size() - 1);
+		float v = -200.0f;
+		for (size_t k = k0; k <= k1; k++)
+			v = std::max(v, c.sm[k]);
+		const float t = std::clamp((v - floor_db) / 60.0f, 0.0f, 1.0f);
+		sp.push_back(ImVec2(x, bottom - (bottom - top) * t));
+	}
+	return sp;
+}
+
 } // namespace
+
+int overview::fader_strip(const char *id, const char *const *keys, const char *const *names, int n, int group_after, int part,
+                          xg::model &m, bridge &br, ImVec2 size)
+{
+	std::vector<int> vals(static_cast<size_t>(n));
+	std::unique_ptr<bool[]> have(new bool[size_t(n)]);
+	for (int i = 0; i < n; i++) {
+		vals[size_t(i)] = P(keys[i]).def;
+		have[size_t(i)] = m.get(P(keys[i]), part, vals[size_t(i)]);
+	}
+	const ImVec2 pos = ImGui::GetCursorScreenPos();
+	ImGui::InvisibleButton(id, size, ImGuiButtonFlags_MouseButtonLeft);
+	const bool hovered = ImGui::IsItemHovered(), active = ImGui::IsItemActive();
+	return fader_row(keys, names, n, group_after, part, m, br, pos, ImVec2(pos.x + size.x, pos.y + size.y), hovered, active,
+	                 ImGui::GetItemID(), vals.data(), have.get());
+}
+
+void overview::spectrum_view(bridge &br, int part, int src, int ghost_src, int key, ImVec2 a, ImVec2 b, const char *label)
+{
+	static std::map<int, spec_curve> curves;       // key * 2 が出す線、key * 2 + 1 が重ねる線
+	const float fs = ImGui::GetFontSize();
+	ImDrawList *dl = ImGui::GetWindowDrawList();
+	const float F_LO = 20.0f, F_HI = 20000.0f;
+	const float x0 = a.x, x1 = b.x, top = a.y, bottom = b.y;
+	auto x_hz = [&](float f) { return x0 + (x1 - x0) * std::log(std::clamp(f, F_LO, F_HI) / F_LO) / std::log(F_HI / F_LO); };
+	dl->AddRectFilled(a, b, IM_COL32(0, 0, 0, 60), 3.0f);
+	for (float f : { 100.0f, 1000.0f, 10000.0f }) {
+		const float x = x_hz(f);
+		dl->AddLine(ImVec2(x, top), ImVec2(x, bottom), col(ImGuiCol_TextDisabled, 0.15f));
+		const char *t = f >= 10000.0f ? "10k" : f >= 1000.0f ? "1k" : "100";
+		dl->AddText(ImGui::GetFont(), fs * 0.55f, ImVec2(x + 2.0f, bottom - fs * 0.6f), col(ImGuiCol_TextDisabled, 0.7f), t);
+	}
+	spec_curve &main = curves[key * 2];
+	spec_update(br, part, src, main);
+	spec_curve *ghost = nullptr;
+	if (ghost_src >= 0) {
+		ghost = &curves[key * 2 + 1];
+		spec_update(br, part, ghost_src, *ghost);
+		if (!ghost->ok)
+			ghost = nullptr;
+	}
+	// 目盛りは 2 本のうち大きいほうにそろえる（入口と出口の大きさの違いがそのまま見える）
+	float ref = main.ok ? main.peak : -200.0f;
+	if (ghost)
+		ref = std::max(ref, ghost->peak);
+	if (ref > -150.0f) {
+		const float floor_db = ref - 60.0f;
+		if (ghost) {
+			const std::vector<ImVec2> gp = spec_points(*ghost, floor_db, x0, x1, top, bottom);
+			dl->AddPolyline(gp.data(), int(gp.size()), IM_COL32(200, 200, 210, 110), 0, 1.0f);
+		}
+		if (main.ok) {
+			const std::vector<ImVec2> sp = spec_points(main, floor_db, x0, x1, top, bottom);
+			const ImU32 fill = IM_COL32(120, 220, 170, 55), edge = IM_COL32(140, 240, 190, 170);
+			for (size_t i = 1; i < sp.size(); i++)
+				dl->AddQuadFilled(ImVec2(sp[i - 1].x, bottom), sp[i - 1], sp[i], ImVec2(sp[i].x, bottom), fill);
+			dl->AddPolyline(sp.data(), int(sp.size()), edge, 0, 1.0f);
+		}
+	} else {
+		const char *t = "（鳴っていない）";
+		const ImVec2 ts = ImGui::GetFont()->CalcTextSizeA(fs * 0.6f, FLT_MAX, 0.0f, t);
+		dl->AddText(ImGui::GetFont(), fs * 0.6f, ImVec2((x0 + x1 - ts.x) * 0.5f, (top + bottom - ts.y) * 0.5f), col(ImGuiCol_TextDisabled, 0.6f), t);
+	}
+	if (label)
+		dl->AddText(ImGui::GetFont(), fs * 0.6f, ImVec2(x0 + 3.0f, top + 2.0f), col(ImGuiCol_TextDisabled, 0.9f), label);
+}
 
 // フィルタとパートの EQ（音色の窓の中央の列。上下 2 段がつながったメゾネット）。上の段が絵、下の段が
 // Cutoff・Resonance・HPF と EQ の 4 つ（低音・高音のゲインと周波数）のフェーダー。
@@ -2014,10 +2134,13 @@ void overview::env_cell(int part, xg::model &m, bridge &br, float w, float h)
 	const int focus = fader_row(KEYS, NAMES, NF, 2, part, m, br, ImVec2(pos.x + pad, split + pad), ImVec2(pos.x + w - pad, pos.y + h - pad),
 	          hovered, active, id, vals, have, IM_COL32(150, 190, 255, 255), IM_COL32(255, 170, 130, 255));
 	dl->AddLine(ImVec2(pos.x, split), ImVec2(pos.x + w, split), col(ImGuiCol_Border), 1.0f);
-	// 絵。上に実際の時間の字を 2 行置くぶん空ける
+	// 絵。上に実際の時間の字を 2 行置くぶん空け、下に EG を通したあとの音のスペクトラムの帯
 	const float line = fs * 0.75f;
 	const float x0 = pos.x + pad + fs * 1.6f, x1 = pos.x + w - pad - fs * 1.6f;
-	const float top = pos.y + pad + line * 2.2f, bottom = split - pad;
+	const float spec_h = (split - pos.y) * 0.28f;
+	const float top = pos.y + pad + line * 2.2f, bottom = split - pad * 3.0f - spec_h;
+	spectrum_view(br, part, 0, -1, 1, ImVec2(pos.x + pad, split - pad - spec_h), ImVec2(pos.x + w - pad, split - pad),
+	              "EG を通したあとの音（インサーションの前）");
 	const float mid = (top + bottom) * 0.5f, half = (bottom - top) * 0.46f;
 
 	voice_ctx v;

@@ -62,7 +62,7 @@ std::string value_text(const xg::fx_param &p, int v)
 
 // 実物のつまみ風。上下ドラッグ（Shift で細かく）、ホイール、ダブルクリックで数を打つ。
 // 戻り値は「値が変わったか」
-bool fx_editor::knob(const char *id, int &v, int lo, int hi, float size, const char *label, const char *text)
+bool fx_editor::knob(const char *id, int &v, int lo, int hi, float size, const char *label, const char *text, bool tooltip)
 {
 	ImGuiIO &io = ImGui::GetIO();
 	const float fs = ImGui::GetFontSize();
@@ -142,7 +142,7 @@ bool fx_editor::knob(const char *id, int &v, int lo, int hi, float size, const c
 	const ImVec2 t0(pos.x + (w - ts.x) * 0.5f - fs * 0.3f, pos.y + size + fs * 1.2f);
 	dl->AddRectFilled(t0, ImVec2(t0.x + ts.x + fs * 0.6f, t0.y + fs * 1.1f), IM_COL32(12, 14, 10, 200), 3.0f);
 	dl->AddText(ImVec2(t0.x + fs * 0.3f, t0.y + fs * 0.05f), IM_COL32(150, 230, 90, 255), text);
-	if (hovered && !active)
+	if (tooltip && hovered && !active)
 		ImGui::SetItemTooltip("%s  %s\n上下にドラッグ（Shift で細かく）・ホイール・ダブルクリックで数を打つ", label, text);
 	ImGui::PopID();
 	const bool changed = nv != v;

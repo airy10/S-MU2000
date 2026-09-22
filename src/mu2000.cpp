@@ -126,28 +126,45 @@ void mu2000::scope_tap_fn(void *ctx, const s32 *samples)
 }
 
 namespace {
-// インサーション n（0-3）の出口: チップと m20 からの位置（左。右はその次）
-constexpr int SCOPE_INS_CHIP[4] = { 0, 1, 1, 1 };
-constexpr int SCOPE_INS_M[4]    = { 0x08, 0x08, 0x0a, 0x0c };
-// MEG の出口を声の和の目盛りにそろえる倍率（THRU のインサーションで両者の rms をそろえた）
-constexpr float SCOPE_INS_GAIN = 1.0f;
+// エフェクト（mu2000::scope_fx の順）の入口・出口: チップと m20 からの組の番号（左右の 2 本で 1 組）。
+// firmware が組む MEG の割り付け。エミュで送りと出口を比べて実測した（2026-09-22）:
+//   マスタ  m20/21 乾いた音と戻りを混ぜたもの、m24/25 リバーブ、m26/27 コーラス、m28/29 インサーション 1、
+//           m2c/2d バリエーション（システム接続でもインサーション接続でも）
+//   スレーブ m28/29・m2a/2b・m2c/2d がインサーション 2-4
+constexpr int SCOPE_FX_CHIP[8] = { 0, 1, 1, 1, 0, 0, 0, 0 };
+constexpr int SCOPE_FX_PAIR[8] = { 4, 4, 5, 6, 6, 3, 2, 0 };
+// MEG の目盛りは声の和と同じ（THRU のインサーションで入口・出口・声の和の rms が 0.00 dB でそろった）
 }
 
-void mu2000::scope_meg_fn(void *ctx, const s32 *m20)
+void mu2000::scope_meg_fn(void *ctx, const s32 *in, const s32 *out)
 {
 	const scope_tap &t = *static_cast<const scope_tap *>(ctx);
 	mu2000 &m = *t.self;
 	if (m.m_scope_part.load(std::memory_order_relaxed) < 0)
 		return;
-	const int ins = m.m_scope_ins.load(std::memory_order_relaxed);
-	float v = 0.0f;
-	if (ins >= 0 && SCOPE_INS_CHIP[ins] == t.chip) {
-		const int k = SCOPE_INS_M[ins];
-		v = (float(m20[k]) + float(m20[k + 1])) * (0.5f * SCOPE_INS_GAIN);
+	const u32 w = m.m_fx_w[size_t(t.chip)].load(std::memory_order_relaxed) & (SCOPE_N - 1);
+	float *ring = m.m_fx_ring.data() + size_t(t.chip) * 16 * SCOPE_N;
+	for (int p = 0; p < 8; p++) {
+		ring[size_t(p * 2) * SCOPE_N + w]     = (float(in[p * 2]) + float(in[p * 2 + 1])) * 0.5f;
+		ring[size_t(p * 2 + 1) * SCOPE_N + w] = (float(out[p * 2]) + float(out[p * 2 + 1])) * 0.5f;
 	}
-	const u32 w = m.m_scope_post_w[size_t(t.chip)].load(std::memory_order_relaxed);
-	m.m_scope_post_ring[size_t(t.chip)][w & (SCOPE_N - 1)] = v;
-	m.m_scope_post_w[size_t(t.chip)].store(w + 1, std::memory_order_release);
+	m.m_fx_w[size_t(t.chip)].fetch_add(1, std::memory_order_release);
+}
+
+void mu2000::scope_read_fx(int fx, bool out, float *dst, size_t n) const
+{
+	n = std::min(n, SCOPE_N);
+	if (fx < 0 || fx >= SCOPE_FX_N) {
+		std::fill(dst, dst + n, 0.0f);
+		return;
+	}
+	const int c = SCOPE_FX_CHIP[fx];
+	const float *ring = m_fx_ring.data() + (size_t(c) * 16 + size_t(SCOPE_FX_PAIR[fx] * 2 + (out ? 1 : 0))) * SCOPE_N;
+	const u32 end = m_fx_w[size_t(c)].load(std::memory_order_acquire);
+	for (size_t i = 0; i < n; i++) {
+		const u32 k = end - u32(n) + u32(i);
+		dst[i] = (end >= n || k < end) ? ring[k & (SCOPE_N - 1)] : 0.0f;
+	}
 }
 
 void mu2000::scope_refresh_owner()
@@ -211,13 +228,7 @@ int mu2000::scope_read_post(float *out, size_t n) const
 		scope_read(out, n);
 		return 0;
 	}
-	n = std::min(n, SCOPE_N);
-	const int c = SCOPE_INS_CHIP[ins];
-	const u32 end = m_scope_post_w[size_t(c)].load(std::memory_order_acquire);
-	for (size_t i = 0; i < n; i++) {
-		const u32 k = end - u32(n) + u32(i);
-		out[i] = (end >= n || k < end) ? m_scope_post_ring[size_t(c)][k & (SCOPE_N - 1)] : 0.0f;
-	}
+	scope_read_fx(SCOPE_INS1 + ins, true, out, n);
 	return ins + 1;
 }
 

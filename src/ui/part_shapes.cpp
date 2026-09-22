@@ -3,8 +3,14 @@
 #include "part_shapes.h"
 
 #include "overview.h"
+#include "fx_editor.h"
+#include "fx_help.h"
+#include "fx_icons.h"
 
 #include "imgui.h"
+#include "xg/fx_params.h"
+#include "xg/fx_types.h"
+#include "xg/sysfx.h"
 
 #include <algorithm>
 #include <cmath>
@@ -67,7 +73,9 @@ bool title_toggle(const char *title, const char *id, bool knobs, bool &toggle_ho
 	return pressed;
 }
 
-// 1 つの区画。見出しと、大きな絵か値の棒（右上の切り替えで選ぶ。index が負なら絵は無く棒だけ）
+// 1 つの区画。見出しと、大きな絵か値の棒（右上の切り替えで選ぶ。index が負なら絵は無く棒だけ、
+// PANEL_FIXED なら切り替えは無く、いつも draw で描く）
+constexpr int PANEL_FIXED = -2;
 template <typename Draw>
 void panel(const char *id, const char *title, float w, float h, int part, xg::model &m, bridge &br,
            std::initializer_list<const char *> keys, int index, Draw draw, const char *about = nullptr)
@@ -81,7 +89,7 @@ void panel(const char *id, const char *title, float w, float h, int part, xg::mo
 		ImGui::EndChild();
 		return;
 	}
-	const bool knobs = index < 0 || shapes_knobs(index);
+	const bool knobs = index != PANEL_FIXED && (index < 0 || shapes_knobs(index));
 	bool toggle_hovered = false;
 	ImGui::PushFont(nullptr, fs * 0.8f);      // 見出しは小さめに
 	if (index < 0)
@@ -263,6 +271,393 @@ void mod_matrix(int part, xg::model &m, bridge &br, float w, float h)
 	ImGui::Dummy(ImVec2(w, 0));
 }
 
+// ---- エフェクトの区画（「形」のタブの EG の右。横に送って見る）
+//
+// slot は設定の窓（fx_editor）と同じ番号: 1-4 がインサーション、5 がリバーブ、6 がコーラス、7 がバリエーション
+
+const char *fx_prefix(int slot)
+{
+	static const char *const P4[4] = { "insertion1", "insertion2", "insertion3", "insertion4" };
+	return slot <= 4 ? P4[std::clamp(slot, 1, 4) - 1] : slot == 5 ? "reverb" : slot == 6 ? "chorus" : "variation";
+}
+
+// エフェクトのパラメータの値の字（fx_editor と同じ書き方）
+std::string fx_value_text(const xg::fx_param &p, int v)
+{
+	char buf[24];
+	switch (p.fmt) {
+	case xg::fx_fmt::table:
+		if (p.texts && v >= p.lo && v <= p.hi)
+			return p.texts[v - p.lo];
+		break;
+	case xg::fx_fmt::tenths:
+		std::snprintf(buf, sizeof(buf), "%.1f", v / 10.0);
+		return buf;
+	default:
+		break;
+	}
+	std::snprintf(buf, sizeof(buf), "%d", v);
+	return buf;
+}
+
+int get_value(xg::model &m, const std::string &key, int part = 0)
+{
+	const xg::param &p = P(key.c_str());
+	int v = p.def;
+	m.get(p, part, v);
+	return v;
+}
+
+// パラメータの番地。インサーションは表のまま、システムエフェクトは xg/sysfx.h で読み替える（fx_editor::where と同じ）
+bool fx_where(int slot, const xg::fx_param &fp, u32 &addr, int &size)
+{
+	if (slot <= 4) {
+		addr = xg::pack(0x03, u8(slot - 1), fp.addr);
+		size = fp.size;
+		return true;
+	}
+	const xg::sysfx which = slot == 5 ? xg::sysfx::reverb : slot == 6 ? xg::sysfx::chorus : xg::sysfx::variation;
+	const int lo = xg::sysfx_addr(which, fp, size);
+	if (lo < 0)
+		return false;
+	addr = xg::pack(0x02, 0x01, u8(lo));
+	return true;
+}
+
+// 音源のエフェクトの入口・出口の番号（mu2000::scope_fx）
+int scope_fx_of(int slot)
+{
+	return slot <= 4 ? mu2000::SCOPE_INS1 + (slot - 1) : slot == 5 ? mu2000::SCOPE_REV : slot == 6 ? mu2000::SCOPE_CHO : mu2000::SCOPE_VAR;
+}
+
+// エフェクト 1 つ（メゾネット）。上の段に種類の名前と、通したあと（緑）・通す前（灰）のスペクトラム。
+// 下の段に種類の選択、設定の窓を開くボタン、つまみ（システムエフェクトは戻りとパンを先に）。
+// part_only は、このパートだけの音か（インサーション・インサーション接続のバリエーション）、
+// 全パートの送りを混ぜた音か（システムのリバーブ・コーラス・バリエーション）
+void fx_cell(int slot, bool part_only, int part, xg::model &m, bridge &br, float w, float h)
+{
+	const float fs = ImGui::GetFontSize();
+	ImDrawList *dl = ImGui::GetWindowDrawList();
+	const ImVec2 pos = ImGui::GetCursorScreenPos();
+	const float pad = fs * 0.25f;
+	const float split = pos.y + h * overview::MAISON_SPLIT;
+	const std::string prefix = fx_prefix(slot);
+	const xg::param &ptype = P((prefix + ".type").c_str());
+	int type = -1;
+	if (!m.get(ptype, 0, type))
+		type = -1;
+	const int msb = type >= 0 ? type >> 7 : 0;
+	dl->AddRectFilled(pos, ImVec2(pos.x + w, pos.y + h), ImGui::GetColorU32(ImGuiCol_FrameBg), 3.0f);
+
+	// ---- 上の段
+	const float line = ImGui::GetTextLineHeight();
+	float y = pos.y + pad;
+	if (type >= 0)
+		fx_icon(dl, ImVec2(pos.x + pad, y), line, msb, IM_COL32(250, 250, 240, 230));
+	const std::string name = type >= 0 ? xg::fx_name(type) : std::string("--");
+	dl->AddText(ImVec2(pos.x + pad + line * 1.3f, y), ImGui::GetColorU32(ImGuiCol_Text), name.c_str());
+	y += line * 1.25f;
+	const int fx = scope_fx_of(slot);
+	overview::spectrum_view(br, part, bridge::scope_src(fx, true), bridge::scope_src(fx, false), 10 + slot,
+	                        ImVec2(pos.x + pad, y), ImVec2(pos.x + w - pad, split - pad),
+	                        part_only ? "緑: 通したあと  灰: 通す前（このパートだけ）"
+	                                  : "緑: 出口  灰: 入口（全パートの送りを混ぜた音）");
+	dl->AddLine(ImVec2(pos.x, split), ImVec2(pos.x + w, split), ImGui::GetColorU32(ImGuiCol_Border), 1.0f);
+
+	// ---- 下の段: 種類と、設定の窓
+	ImGui::SetCursorScreenPos(ImVec2(pos.x + pad, split + pad));
+	const std::vector<xg::fx_type> &types = slot == 5 ? xg::rev_types() : slot == 6 ? xg::cho_types() : xg::ins_types();
+	ImGui::SetNextItemWidth(std::min(fs * 11.0f, w * 0.62f));
+	if (begin_fx_combo("##type", type, ImGuiComboFlags_HeightLarge)) {
+		int chosen = 0;
+		if (fx_type_menu(types, type, chosen)) {
+			br.send(m.set(ptype, 0, chosen));
+			ImGui::CloseCurrentPopup();
+		}
+		ImGui::EndCombo();
+	}
+	if (ImGui::IsItemHovered()) {
+		const char *th = type >= 0 ? fx_type_help(msb, type & 0x7f) : nullptr;
+		hint("%s  %s\n%s", official_name((prefix + ".type").c_str()).c_str(), name.c_str(), th ? th : "エフェクトの種類");
+	}
+	ImGui::SameLine();
+	if (ImGui::SmallButton("詳しく"))
+		request_fx(slot);
+	if (ImGui::IsItemHovered())
+		hint("エフェクトの設定の窓\nこのエフェクトを大きなつまみと説明で触る窓を開く");
+
+	// ---- つまみ。入る大きさまで縮める
+	struct knob_item { const xg::fx_param *fp; const xg::param *mp; };
+	std::vector<knob_item> items;
+	if (slot >= 5 && !part_only) {
+		items.push_back({ nullptr, &P((prefix + ".return").c_str()) });
+		items.push_back({ nullptr, &P((prefix + ".pan").c_str()) });
+	}
+	const xg::fx_def *def = type >= 0 ? xg::fx_find(type) : nullptr;
+	if (def)
+		for (int i = 0; i < def->count; i++) {
+			u32 a = 0;
+			int sz = 0;
+			if (fx_where(slot, def->params[i], a, sz))
+				items.push_back({ &def->params[i], nullptr });
+		}
+	const float kx0 = pos.x + pad, kx1 = pos.x + w - pad;
+	const float ky0 = ImGui::GetCursorScreenPos().y + pad, ky1 = pos.y + h - pad;
+	ImGui::PushFont(nullptr, fs * 0.7f);
+	const float kfs = ImGui::GetFontSize();
+	const int n = int(items.size());
+	float ksize = kfs * 3.4f, cw = 0, ch = 0;
+	int per_row = 1;
+	float label_w = 0;
+	for (const knob_item &it : items)
+		label_w = std::max(label_w, ImGui::CalcTextSize(it.fp ? it.fp->label : "Return").x);
+	for (;; ksize -= kfs * 0.2f) {
+		cw = std::max(ksize + kfs * 1.9f, label_w + kfs * 0.8f);
+		ch = ksize + kfs * 2.8f;
+		per_row = std::max(1, int((kx1 - kx0) / cw));
+		const int rows = (n + per_row - 1) / per_row;
+		if (float(rows) * ch <= ky1 - ky0 || ksize <= kfs * 1.4f)
+			break;
+	}
+	for (int k = 0; k < n; k++) {
+		const knob_item &it = items[size_t(k)];
+		ImGui::SetCursorScreenPos(ImVec2(kx0 + float(k % per_row) * cw, ky0 + float(k / per_row) * ch));
+		char id[8];
+		std::snprintf(id, sizeof(id), "k%d", k);
+		if (it.mp) {
+			int v = it.mp->def;
+			const bool known = m.get(*it.mp, 0, v);
+			const std::string text = known ? xg::format(*it.mp, v) : std::string("--");
+			const char *label = it.mp->key == items[0].mp->key ? "Return" : "Pan";
+			if (fx_editor::knob(id, v, it.mp->min, it.mp->max, ksize, label, text.c_str(), false) && known)
+				drag_send(br, m.set(*it.mp, 0, v));
+			if (ImGui::IsItemHovered() || ImGui::IsItemActive()) {
+				const char *help = help_for(it.mp->key);
+				hint("%s  %s\n%s（上下にドラッグ・ホイール・ダブルクリックで数を打つ）", official_name(it.mp->key).c_str(), text.c_str(),
+				     help ? help : "");
+			}
+		} else {
+			u32 addr = 0;
+			int size = 0;
+			fx_where(slot, *it.fp, addr, size);
+			int v = 0;
+			const bool known = m.get_raw(addr, size, v);
+			v = std::clamp(v, int(it.fp->lo), int(it.fp->hi));
+			const std::string text = known ? fx_value_text(*it.fp, v) : std::string("--");
+			if (fx_editor::knob(id, v, it.fp->lo, it.fp->hi, ksize, it.fp->label, text.c_str(), false) && known)
+				drag_send(br, m.set_raw(addr, size, v));
+			if (ImGui::IsItemHovered() || ImGui::IsItemActive()) {
+				const char *help = fx_param_help(it.fp->label);
+				hint("%s  %s\n%s（上下にドラッグ・ホイール・ダブルクリックで数を打つ）", it.fp->label, text.c_str(),
+				     help ? help : "（まだ説明が無い）");
+			}
+		}
+	}
+	if (!def || def->count == 0) {
+		ImGui::SetCursorScreenPos(ImVec2(kx0, ky0 + (n ? float((n + per_row - 1) / per_row) * ch : 0.0f)));
+		ImGui::TextDisabled("%s", msb == 0 ? "NO EFFECT（種類を選ぶと、ここにつまみが並ぶ）"
+		                          : msb == 0x40 ? "THRU（パラメータは無い）" : "この種類のパラメータの表はまだ無い");
+	}
+	ImGui::PopFont();
+	ImGui::SetCursorScreenPos(pos);
+	ImGui::Dummy(ImVec2(w, h));
+}
+
+// ---- つなぎの区画（メゾネット）。上の段に流れの絵、下の段に送りのフェーダーと、つなぎ方の型。
+//
+// XG のシステムエフェクトは、並びが「バリエーション → コーラス → リバーブ」に決まっていて、
+// 前から後ろへの送り（VAR→CHO・VAR→REV・CHO→REV）の量だけを変えられる（後ろから前へは送れない）。
+// だから「順序」は、この 3 本を開けるか閉じるかで選ぶ（並列・直列など）
+void route_cell(int part, xg::model &m, bridge &br, float w, float h)
+{
+	ImGuiIO &io = ImGui::GetIO();
+	const float fs = ImGui::GetFontSize();
+	ImDrawList *dl = ImGui::GetWindowDrawList();
+	const ImVec2 pos = ImGui::GetCursorScreenPos();
+	const float pad = fs * 0.25f;
+	const float split = pos.y + h * overview::MAISON_SPLIT;
+	dl->AddRectFilled(pos, ImVec2(pos.x + w, pos.y + h), ImGui::GetColorU32(ImGuiCol_FrameBg), 3.0f);
+	const bool var_sys = get_value(m, "variation.connect") == 1;
+	const int var_part = get_value(m, "variation.part");
+
+	// ---- 流れの絵。節は 横一列に パート・VAR・CHO・REV・出力
+	const float x0 = pos.x + fs * 1.8f, x1 = pos.x + w - fs * 1.8f;
+	const float ny = (pos.y + split) * 0.5f;
+	const float node_w = std::max(fs * 2.8f, ImGui::CalcTextSize("パート").x + fs * 0.6f), node_h = fs * 1.5f;
+	auto nx = [&](int i) { return x0 + (x1 - x0) * float(i) / 4.0f; };
+	struct edge { int from, to; const char *key; bool part_param; int side; };   // side: 0 は一列の上、-1 は上の弧、1 は下の弧
+	static const edge EDGES[] = {
+		{ 0, 1, "part.variation_send", true, 0 },  { 1, 2, "variation.to_chorus", false, 0 },
+		{ 2, 3, "chorus.to_reverb", false, 0 },    { 3, 4, "reverb.return", false, 0 },
+		{ 0, 2, "part.chorus_send", true, -1 },    { 0, 3, "part.reverb_send", true, -1 },
+		{ 0, 4, "part.dry_level", true, -1 },
+		{ 1, 3, "variation.to_reverb", false, 1 }, { 1, 4, "variation.return", false, 1 },
+		{ 2, 4, "chorus.return", false, 1 },
+	};
+	// 弧の高さの刻み。いちばん長い弧（上は 4 つ先、下は 3 つ先）の札が枠に入るように
+	const float room = ny - pos.y - node_h * 0.5f - fs * 1.2f;
+	const float step_up = std::max(fs * 0.4f, room / 3.8f), step_down = std::max(fs * 0.4f, room / 2.8f);
+	ImGuiStorage *st = ImGui::GetStateStorage();
+	for (int e = 0; e < int(sizeof(EDGES) / sizeof(EDGES[0])); e++) {
+		const edge &E = EDGES[e];
+		const xg::param &p = P(E.key);
+		int v = p.def;
+		const bool known = m.get(p, E.part_param ? part : 0, v);
+		// バリエーションがインサーション接続なら、パートからの送りは効かない（掛けたパートにはつながって見せる）
+		const bool var_ins_edge = E.from == 0 && E.to == 1 && !var_sys;
+		const float span = float(E.to - E.from);
+		const float xa = nx(E.from) + node_w * 0.5f, xb = nx(E.to) - node_w * 0.5f;
+		const float hh = E.side == 0 ? 0.0f : (E.side < 0 ? step_up : step_down) * (span - 1.0f + 0.8f) * float(E.side);
+		const float ya = ny + (E.side == 0 ? 0.0f : float(E.side) * node_h * 0.5f);
+		const ImVec2 A(E.side == 0 ? xa : nx(E.from), ya), B(E.side == 0 ? xb : nx(E.to), ya);
+		const ImVec2 C1(A.x, ya + hh * 1.33f), C2(B.x, ya + hh * 1.33f);
+		const float t = var_ins_edge ? (var_part == part ? 1.0f : 0.0f) : float(v) / 127.0f;
+		const ImU32 lc = t > 0.0f ? IM_COL32(140, 240, 190, int(70 + 185 * t)) : IM_COL32(200, 200, 210, 45);
+		const float thick = t > 0.0f ? 1.0f + 3.0f * t : 1.0f;
+		if (E.side == 0)
+			dl->AddLine(A, B, lc, thick);
+		else
+			dl->AddBezierCubic(A, C1, C2, B, lc, thick);
+		// 矢じり
+		const ImVec2 tip = B;
+		const float ah = fs * 0.35f;
+		if (E.side == 0)
+			dl->AddTriangleFilled(tip, ImVec2(tip.x - ah, tip.y - ah * 0.6f), ImVec2(tip.x - ah, tip.y + ah * 0.6f), lc);
+		else
+			dl->AddTriangleFilled(tip, ImVec2(tip.x - ah * 0.6f, tip.y + float(E.side) * ah), ImVec2(tip.x + ah * 0.6f, tip.y + float(E.side) * ah), lc);
+		// 値の札（弧の頂か線の真ん中）。上下にドラッグ・ホイール・ダブルクリックで 0 と既定を行き来
+		const ImVec2 mid = E.side == 0 ? ImVec2((A.x + B.x) * 0.5f, A.y) : ImVec2((A.x + B.x) * 0.5f, ya + hh);
+		char text[16];
+		if (var_ins_edge)
+			std::snprintf(text, sizeof(text), "%s", var_part == part ? "INS" : "--");
+		else if (known)
+			std::snprintf(text, sizeof(text), "%d", v);
+		else
+			std::snprintf(text, sizeof(text), "--");
+		const float tfs = fs * 0.62f;
+		const ImVec2 ts = ImGui::GetFont()->CalcTextSizeA(tfs, FLT_MAX, 0.0f, text);
+		const ImVec2 r0(mid.x - ts.x * 0.5f - fs * 0.25f, mid.y - ts.y * 0.5f - 1.0f), r1(mid.x + ts.x * 0.5f + fs * 0.25f, mid.y + ts.y * 0.5f + 1.0f);
+		ImGui::SetCursorScreenPos(r0);
+		ImGui::PushID(e);
+		ImGui::InvisibleButton("##edge", ImVec2(r1.x - r0.x, r1.y - r0.y));
+		const ImGuiID id = ImGui::GetItemID();
+		const bool hov = ImGui::IsItemHovered(), act = ImGui::IsItemActive();
+		if (known && !var_ins_edge) {
+			int nv = v;
+			if (ImGui::IsItemActivated()) {
+				st->SetInt(id, v);
+				st->SetFloat(id + 1, io.MousePos.y);
+			}
+			if (act && !ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+				nv = st->GetInt(id, v) + int((st->GetFloat(id + 1, io.MousePos.y) - io.MousePos.y) / 2.0f);
+			if (hov) {
+				ImGui::SetItemKeyOwner(ImGuiKey_MouseWheelY);
+				if (io.MouseWheel != 0.0f)
+					nv = v + (io.MouseWheel > 0 ? 1 : -1) * (io.KeyCtrl ? 10 : 1);
+				if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+					nv = v ? 0 : (p.def ? p.def : 64);
+			}
+			nv = std::clamp(nv, p.min, p.max);
+			if (nv != v)
+				drag_send(br, m.set(p, E.part_param ? part : 0, nv));
+		}
+		dl->AddRectFilled(r0, r1, hov || act ? IM_COL32(60, 70, 64, 255) : IM_COL32(20, 24, 22, 230), 4.0f);
+		dl->AddRect(r0, r1, lc, 4.0f);
+		dl->AddText(ImGui::GetFont(), tfs, ImVec2(mid.x - ts.x * 0.5f, mid.y - ts.y * 0.5f), t > 0.0f ? IM_COL32(210, 255, 225, 255) : IM_COL32(200, 200, 210, 150), text);
+		if (hov || act) {
+			if (var_ins_edge)
+				hint("バリエーションはインサーション接続\n%s。パートからの送り（Var Send）は効かない。下の「VAR をこのパートのインサーションに」で切り替える",
+				     var_part == part ? "このパートに直に掛かっている（通したあとが乾いた音と送りに分かれる）"
+				                      : "ほかのパートに掛かっていて、このパートの音は通らない");
+			else {
+				const char *help = help_for(E.key);
+				hint("%s  %d\n%s（上下にドラッグ・ホイール・ダブルクリックで 0 と既定を行き来）", official_name(E.key).c_str(), v, help ? help : "");
+			}
+		}
+		ImGui::PopID();
+	}
+	// 節
+	static const char *const NODE[5] = { "パート", "VAR", "CHO", "REV", "出力" };
+	static const char *const TYPE_KEY[5] = { nullptr, "variation.type", "chorus.type", "reverb.type", nullptr };
+	for (int i = 0; i < 5; i++) {
+		const ImVec2 a(nx(i) - node_w * 0.5f, ny - node_h * 0.5f), b(nx(i) + node_w * 0.5f, ny + node_h * 0.5f);
+		bool on = true;
+		std::string sub;
+		if (TYPE_KEY[i]) {
+			const int ty = get_value(m, TYPE_KEY[i]);
+			on = (ty >> 7) != 0;
+			sub = on ? xg::fx_name(ty) : std::string("OFF");
+			if (i == 1 && !var_sys)
+				sub = "INS 接続";
+		}
+		dl->AddRectFilled(a, b, on ? IM_COL32(44, 70, 58, 255) : IM_COL32(40, 40, 44, 255), 5.0f);
+		dl->AddRect(a, b, on ? IM_COL32(140, 240, 190, 200) : IM_COL32(120, 120, 130, 160), 5.0f, 0, 1.5f);
+		const ImVec2 ts = ImGui::CalcTextSize(NODE[i]);
+		dl->AddText(ImVec2(nx(i) - ts.x * 0.5f, ny - ts.y * 0.5f), on ? ImGui::GetColorU32(ImGuiCol_Text) : ImGui::GetColorU32(ImGuiCol_TextDisabled), NODE[i]);
+		if (!sub.empty()) {
+			const float sfs = fs * 0.55f;
+			const ImVec2 ss = ImGui::GetFont()->CalcTextSizeA(sfs, FLT_MAX, 0.0f, sub.c_str());
+			dl->AddText(ImGui::GetFont(), sfs, ImVec2(nx(i) - ss.x * 0.5f, b.y + 1.0f), ImGui::GetColorU32(ImGuiCol_TextDisabled), sub.c_str());
+		}
+	}
+	dl->AddLine(ImVec2(pos.x, split), ImVec2(pos.x + w, split), ImGui::GetColorU32(ImGuiCol_Border), 1.0f);
+
+	// ---- 下の段: つなぎ方の型（前から後ろへの 3 本だけを変える）と、バリエーションの接続
+	ImGui::SetCursorScreenPos(ImVec2(pos.x + pad, split + pad));
+	const int vc = get_value(m, "variation.to_chorus"), vr = get_value(m, "variation.to_reverb"), cr = get_value(m, "chorus.to_reverb");
+	struct preset { const char *name, *about; int vc, vr, cr; };
+	static const preset PRESETS[] = {
+		{ "並列", "3 つを別々に鳴らす（前から後ろへの送りを全部 0）", 0, 0, 0 },
+		{ "VAR→CHO→REV", "バリエーションの出口をコーラスへ、コーラスの出口をリバーブへ（直列）", 127, 0, 127 },
+		{ "VAR→REV", "バリエーションの出口だけをリバーブへ", 0, 127, 0 },
+		{ "CHO→REV", "コーラスの出口だけをリバーブへ", 0, 0, 127 },
+	};
+	ImGui::PushFont(nullptr, fs * 0.8f);
+	ImGui::TextDisabled("つなぎ方");
+	for (const preset &pr : PRESETS) {
+		// 入らなければ次の行へ
+		const float bw = ImGui::CalcTextSize(pr.name).x + ImGui::GetStyle().FramePadding.x * 2.0f;
+		ImGui::SameLine();
+		if (ImGui::GetCursorScreenPos().x + bw > pos.x + w - pad)
+			ImGui::NewLine();
+		const bool cur = (vc > 0) == (pr.vc > 0) && (vr > 0) == (pr.vr > 0) && (cr > 0) == (pr.cr > 0);
+		if (cur)
+			ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetColorU32(ImGuiCol_ButtonActive));
+		if (ImGui::SmallButton(pr.name)) {
+			br.send(m.set(P("variation.to_chorus"), 0, pr.vc));
+			br.send(m.set(P("variation.to_reverb"), 0, pr.vr));
+			br.send(m.set(P("chorus.to_reverb"), 0, pr.cr));
+		}
+		if (cur)
+			ImGui::PopStyleColor();
+		if (ImGui::IsItemHovered())
+			hint("つなぎ方: %s\n%s。XG の並びは VAR → CHO → REV に決まっていて、後ろから前へは送れない。"
+			     "パートからの送りと戻りはそのまま", pr.name, pr.about);
+	}
+	bool as_ins = !var_sys && var_part == part;
+	if (ImGui::Checkbox("VAR をこのパートのインサーションに", &as_ins)) {
+		if (as_ins) {
+			br.send(m.set(P("variation.connect"), 0, 0));
+			br.send(m.set(P("variation.part"), 0, part));
+		} else {
+			br.send(m.set(P("variation.connect"), 0, 1));
+		}
+	}
+	if (ImGui::IsItemHovered())
+		hint("%s\nオンでバリエーションをインサーション接続にし、このパートに掛ける（パートの音を丸ごと通してから、乾いた音と"
+		     "リバーブ・コーラスへの送りに分かれる）。オフでシステム接続（全パートの Var Send を集めて掛け、戻りで混ぜる）。"
+		     "バリエーションは 1 つしか無いので、ほかのパートとは取り合いになる", official_name("variation.connect").c_str());
+	ImGui::PopFont();
+	// 送りのフェーダー。左の 4 本がこのパートから、右の 3 本がエフェクトからエフェクトへ
+	static const char *const KEYS[7] = { "part.dry_level", "part.variation_send", "part.chorus_send", "part.reverb_send",
+	                                     "variation.to_chorus", "variation.to_reverb", "chorus.to_reverb" };
+	static const char *const NAMES[7] = { "Dry", "Var", "Cho", "Rev", "V>C", "V>R", "C>R" };
+	const ImVec2 fa = ImGui::GetCursorScreenPos();
+	overview::fader_strip("##sends", KEYS, NAMES, 7, 3, part, m, br, ImVec2(w - pad * 2.0f, std::max(fs * 3.0f, pos.y + h - pad - fa.y)));
+	ImGui::SetCursorScreenPos(pos);
+	ImGui::Dummy(ImVec2(w, h));
+}
+
 } // namespace
 
 
@@ -368,15 +763,39 @@ void part_shapes::draw(xg::model &m, const xg_snapshot &ram, bridge &br)
 	const float top_y = ImGui::GetCursorScreenPos().y;
 	if (ImGui::BeginTabBar("right")) {
 		if (ImGui::BeginTabItem("形")) {
-			if (!shapes_knobs(1))
-				scope = part;
-			// 3 列。左に VIB（上）とモジュレーション（下）。中央と右は上下 2 段がつながった区画（メゾネット）で、
-			// 中央がフィルタと EQ、右が EG とピッチ EG（どちらも上の段が絵、下の段がフェーダー）。
+			scope = part;
+			// 列を音の流れの順に横へ並べ、画面に入るのは 3 列ぶん（残りは横に送って見る）。
+			// 左に VIB（上）とモジュレーション（下）。フィルタと EQ、EG とピッチ EG、エフェクトは上下 2 段が
+			// つながった区画（メゾネット。上の段が絵、下の段がフェーダーやつまみ）。
+			// EG の右に、このパートに掛かっているインサーション（とインサーション接続のバリエーション）、
+			// つなぎ（送りと順序）、送っているシステムエフェクト（バリエーション・コーラス・リバーブ）。
+			// エフェクトの区画は、そのエフェクトがこのパートの音に効いているときだけ出す。
 			// ポルタメントは「すべて」のタブにある
-			const ImVec2 room = ImGui::GetContentRegionAvail();
+			const int var_type = get_value(m, "variation.type"), cho_type = get_value(m, "chorus.type"), rev_type = get_value(m, "reverb.type");
+			const bool var_sys = get_value(m, "variation.connect") == 1;
+			struct fx_col { int slot; bool part_only; };
+			std::vector<fx_col> inline_fx, sys_fx;
+			for (int n = 1; n <= 4; n++)
+				if (get_value(m, std::string(fx_prefix(n)) + ".part") == part)
+					inline_fx.push_back({ n, true });
+			if (!var_sys && get_value(m, "variation.part") == part)
+				inline_fx.push_back({ 7, true });
+			const bool var_on = var_sys && (var_type >> 7) != 0 && get_value(m, "part.variation_send", part) > 0;
+			const bool cho_on = (cho_type >> 7) != 0 &&
+			                    (get_value(m, "part.chorus_send", part) > 0 || (var_on && get_value(m, "variation.to_chorus") > 0));
+			const bool rev_on = (rev_type >> 7) != 0 &&
+			                    (get_value(m, "part.reverb_send", part) > 0 || (cho_on && get_value(m, "chorus.to_reverb") > 0) ||
+			                     (var_on && get_value(m, "variation.to_reverb") > 0));
+			if (var_on) sys_fx.push_back({ 7, false });
+			if (cho_on) sys_fx.push_back({ 6, false });
+			if (rev_on) sys_fx.push_back({ 5, false });
+
 			const float room_h = body_h - (ImGui::GetCursorScreenPos().y - top_y);
-			const float w = (room.x - st.ItemSpacing.x * 2.0f) / 3.0f;
-			const float h = (room_h - st.ItemSpacing.y) * 0.5f;
+			const float w = (ImGui::GetContentRegionAvail().x - st.ItemSpacing.x * 2.0f) / 3.0f;
+			// 横の送りの棒のぶんを引く（いつもつなぎの列があるので、はみ出す）
+			const float h = (room_h - st.ScrollbarSize - st.ItemSpacing.y) * 0.5f;
+			const float tall = h * 2.0f + st.ItemSpacing.y;
+			ImGui::BeginChild("flow", ImVec2(0, room_h), ImGuiChildFlags_None, ImGuiWindowFlags_HorizontalScrollbar);
 			ImGui::BeginGroup();
 			panel("vib", "ビブラート（VIB）", w, h, part, m, br, { "part.vib_rate", "part.vib_depth", "part.vib_delay" }, 0,
 			      [](int p, xg::model &mm, bridge &b, float pw, float ph) { overview::vib_cell(p, mm, b, pw, ph, false); },
@@ -389,7 +808,6 @@ void part_shapes::draw(xg::model &m, const xg_snapshot &ram, bridge &br)
 			      "左のホイールが CC1、右のホイールが MW LFO PM。音色自身の揺れ（背景の帯）とは足さず、深いほうが効く");
 			ImGui::EndGroup();
 			ImGui::SameLine();
-			const float tall = h * 2.0f + st.ItemSpacing.y;
 			panel("filter", "フィルタと EQ（FILTER・EQ）", w, tall, part, m, br,
 			      { "part.cutoff", "part.resonance", "part.hpf_cutoff",
 			        "part.eq_bass_gain", "part.eq_bass_freq", "part.eq_treble_gain", "part.eq_treble_freq" }, 1,
@@ -404,7 +822,39 @@ void part_shapes::draw(xg::model &m, const xg_snapshot &ram, bridge &br)
 			      [](int p, xg::model &mm, bridge &b, float pw, float ph) { overview::env_cell(p, mm, b, pw, ph); },
 			      "音量の形（青。立ち上がり → 落ち着き → 伸ばし → 離して消える）と音程の動き（橙）を、同じ実際の時間の目盛り・"
 			      "同じ離す時刻で 1 枚に。縦は左が音量（dB）、右が音程（セント）。下のフェーダーで EG の Attack・Decay・Release と"
-			      "ピッチ EG の Init・Attack・Rel Lv・Rel Tm を変える");
+			      "ピッチ EG の Init・Attack・Rel Lv・Rel Tm を変える。下の帯は EG を通したあとの音のスペクトラム"
+			      "（インサーションの前）");
+			// エフェクトの列
+			auto fx_panel = [&](const fx_col &c) {
+				ImGui::SameLine();
+				char id[16], title[64];
+				std::snprintf(id, sizeof(id), "fx%d", c.slot);
+				if (c.slot <= 4)
+					std::snprintf(title, sizeof(title), "インサーション %d（INS %d）", c.slot, c.slot);
+				else if (c.slot == 7)
+					std::snprintf(title, sizeof(title), "%s", c.part_only ? "バリエーション（VAR・インサーション接続）" : "バリエーション（VAR）");
+				else
+					std::snprintf(title, sizeof(title), "%s", c.slot == 6 ? "コーラス（CHO）" : "リバーブ（REV）");
+				const int slot = c.slot;
+				const bool only = c.part_only;
+				panel(id, title, w, tall, part, m, br, {}, PANEL_FIXED,
+				      [slot, only](int p, xg::model &mm, bridge &b, float pw, float ph) { fx_cell(slot, only, p, mm, b, pw, ph); },
+				      only ? "このパートに掛かっているエフェクト。上の段は、通したあと（緑）と通す前（灰）のこのパートの音の"
+				             "スペクトラム（同じ目盛り）。下の段で種類とパラメータを変える。「詳しく」で設定の窓"
+				           : "このパートが送っているシステムエフェクト。上の段は、出口（緑）と入口（灰）のスペクトラムで、"
+				             "全パートの送りを混ぜた音。下の段で種類・戻り（Return）・パン・パラメータを変える。「詳しく」で設定の窓");
+			};
+			for (const fx_col &c : inline_fx)
+				fx_panel(c);
+			ImGui::SameLine();
+			panel("route", "つなぎ（送りと順序）", w, tall, part, m, br, {}, PANEL_FIXED,
+			      [](int p, xg::model &mm, bridge &b, float pw, float ph) { route_cell(p, mm, b, pw, ph); },
+			      "このパートの音がどのエフェクトを通って出ていくか。上の絵の数字（送りの量）を上下にドラッグ・ホイール・"
+			      "ダブルクリックで変える。XG の並びは VAR → CHO → REV に決まっていて、「つなぎ方」で前から後ろへの送りを"
+			      "開け閉めして順序（並列・直列）を選ぶ。送りが 0 のエフェクトの区画は出さない。横に送るのは Shift + ホイール");
+			for (const fx_col &c : sys_fx)
+				fx_panel(c);
+			ImGui::EndChild();
 			ImGui::EndTabItem();
 		}
 		if (ImGui::BeginTabItem("マトリクス")) {
