@@ -312,10 +312,22 @@ void mu2000::slave_loop(u64 seen)
 	struct wg_join {
 		os_workgroup_t wg = nullptr;
 		os_workgroup_join_token_s token{};
-		~wg_join() { reset(nullptr); }
+		~wg_join()
+		{
+			// Leave directly: reset(nullptr) cannot be used here, since a
+			// null want also matches the initial refused=nullptr guard.
+			if (wg) {
+				os_workgroup_leave(wg, &token);
+				wg = nullptr;
+			}
+		}
 		void reset(os_workgroup_t want)
 		{
-			if (want == wg || want == refused)
+			if (want == wg)
+				return;
+			// refused only guards real handles; a null want must always
+			// fall through so the destructor path can leave.
+			if (want && want == refused)
 				return;
 			if (wg) {
 				os_workgroup_leave(wg, &token);

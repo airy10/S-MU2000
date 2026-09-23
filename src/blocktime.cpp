@@ -17,17 +17,83 @@
 #include "smf.h"
 
 #ifdef __APPLE__
+#include <AudioToolbox/AudioToolbox.h>
+#include <os/workgroup.h>
 #include <pthread/qos.h>
 #endif
 
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <memory>
 #include <string>
 #include <vector>
 
 namespace {
+
+#ifdef __APPLE__
+// Silence render callback: the HAL pulls, we hand back zeros.
+OSStatus silence_cb(void *, AudioUnitRenderActionFlags *,
+                    const AudioTimeStamp *, UInt32, UInt32,
+                    AudioBufferList *ioData)
+{
+	if (!ioData)
+		return noErr;
+	for (UInt32 i = 0; i < ioData->mNumberBuffers; i++)
+		std::memset(ioData->mBuffers[i].mData, 0,
+		            ioData->mBuffers[i].mDataByteSize);
+	return noErr;
+}
+
+// Holds a started-but-silent HAL unit so a real, ticking audio workgroup
+// exists. Only the slave joins it (via set_realtime_workgroup): joining the
+// main thread too double-counts against the slave through inheritance and
+// traps in tsd_cleanup at exit ("Joined count underflowed"). This mirrors
+// production, where gui's main thread never joins either. Tear-down stops
+// the unit. Apple-only experiment, no Windows/Linux path.
+struct silent_hal {
+	AudioUnit unit = nullptr;
+	os_workgroup_t wg = nullptr;
+	bool start()
+	{
+		AudioComponentDescription desc{};
+		desc.componentType = kAudioUnitType_Output;
+		desc.componentSubType = kAudioUnitSubType_DefaultOutput;
+		desc.componentManufacturer = kAudioUnitManufacturer_Apple;
+		AudioComponent comp = AudioComponentFindNext(nullptr, &desc);
+		if (!comp)
+			return false;
+		if (AudioComponentInstanceNew(comp, &unit) != noErr || !unit)
+			return false;
+		AURenderCallbackStruct cb{};
+		cb.inputProc = silence_cb;
+		cb.inputProcRefCon = nullptr;
+		if (AudioUnitSetProperty(unit, kAudioUnitProperty_SetRenderCallback,
+		                         kAudioUnitScope_Input, 0, &cb, sizeof(cb)) != noErr)
+			return false;
+		if (AudioUnitInitialize(unit) != noErr)
+			return false;
+		if (__builtin_available(macOS 11.0, *)) {
+			UInt32 size = sizeof(wg);
+			if (AudioUnitGetProperty(unit, kAudioOutputUnitProperty_OSWorkgroup,
+			                         kAudioUnitScope_Global, 0, &wg, &size) != noErr)
+				wg = nullptr;
+		}
+		if (AudioOutputUnitStart(unit) != noErr)
+			return false;
+		return true;
+	}
+	~silent_hal()
+	{
+		if (unit) {
+			AudioOutputUnitStop(unit);
+			AudioUnitUninitialize(unit);
+			AudioComponentInstanceDispose(unit);
+		}
+	}
+};
+#endif
 
 double median(std::vector<double> v)
 {
@@ -67,6 +133,23 @@ int main(int argc, char **argv)
 	pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
 #endif
 
+#ifdef __APPLE__
+	// Experiment: bring up a silent HAL unit so the benchmark threads join a
+	// real, ticking audio workgroup. SMU2000_BLOCKTIME_WORKGROUP=0 opts out
+	// (same-binary A/B). Failure is silent: falls back to today's behavior.
+	silent_hal hal;
+	bool hal_up = false;
+	if (const char *e = std::getenv("SMU2000_BLOCKTIME_WORKGROUP"))
+		hal_up = std::atoi(e) != 0;
+	else
+		hal_up = true;
+	if (hal_up)
+		hal_up = hal.start();
+	if (hal_up)
+		std::fprintf(stderr, "[wg] silent HAL up, workgroup %s\n",
+		             hal.wg ? "ok" : "null");
+#endif
+
 	std::vector<smf::event> events;
 	std::string err;
 	if (!smf::load(argv[2], events, err)) { std::fprintf(stderr, "%s\n", err.c_str()); return 1; }
@@ -76,6 +159,10 @@ int main(int argc, char **argv)
 	if (!mu.load_wave(dir + "/dump")) { std::fprintf(stderr, "%s\n", mu.error().c_str()); return 1; }
 	mu.load_sintab(dir + "/standin/sin-table.bin");
 	mu.set_threaded(!std::getenv("SMU2000_SINGLE"));
+#ifdef __APPLE__
+	if (hal_up)
+		mu.set_realtime_workgroup(hal.wg);
+#endif
 	// 軽量モード（doc/native-dsp.md）でも測れるように
 	if (const char *e = std::getenv("SMU2000_NATIVE_FX"))
 		mu.set_native_fx(std::atoi(e));
@@ -95,6 +182,10 @@ int main(int argc, char **argv)
 		m->set_wave_rom(mu.wave_rom());
 		m->set_sintab_rom(mu.sintab_rom());
 		m->set_threaded(!std::getenv("SMU2000_SINGLE"));
+#ifdef __APPLE__
+		if (hal_up)
+			m->set_realtime_workgroup(hal.wg);
+#endif
 		if (const char *e = std::getenv("SMU2000_NATIVE_FX"))
 			m->set_native_fx(std::atoi(e));
 		m->reset();
