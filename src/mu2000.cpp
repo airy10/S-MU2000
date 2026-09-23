@@ -5,11 +5,6 @@
 #include "mu2000.h"
 #include "lcdfont.h"
 
-#if defined(__APPLE__)
-#include <os/workgroup.h>      // slave_loop joins the audio workgroup (opt-in)
-#include <pthread/qos.h>       // slave_loop asks for performance cores
-#endif
-
 #if defined(__SSE2__) || defined(_M_X64) || defined(__x86_64__)
 #include <xmmintrin.h>
 #include <pmmintrin.h>
@@ -26,6 +21,7 @@
 #include <cstring>
 
 #include "compat/platform.h"
+#include "compat/realtime.h"
 
 
 namespace {
@@ -297,64 +293,13 @@ void mu2000::apply_threading()
 
 void mu2000::slave_loop(u64 seen)
 {
-#if defined(__APPLE__)
-	// Real-time audio helper: ask for performance cores. The QoS class (not
-	// pthread priority numbers) is what places threads on Apple silicon;
-	// default-QoS threads may land on efficiency cores under load.
-	pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
-#endif
-#if defined(__APPLE__)
-	// Audio workgroup for this thread (macOS). Joins whatever the front end
-	// asked for and leaves it on the way out; EINVAL/EALREADY stay out, which
-	// is today's behavior. On by default (see below). The wanted handle can
-	// change under us (a host re-graph), so it is re-checked every sample --
-	// one relaxed load, off the hot path.
-	struct wg_join {
-		os_workgroup_t wg = nullptr;
-		os_workgroup_join_token_s token{};
-		~wg_join()
-		{
-			// Leave directly: reset(nullptr) cannot be used here, since a
-			// null want also matches the initial refused=nullptr guard.
-			if (wg) {
-				os_workgroup_leave(wg, &token);
-				wg = nullptr;
-			}
-		}
-		void reset(os_workgroup_t want)
-		{
-			if (want == wg)
-				return;
-			// refused only guards real handles; a null want must always
-			// fall through so the destructor path can leave.
-			if (want && want == refused)
-				return;
-			if (wg) {
-				os_workgroup_leave(wg, &token);
-				wg = nullptr;
-			}
-			if (want && os_workgroup_join(want, &token) == 0)
-				wg = want;
-			else
-				refused = want;
-		}
-		os_workgroup_t refused = nullptr;
-	};
-	wg_join wg;
-	// On by default: a plug-in host cannot set environment variables, so an
-	// opt-in flag would leave the AUv3 path dead in practice. SMU2000_AUDIO_WORKGROUP=0
-	// opts out (measurable off in the same binary).
-	const bool wg_on = [] {
-		if (const char *e = std::getenv("SMU2000_AUDIO_WORKGROUP"))
-			return std::atoi(e) != 0;
-		return true;
-	}();
-#endif
+	// The platform's real-time audio workgroup, if it has one
+	// (src/compat/realtime.h). Joins whatever the front end asked for and
+	// leaves it on the way out; null keeps today's behavior.
+	smu2000::realtime_join wg;
 	for (;;) {
-#if defined(__APPLE__)
-		if (wg_on)
-			wg.reset((os_workgroup_t)m_rt_wg_want.load(std::memory_order_acquire));
-#endif
+		if (wg.active())
+			wg.reset(m_rt_wg_want.load(std::memory_order_acquire));
 		// 合図を待つ。1 サンプルの中の待ちは 1 マイクロ秒に満たないので、
 		// まず回して待つ。眠っていては 44100 回/秒には間に合わない。
 		//
