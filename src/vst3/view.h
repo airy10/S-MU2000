@@ -18,6 +18,10 @@
 
 #include "plug_window.h"
 
+#include "ui/draw_imgui.h"
+
+#include "imgui.h"
+
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -62,14 +66,12 @@ public:
 	Steinberg::tresult PLUGIN_API canResize() override;
 	Steinberg::tresult PLUGIN_API checkSizeConstraint(Steinberg::ViewRect *rect) override;
 
-	// ---- Called by the platform window (view_win.cpp / view_mac.mm).
-	//
-	// `native` is whatever that platform paints into: an HDC on Windows, a
-	// CGContextRef on macOS.
+	// ---- Called by the platform window (view_win.cpp / view_mac.mm),
+	// already inside a frame: dl is the background draw list to paint into.
 	int  width() const { return m_w; }
 	int  height() const { return m_h; }
 
-	void repaint(void *native, int w, int h);
+	void repaint(ImDrawList *dl, const ui::im::fonts &fonts, int w, int h);
 	void mouse_down(int x, int y);
 	void mouse_drag(int x, int y);
 	void mouse_up();
@@ -97,7 +99,7 @@ public:
 private:
 	void card_error(const std::string &err);           // log it and tell the user
 
-	struct impl;                            // the panel, and the Win32 backing store
+	struct impl;                            // the panel and its toolbar
 	std::unique_ptr<impl> m_impl;
 
 	engine &m_engine;

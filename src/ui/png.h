@@ -11,7 +11,7 @@
 
 namespace ui {
 
-// 32bit BGRA（GDI の DIB がこの並び）を PNG に書き出す。圧縮はしない
+// 32bit BGRA を PNG に書き出す。圧縮はしない
 bool write_png(const std::string &path, const u8 *bgra, int w, int h, int stride);
 
 } // namespace ui

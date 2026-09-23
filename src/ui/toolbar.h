@@ -9,8 +9,8 @@
 // 帯はパネルの絵の**上に足す**（`panel::set_top_inset`）。パネルの絵は
 // 1000 × 385 の全面を使っていて空きが無いので、重ねると絵が隠れてしまう。
 //
-// 描くのも当たりを見るのも `ui/draw.h` の口しか使わないので、Windows でも
-// macOS でも同じように動く（doc/pc-editor.md）。
+// 描くのも当たりを見るのも、描いた四角を覚える paint() とそれに当てる
+// hit() の対にしているので、字の測り方が違ってずれることはない。
 
 #ifndef S_MU2000_UI_TOOLBAR_H
 #define S_MU2000_UI_TOOLBAR_H
@@ -21,9 +21,7 @@
 #include <vector>
 
 #include "compat/gdi.h"
-
-#include "compat/gdi.h"
-#include "ui/draw.h"
+#include "ui/draw_imgui.h"
 #include "ui/texts.h"
 
 namespace ui {
@@ -79,23 +77,25 @@ class toolbar
 public:
 	static constexpr int HEIGHT = 26;     // 帯の高さ（画素）
 
-	~toolbar()
-	{
-		if (m_font)
-			DeleteObject(m_font);
-	}
-
 	void set_items(std::vector<tool_item> items) { m_items = std::move(items); }
 	bool empty() const { return m_items.empty(); }
 
-	// 帯の中で押された場所の `id`。帯の外や隙間なら -1
+	// 帯の中で押された場所の `id`。帯の外や隙間なら -1。
+	// 描いたときの四角（paint が覚える）に当てるので、字の測り方と
+	// ずれない。まだ描いていない間だけ見当で出す
 	int hit(int x, int y) const
 	{
 		if (m_items.empty() || y < 0 || y >= HEIGHT)
 			return -1;
+		if (m_rects.size() == m_items.size()) {
+			for (size_t i = 0; i < m_items.size(); i++)
+				if (x >= m_rects[i].left && x < m_rects[i].right)
+					return m_items[i].id;
+			return -1;
+		}
 		int left = PAD;
 		for (const tool_item &it : m_items) {
-			const int w = width_of(it.label);
+			const int w = width_guess(it.label);
 			if (x >= left && x < left + w)
 				return it.id;
 			left += w + GAP;
@@ -107,31 +107,33 @@ public:
 	void set_down(int id) { m_down = id; }
 	int  down() const { return m_down; }
 
-	void paint(HDC dc, int w) const
+	// ボタンの帯を描く。字は実測で、hit() が当てる四角もここで覚える
+	void paint(ImDrawList *dl, int w, ImFont *font, float px) const
 	{
 		if (m_items.empty())
 			return;
-		if (!m_font)
-			m_font = CreateFontA(-13, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-			                     DEFAULT_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS,
-			                     CLEARTYPE_QUALITY, VARIABLE_PITCH, "Segoe UI");
+		im::fill(dl, ImVec2(0, 0), ImVec2(float(w), float(HEIGHT)), BAR_BG);
+		im::line(dl, ImVec2(0, float(HEIGHT - 1)), ImVec2(float(w), float(HEIGHT - 1)),
+		         BAR_EDGE, 1.0f);
 
-		RECT bar{ 0, 0, w, HEIGHT };
-		fill(dc, bar, BAR_BG);
-		line(dc, 0, HEIGHT - 1, w, HEIGHT - 1, BAR_EDGE, 1);
-
-		int left = PAD;
+		float left = float(PAD);
+		m_rects.clear();
 		for (const tool_item &it : m_items) {
-			const int bw = width_of(it.label);
+			const ImVec2 ts = font ? font->CalcTextSizeA(px, FLT_MAX, 0.0f, it.label.c_str())
+			                        : ImVec2(0, 0);
+			const float bw = ts.x + SIDE * 2.0f;
 			const bool down = it.id == m_down;
-			RECT r{ left, 3, left + bw, HEIGHT - 4 };
-			fill(dc, r, down ? BTN_DOWN : BTN_BG);
-			line(dc, r.left, r.top, r.right, r.top, BTN_EDGE, 1);
-			line(dc, r.left, r.bottom, r.right, r.bottom, BTN_EDGE, 1);
-			line(dc, r.left, r.top, r.left, r.bottom, BTN_EDGE, 1);
-			line(dc, r.right, r.top, r.right, r.bottom, BTN_EDGE, 1);
-			text_in(dc, r, it.label.c_str(), TEXT, m_font,
-			        DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+			const ImVec2 pos(left, 3.0f), size(bw, float(HEIGHT) - 7.0f);
+			im::fill(dl, pos, size, down ? BTN_DOWN : BTN_BG);
+			im::line(dl, pos, ImVec2(pos.x + size.x, pos.y), BTN_EDGE, 1.0f);
+			im::line(dl, ImVec2(pos.x, pos.y + size.y), ImVec2(pos.x + size.x, pos.y + size.y),
+			         BTN_EDGE, 1.0f);
+			im::line(dl, pos, ImVec2(pos.x, pos.y + size.y), BTN_EDGE, 1.0f);
+			im::line(dl, ImVec2(pos.x + size.x, pos.y), ImVec2(pos.x + size.x, pos.y + size.y),
+			         BTN_EDGE, 1.0f);
+			im::text_in(dl, pos, size, it.label.c_str(), TEXT, font, px,
+			            true, true, false);
+			m_rects.push_back(RECT{ int(left), 3, int(left + bw), HEIGHT - 4 });
 			left += bw + GAP;
 		}
 	}
@@ -149,9 +151,9 @@ private:
 	static constexpr COLORREF BTN_EDGE = RGB(0x50, 0x50, 0x5c);
 	static constexpr COLORREF TEXT     = RGB(0xe0, 0xe0, 0xe6);
 
-	// 字の幅は測らずに見当で出す。**測る口（GetTextExtent）が compat/gdi.h に
-	// 無い**ので、UTF-8 の字数（半角は半分）から出す。少し広めに取る
-	static int width_of(const std::string &s)
+	// 初回（まだ描いていない間）の見当。字の幅は測らず、UTF-8 の字数
+	// （半角は半分）から出す。paint() の実測に置き換わるまでのつなぎ
+	static int width_guess(const std::string &s)
 	{
 		int n = 0;
 		for (size_t i = 0; i < s.size();) {
@@ -165,7 +167,7 @@ private:
 	}
 
 	std::vector<tool_item> m_items;
-	mutable HFONT m_font = nullptr;
+	mutable std::vector<RECT> m_rects;   // paint() が描いた四角。hit() が当てる
 	int m_down = -1;
 };
 

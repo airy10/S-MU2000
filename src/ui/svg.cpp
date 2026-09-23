@@ -2,6 +2,8 @@
 
 #include "svg.h"
 
+#include "ui/draw_imgui.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -443,7 +445,7 @@ bool svg_art::load_text(const std::string &text)
 	return ok();
 }
 
-void svg_art::draw(HDC dc, const RECT &dst, double deg) const
+void svg_art::draw(ImDrawList *dl, const RECT &dst, double deg) const
 {
 	if (m_shapes.empty())
 		return;
@@ -451,66 +453,59 @@ void svg_art::draw(HDC dc, const RECT &dst, double deg) const
 	const double dw = double(dst.right - dst.left), dh = double(dst.bottom - dst.top);
 	if (dw <= 0 || dh <= 0)
 		return;
-	// 縦横比は保つ。余りは真ん中に
 	const double k = std::min(dw / m_vb[2], dh / m_vb[3]);
 	const double ox = dst.left + (dw - m_vb[2] * k) / 2 - m_vb[0] * k;
 	const double oy = dst.top  + (dh - m_vb[3] * k) / 2 - m_vb[1] * k;
 
-	// 回すときの軸は、当てはめた四角の真ん中
 	const double cx = (dst.left + dst.right) / 2.0;
 	const double cy = (dst.top + dst.bottom) / 2.0;
 	const double rad = deg * 3.14159265358979 / 180.0;
 	const double cs = std::cos(rad), sn = std::sin(rad);
 	const bool turn = (deg != 0.0);
 
-	std::vector<POINT> pts;
-	std::vector<INT>   counts;
+	std::vector<ImVec2> pts;
 
 	for (const shape &sh : m_shapes) {
-		pts.clear();
-		counts.clear();
-		for (const auto &sub : sh.subs) {
-			counts.push_back(INT(sub.size()));
-			for (const pt &q : sub) {
-				double px = ox + q.x * k, py = oy + q.y * k;
-				if (turn) {
-					const double dx = px - cx, dy = py - cy;
-					px = cx + dx * cs - dy * sn;
-					py = cy + dx * sn + dy * cs;
-				}
-				pts.push_back({ int(std::lround(px)), int(std::lround(py)) });
-			}
-		}
-		if (pts.empty())
-			continue;
-
 		if (sh.has_fill) {
-			HBRUSH b = CreateSolidBrush(sh.fill);
-			HGDIOBJ ob = SelectObject(dc, b);
-			HGDIOBJ op = SelectObject(dc, GetStockObject(NULL_PEN));
-			const int old = SetPolyFillMode(dc, ALTERNATE);
-			PolyPolygon(dc, pts.data(), counts.data(), INT(counts.size()));
-			SetPolyFillMode(dc, old);
-			SelectObject(dc, op);
-			SelectObject(dc, ob);
-			DeleteObject(b);
+			for (const auto &sub : sh.subs) {
+				pts.clear();
+				for (const pt &q : sub) {
+					double px = ox + q.x * k, py = oy + q.y * k;
+					if (turn) {
+						const double dx = px - cx, dy = py - cy;
+						px = cx + dx * cs - dy * sn;
+						py = cy + dx * sn + dy * cs;
+					}
+					pts.emplace_back(float(px), float(py));
+				}
+				if (pts.size() < 3)
+					continue;
+				dl->AddConvexPolyFilled(pts.data(), int(pts.size()), im::col(sh.fill));
+			}
 		}
 		if (sh.has_stroke) {
-			HPEN pen = CreatePen(PS_SOLID, std::max(1, int(sh.stroke_w * k + 0.5)),
-			                     sh.stroke);
-			HGDIOBJ op = SelectObject(dc, pen);
-			size_t at = 0;
-			for (size_t i = 0; i < counts.size(); i++) {
-				Polyline(dc, pts.data() + at, counts[i]);
-				if (sh.closed[i] && counts[i] >= 2) {
-					MoveToEx(dc, pts[at + counts[i] - 1].x, pts[at + counts[i] - 1].y,
-					         nullptr);
-					LineTo(dc, pts[at].x, pts[at].y);
+			const float w = float(std::max(1, int(sh.stroke_w * k + 0.5)));
+			for (size_t i = 0; i < sh.subs.size(); i++) {
+				pts.clear();
+				for (const pt &q : sh.subs[i]) {
+					double px = ox + q.x * k, py = oy + q.y * k;
+					if (turn) {
+						const double dx = px - cx, dy = py - cy;
+						px = cx + dx * cs - dy * sn;
+						py = cy + dx * sn + dy * cs;
+					}
+					pts.emplace_back(float(px), float(py));
 				}
-				at += size_t(counts[i]);
+				if (pts.size() < 2)
+					continue;
+				const ImU32 c = im::col(sh.stroke);
+				if (sh.closed[i] && pts.size() >= 2) {
+					pts.push_back(pts.front());
+					dl->AddPolyline(pts.data(), int(pts.size()), c, ImDrawFlags_Closed, w);
+				} else {
+					dl->AddPolyline(pts.data(), int(pts.size()), c, 0, w);
+				}
 			}
-			SelectObject(dc, op);
-			DeleteObject(pen);
 		}
 	}
 }

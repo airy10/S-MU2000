@@ -1,7 +1,7 @@
 // license:BSD-3-Clause
 
 #include "layout.h"
-#include "draw.h"
+#include "compat/gdi.h"
 #include "texts.h"
 #include "compat/paths.h"
 

@@ -2,8 +2,8 @@
 //
 // 画面。実機のフロントパネルと、SOL2 風のエディタの 2 面を持つ。
 //
-// exe（gui.exe）と VST3 の画面で同じものを使う。どちらも Windows なので
-// 描画は GDI で済ませ、外からは HDC を 1 枚渡してもらうだけにしてある。
+// exe（gui.exe）と VST3 の画面で同じものを使う。描画は Dear ImGui で、
+// 窓側は ImDrawList を渡してもらうだけにしてある。
 //
 // 配置は論理座標（LOGICAL_W × LOGICAL_H）で持ち、窓の大きさに合わせて
 // 一律に拡大縮小する。実機の寸法をそのまま写したものではなく、
@@ -21,16 +21,22 @@
 #include "layout.h"
 #include "snapshot.h"
 #include "xg/model.h"
+#include "ui/draw_imgui.h"
 
 #include <chrono>
 #include <string>
 #include <vector>
 
-// Real GDI on Windows, the CoreGraphics shim on macOS. Either way the panel
-// only ever draws in GDI's coordinates.
+// Geometry and colors (RECT, COLORREF); drawing itself is Dear ImGui.
 #include "compat/gdi.h"
 
+struct ImDrawList;
+
 namespace ui {
+
+namespace im {
+struct fonts;
+}
 
 enum class page { front, editor, effects };
 
@@ -122,7 +128,13 @@ public:
 	bool tick(bridge &br);
 
 	// 描く。status は下に小さく出す 1 行。無ければ空でよい
-	void paint(HDC dc, const snapshot &s, u64 pressed, const char *status) const;
+	void paint_front(ImDrawList *dl, const snapshot &s, u64 pressed,
+	                 double volume, const char *status,
+	                 const im::fonts &f) const;
+	void paint_editor(ImDrawList *dl, const char *status,
+	                  const im::fonts &f) const;
+	void paint_effects(ImDrawList *dl, const char *status,
+	                   const im::fonts &f) const;
 
 	const std::vector<spot> &spots() const { return m_spots; }
 
@@ -137,19 +149,14 @@ private:
 	void build_editor_spots();
 	void build_effect_spots();
 
-	void paint_front(HDC dc, const snapshot &s, u64 pressed, double volume,
-	                 const char *status) const;
-	void paint_editor(HDC dc, const char *status) const;
-	void paint_effects(HDC dc, const char *status) const;
-
-	void draw_lcd(HDC dc, const snapshot &s) const;
-	void draw_grid(HDC dc) const;
-	void draw_button(HDC dc, const spot &sp, bool down) const;
-	void draw_wheel(HDC dc, int angle) const;
-	void draw_volume(HDC dc, double v) const;
-	void draw_tabs(HDC dc) const;
-	void draw_knob(HDC dc, const spot &sp) const;
-	void draw_list(HDC dc, const spot &sp) const;
+	void draw_lcd(ImDrawList *dl, const snapshot &s, const im::fonts &f) const;
+	void draw_button(ImDrawList *dl, const spot &sp, bool down) const;
+	void draw_wheel(ImDrawList *dl, int angle) const;
+	void draw_volume(ImDrawList *dl, double v, const im::fonts &f) const;
+	void draw_tabs(ImDrawList *dl, const im::fonts &f) const;
+	void draw_grid(ImDrawList *dl, const im::fonts &f) const;
+	void draw_knob(ImDrawList *dl, const spot &sp, const im::fonts &f) const;
+	void draw_list(ImDrawList *dl, const spot &sp, const im::fonts &f) const;
 	std::string fx_text(int ctl) const;
 	void fx_bounds(int ctl, bool &at_min, bool &at_max) const;
 	void step_fx(int ctl, int step, bridge &br);
@@ -200,9 +207,6 @@ private:
 	xg_snapshot m_ram;           // 音声の糸が写した RAM（画面の糸だけが触る）
 	u64 m_ram_serial = 0;
 
-	HFONT m_font_label = nullptr, m_font_small = nullptr;
-	// 目盛りの番号用。バー 1 本ぶんの幅に 2 桁を収める
-	HFONT m_font_tiny  = nullptr;
 	bool   m_grid = false;
 	bool   m_lcd_only = false;
 	layout m_lay;

@@ -23,10 +23,13 @@
 
 #include "compat/gdi.h"
 
+// Dear ImGui list (full type from imgui.h in the .cpp, never here, so this
+// header stays light for every TU that draws panel art).
+struct ImDrawList;
+
 namespace ui {
 
-class svg_art
-{
+class svg_art{
 public:
 	bool load_file(const std::string &path);
 	bool load_text(const std::string &text);
@@ -34,10 +37,10 @@ public:
 	void clear() { m_shapes.clear(); }
 
 	// viewBox を dst に当てはめて描く。縦横比は保ったまま真ん中に置く。
-	// deg を渡すと、dst の真ん中を軸にその角度だけ回す（つまみ用）
-	void draw(HDC dc, const RECT &dst, double deg = 0.0) const;
-
-private:
+	// deg を渡すと、dst の真ん中を軸にその角度だけ回す（つまみ用）。
+	// 塗りの中抜きは 1 区画ずつ巡る（even-odd の穴は再現しない。
+	// パネルの絵は穴に頼っていない）。
+	void draw(ImDrawList *dl, const RECT &dst, double deg = 0.0) const;private:
 	struct pt { double x, y; };
 	struct shape {
 		std::vector<std::vector<pt>> subs;   // 折れ線にした輪郭

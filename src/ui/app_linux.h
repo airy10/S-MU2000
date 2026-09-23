@@ -5,12 +5,12 @@
 // the Windows and macOS twins are ui/app_win.h and ui/app_mac.h.
 //
 // The class lives in files of its own rather than beside the window system
-// code, so SDL3's headers stay out of the file that pulls in the GDI shim.
+// code, so SDL3's headers stay out of the shared app header.
 // The layout is the three files every platform has: window system (window_sdl,
 // sdl_popup, pc_window_linux), app class (this), main (gui_linux.cpp).
 //
 // The panel language comes from ui::lang (--lang, editor.ini, locale:
-// Japanese iff the locale says ja, English otherwise). The GDI strings
+// Japanese iff the locale says ja, English otherwise). The UI strings
 // (ui/texts.h) and the ImGui help (ui/xg_ui.cpp) follow the same choice.
 
 #ifndef S_MU2000_UI_APP_LINUX_H
@@ -49,11 +49,11 @@ public:
 
 	SDL_Window   *win = nullptr;      // for dialogs, message boxes and popups
 	SDL_Renderer *ren = nullptr;
-	SDL_Texture  *tex = nullptr;      // the streaming texture the pump uploads
-	// The surface the panel paints into (a GDI DC over Cairo, gdi_linux.cpp)
-	HDC           panel_dc = nullptr;
-	void         *panel_bits = nullptr;
 	int           ww = 0, wh = 0;
+	// Live ImGui state for the main window, set by run_window.
+	// run_list's menu draws through the same frame.
+	ImGuiContext *imgui_ctx = nullptr;
+	im::fonts     imgui_fonts{};
 
 	// ---- ui::app hooks: dialogs, confirmations and error display are
 	// SDL's business (ui/sdl_popup), everything they decide is shared
@@ -193,13 +193,6 @@ public:
 			std::snprintf(m, sizeof(m), UI_TEXT(dlg_cannot_fmt, "Cannot open: %s"), err.c_str());
 			sdl_popup::alert(win, "S-MU2000", m);
 		}
-	}
-
-	// One frame: the shared tick/status/paint sequence (like the Mac's one
-	// draw call), into the surface gui_linux.cpp's pump keeps in panel_dc
-	void frame()
-	{
-		paint_main(panel_dc, ww);
 	}
 
 	// The pump's quit flag; the dialogs must be able to abandon their wait

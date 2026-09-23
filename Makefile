@@ -315,6 +315,11 @@ $(BUILD)/src/gui.o: CXXFLAGS += $(IMGUI_FLAGS)
 # The app classes pull in app.h, whose editor headers want imgui.h
 $(BUILD)/src/ui/app_win.o: CXXFLAGS += $(IMGUI_FLAGS)
 $(BUILD)/src/ui/window_win.o: CXXFLAGS += $(IMGUI_FLAGS)
+# src/ui/ paints through ui/draw_imgui.h on the experiment branch; one rule
+# beats per-file lines as the port spreads (matches before generic below)
+$(BUILD)/src/ui/%.o: src/ui/%.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) $(IMGUI_FLAGS) -c -o $@ $<
 
 $(BUILD)/gui$(EXE): $(OBJS) $(BUILD)/src/mu2000.o $(BUILD)/src/smf.o $(UI_OBJS) $(PC_OBJS) $(BUILD)/src/gui.o $(BUILD)/src/ui/app_win.o $(BUILD)/src/ui/window_win.o
 	@mkdir -p $(dir $@)
@@ -451,13 +456,13 @@ $(BUILD)/live$(EXE): $(OBJS) $(BUILD)/src/mu2000.o $(LINUX_IO_OBJS) $(BUILD)/src
 
 # ---- Linux GUI + plug-ins (doc/porting-linux-gui.md) --------------------------
 #
-# gui is an SDL3 window drawing the shared panel through Cairo. The plug-ins
+# gui is an SDL3 window drawing the shared panel through Dear ImGui. The plug-ins
 # are ELF shared objects with headless editors for now (hosts fall back to
-# their generic UI). Needs libcairo2-dev, libfontconfig-dev and libsdl3-dev
+# their generic UI). Needs libfontconfig-dev and libsdl3-dev
 # alongside libasound2-dev.
 
-LINUX_GUI_CFLAGS := $(shell pkg-config --cflags cairo fontconfig 2>/dev/null)
-LINUX_GUI_LIBS := $(shell pkg-config --libs cairo fontconfig 2>/dev/null)
+LINUX_GUI_CFLAGS := $(shell pkg-config --cflags fontconfig 2>/dev/null)
+LINUX_GUI_LIBS := $(shell pkg-config --libs fontconfig 2>/dev/null)
 LINUX_SDL_CFLAGS := $(shell pkg-config --cflags sdl3 2>/dev/null)
 LINUX_SDL_LIBS := $(shell pkg-config --libs sdl3 2>/dev/null)
 CXXFLAGS += $(LINUX_GUI_CFLAGS)
@@ -508,7 +513,7 @@ $(BUILD)/guiobj/%.o: %.cpp
 $(BUILD)/src/gui_linux.o: CXXFLAGS += $(IMGUI_FLAGS) $(LINUX_SDL_CFLAGS)
 
 $(BUILD)/gui$(EXE): $(OBJS) $(BUILD)/src/mu2000.o $(BUILD)/src/smf.o \
-                    $(BUILD)/src/compat/gdi_linux.o $(LINUX_GUI_OBJS) $(IMGUI_OBJS) \
+                    $(LINUX_GUI_OBJS) $(IMGUI_OBJS) \
                     $(IMGUI_SDL_OBJS) $(LINUX_IO_OBJS) $(LINUX_EXTRA_IO_OBJS) \
                     $(BUILD)/src/gui_linux.o
 	@mkdir -p $(dir $@)
@@ -530,8 +535,7 @@ VST3_SDK_SRCS := \
 	third_party/vst3/pluginterfaces/base/conststringtable.cpp \
 	third_party/vst3/pluginterfaces/base/ustring.cpp
 
-LINUX_PANEL_SRCS := src/compat/gdi_linux.cpp \
-              src/ui/panel.cpp src/ui/layout.cpp src/ui/svg.cpp src/ui/editor.cpp \
+LINUX_PANEL_SRCS := src/ui/panel.cpp src/ui/layout.cpp src/ui/svg.cpp src/ui/editor.cpp \
               src/ui/effects.cpp src/xg/model.cpp \
               src/ui/xg_ui.cpp src/ui/fx_help.cpp src/ui/fx_icons.cpp $(IMGUI_CORE)
 
@@ -647,7 +651,7 @@ MAC_GUI_SRCS := src/ui/panel.cpp src/ui/editor.cpp src/ui/effects.cpp \
                 src/ui/audio_out_mac.cpp src/ui/audio_in_mac.cpp \
                 src/ui/midi_in_mac.cpp src/ui/midi_out_mac.cpp \
                 src/xg/model.cpp \
-                src/compat/gdi_mac.cpp src/ui/window_mac.mm src/ui/app_mac.cpp \
+                src/ui/window_mac.mm src/ui/app_mac.cpp \
                 src/gui_mac.cpp
 
 # PC editor (doc/pc-editor.md). The views are the same files as on Windows;
@@ -683,12 +687,32 @@ $(BUILD)/%.o: %.mm
 $(BUILD)/src/ui/app_mac.o: CXXFLAGS += $(IMGUI_FLAGS)
 $(BUILD)/src/ui/window_mac.o: CXXFLAGS += $(IMGUI_FLAGS)
 $(BUILD)/src/gui_mac.o: CXXFLAGS += $(IMGUI_FLAGS)
+# src/ui/ paints through ui/draw_imgui.h on the experiment branch; one rule
+# beats per-file lines as the port spreads (matches before generic below)
+$(BUILD)/src/ui/%.o: src/ui/%.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) $(IMGUI_FLAGS) -c -o $@ $<
+
+# --shot renders headless through the SDL3 software renderer on every
+# platform with SDL (Linux, macOS). The Dear ImGui SDL backends below are
+# vendored unmodified, like the rest.
+MAC_SDL_CFLAGS := $(shell pkg-config --cflags sdl3 2>/dev/null)
+MAC_SDL_LIBS := $(shell pkg-config --libs sdl3 2>/dev/null)
+MAC_IMGUI_SDL_SRCS := $(IMGUI_DIR)/backends/imgui_impl_sdl3.cpp \
+                      $(IMGUI_DIR)/backends/imgui_impl_sdlrenderer3.cpp
+MAC_IMGUI_SDL_OBJS := $(MAC_IMGUI_SDL_SRCS:%.cpp=$(BUILD)/imgui/%.o)
+
+$(BUILD)/src/ui/app_mac.o: CXXFLAGS += $(IMGUI_FLAGS) $(MAC_SDL_CFLAGS)
+$(BUILD)/src/ui/window_mac.o: CXXFLAGS += $(IMGUI_FLAGS) $(MAC_SDL_CFLAGS)
+$(BUILD)/src/gui_mac.o: CXXFLAGS += $(IMGUI_FLAGS) $(MAC_SDL_CFLAGS)
+$(BUILD)/src/ui/%.o: CXXFLAGS += $(MAC_SDL_CFLAGS)
+$(BUILD)/imgui/%.o: CXXFLAGS += $(MAC_SDL_CFLAGS)
 
 MAC_FRAMEWORKS += -framework Metal
 
-$(BUILD)/gui$(EXE): $(OBJS) $(BUILD)/src/mu2000.o $(BUILD)/src/smf.o $(MAC_GUI_OBJS) $(MAC_PC_OBJS)
+$(BUILD)/gui$(EXE): $(OBJS) $(BUILD)/src/mu2000.o $(BUILD)/src/smf.o $(MAC_GUI_OBJS) $(MAC_PC_OBJS) $(MAC_IMGUI_SDL_OBJS)
 	@mkdir -p $(dir $@)
-	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS) $(MAC_FRAMEWORKS)
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS) $(MAC_FRAMEWORKS) $(MAC_SDL_LIBS)
 
 # ---- VST3 plug-in (macOS)
 #
@@ -714,8 +738,7 @@ VST3_SDK_SRCS := \
 # this Makefile names the same drawing layer in its own VST3_SRCS, with
 # view_win.cpp in place of view_mac.mm)
 PANEL_VIEW_SRCS := src/vst3/view.cpp src/vst3/view_mac.mm
-PANEL_SRCS := src/compat/gdi_mac.cpp \
-              src/ui/panel.cpp src/ui/layout.cpp src/ui/svg.cpp src/ui/editor.cpp \
+PANEL_SRCS := src/ui/panel.cpp src/ui/layout.cpp src/ui/svg.cpp src/ui/editor.cpp \
               src/ui/effects.cpp src/xg/model.cpp
 
 VST3_SRCS := src/vst3/plugin.cpp src/vst3/engine.cpp src/vst3/iids.cpp src/vst3/automation.cpp \
@@ -769,7 +792,7 @@ CLAP_OBJS := $(BUILD)/clapobj/src/clap/plugin.o $(filter-out $(BUILD)/vst3obj/sr
 
 $(BUILD)/clapobj/%.o: %.cpp
 	@mkdir -p $(dir $@)
-	$(CXX) $(CXXFLAGS) $(CLAP_INC) -c -o $@ $<
+	$(CXX) $(CXXFLAGS) $(CLAP_INC) $(IMGUI_FLAGS) -c -o $@ $<
 
 clap: $(CLAP_BIN)
 

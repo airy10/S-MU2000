@@ -131,9 +131,9 @@ public:
 
 	// ---- shared paint (the whole panel picture, status line included)
 
-	// The timer half of a frame: the panel tick and the PC windows. Windows
-	// runs it from WM_TIMER and paints from WM_PAINT; the Mac has one draw
-	// call and does both (paint_main below)
+	// The timer half of a frame: the panel tick and the PC windows. Each
+	// window runs it at 30 Hz, then paints through its draw list
+	// (paint_main below)
 	void frame_work()
 	{
 		poll();
@@ -141,22 +141,16 @@ public:
 		             [this](pc_window &w) { open_pc_window(w); });
 	}
 
-	// A full frame: timer work, status middle, panel paint. The HDC comes
-	// wrapped from either window system; the middle fragment and the PC
-	// window opening stay virtual (backend stats, host windows)
-	void paint_main(HDC dc, int w)
+	// A full frame: timer work, status middle, panel paint through the
+	// window's draw list. The middle fragment and the PC window opening
+	// stay virtual (backend stats, host windows)
+	void paint_main(ImDrawList *dl, const im::fonts &f, int w)
 	{
 		frame_work();
-		paint_frame(dc, w);
-	}
-
-	// The paint half, for a window that splits timer work from painting
-	void paint_frame(HDC dc, int w)
-	{
 		char middle[64] = {};
 		if (out && out->produced())
 			format_middle(middle, sizeof(middle));
-		paint_into(dc, w, middle);
+		paint_into(dl, w, middle, f);
 	}
 
 	// The wait/drop fragment for the status line (WASAPI: 待ち + 遅れ,
@@ -165,7 +159,7 @@ public:
 	// Opens one PC window (host windows differ)
 	virtual void open_pc_window(pc_window &w) = 0;
 
-	void paint_into(HDC dc, int w, const char *middle)
+	void paint_into(ImDrawList *dl, int w, const char *middle, const im::fonts &f)
 	{
 		snapshot s;
 		br.read(s);
@@ -182,9 +176,13 @@ public:
 		else
 			std::snprintf(status, sizeof(status), "%s", UI_TEXT(status_booting, "Starting..."));
 		panel.set_volume(br.gain());
-		panel.paint(dc, s, pressed, status);
+		switch (panel.current_page()) {
+		case page::editor:  panel.paint_editor(dl, status, f); break;
+		case page::effects: panel.paint_effects(dl, status, f); break;
+		default:            panel.paint_front(dl, s, pressed, br.gain(), status, f); break;
+		}
 		// The bar paints after the panel (the panel fills everything)
-		bar.paint(dc, w);
+		bar.paint(dl, w, f.label, f.label_px);
 	}
 
 	// ---- shared input decisions (both windows act the same way)
