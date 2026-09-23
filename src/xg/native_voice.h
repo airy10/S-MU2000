@@ -463,11 +463,24 @@ inline int vib_rate(int base, int cc)
 	return v < 0 ? 0 : (v > 63 ? 63 : v);
 }
 
+// **足さずに、すぐ上の `vib_rate` と同じ「大小で選ぶ」形**（6.221）。
+// 音色自身が深さを持つもの（ChiffLead は 6）で、つまみを 64 から動かすと
+// 実機は音色自身のぶんを**捨てて**つまみの表の値にする。足していたので
+// 6 段ぶん深すぎた。実機で測った値（ChiffLead・自身 6）:
+//
+//   つまみ 0-63 → 00（表が 0。小さいほう）   64 → 06（音色自身）
+//   65 → 1D、70 → 56、80 → 96、96 → A0、127 → AD（どれも表の値。大きいほう）
+//
+// 表の 0-64 は 0 なので、下側は「つまみが勝って 0」になる。
+// 自身が 0 の音色（GrandPno）はどちらの式でも同じ値になるため、
+// **自身が 0 でない音色でしか出ない**差だった
 inline int vib_depth(int base, int cc)
 {
 	if (cc < 0 || cc == 64)
 		return base;
-	const int v = base + int(VIB_DEPTH_TAB[cc > 127 ? 127 : cc]);
+	const int c = cc > 127 ? 127 : cc;
+	const int t = int(VIB_DEPTH_TAB[c]);
+	const int v = c < 64 ? (t < base ? t : base) : (t > base ? t : base);
 	return v < 0 ? 0 : (v > 255 ? 255 : v);
 }
 
@@ -910,6 +923,42 @@ inline int vib_ramp_reg(const u8 *rom, int counter)
 	const int c = counter < 0 ? 0 : (counter > 63 ? 63 : counter);
 	return int(rom[VIB_REG_TAB + u32(rom[VIB_CNT_TAB + u32(c)])]);
 }
+
+// **遅れて掛かるビブラートの、せり上がりの途中の深さ**（レジスタ 0x0a の下位 8bit。doc の 6.217）。
+// 遅れが明けてから 20ms ごとに 2 本を進め、大きいほうが効く（目盛り = 下位 7bit、bit7 なら 8 倍 で比べる）:
+//   音色のぶん  = 表[c1]。c1 は 0 から音色の刻み（vib_ramp_step）で目標（byte14）まで。
+//                 Vib Depth（dpt）が 64 より下なら、1 段ごとに 14 目盛り引く
+//   Depth のぶん = 表[c2] を VIB_DEPTH_TAB[dpt] で止めたもの。c2 は 0 から 5 ずつ（表の 63 より先も引く）
+// 表[c] = VIB_REG_TAB[VIB_CNT_TAB[c]]。firmware の 0x0a と 20ms ごとに、Depth 64 以下と 69 以上で一致する。
+// 65-68 は行き着く値が合い、出だし 100ms ほどの上がり方だけが違う
+inline int vib_ramp_value(const u8 *rom, int dpt, int c1, int c2)
+{
+	auto units = [](int d) { return (d & 0x80) ? (d & 0x7f) * 8 : (d & 0x7f); };
+	auto table = [&](int c) {
+		const int k = c < 0 ? 0 : (c > 127 ? 127 : c);
+		return int(rom[VIB_REG_TAB + u32(rom[VIB_CNT_TAB + u32(k)])]);
+	};
+	if (dpt < 0)
+		dpt = 64;                      // つまみに触れていない
+	if (dpt > 127)
+		dpt = 127;
+	int own = table(c1);
+	if (dpt < 64) {
+		const int u = units(own) - (64 - dpt) * 14;
+		own = u <= 0 ? 0 : (u < 128 ? u : (0x80 | (u / 8 > 127 ? 127 : u / 8)));
+	}
+	const int ptop = VIB_DEPTH_TAB[dpt];
+	int pv = 0;
+	if (ptop) {
+		pv = table(c2);
+		if (units(pv) >= units(ptop))
+			pv = ptop;
+	}
+	return units(pv) > units(own) ? pv : own;
+}
+
+// Depth のぶんのカウンタが止まる所（これより先は表を引いても同じ）
+constexpr int VIB_PART_CNT_END = 127;
 
 inline int vib_delay_ticks(const u8 *elem)
 {

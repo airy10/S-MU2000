@@ -1521,6 +1521,63 @@ def case_xgpegatk():
     return [track(seq(ev))], t + 1.0
 
 
+def case_xgmwvib():
+    """**モジュレーションのビブラートと、パートのビブラートの組み合わせ**（6.215）。
+
+    firmware は LFO の音程の深さ（レジスタ `0x0a` の下位）を
+    `表[max(つまみの合計の頭打ち, 音色自身の目盛り)]` で出す。足さない。
+    音色自身の目盛りには Vib Depth（08 pp 16）と遅れてせり上がる分が入る。
+    native の口は足していたので、Vib Depth を上げた音色でホイールを上げると深さが 2 倍近くになっていた。
+    GrandPno（音色自身は 0）・Violin（遅れてせり上がる）・ChiffLead（音色自身が 6）で、
+    MW LFO PM（08 pp 20）と CC1 を振り、鳴らしている途中でもホイールを動かす。
+    """
+    ev = head()
+    progs = (0, 40, 83)                                # GrandPno / Violin / ChiffLead
+    for ch, pg in enumerate(progs):
+        ev += [(1.0, bytes([0xc0 | ch, pg]))]
+    for ch in range(3):
+        ev += note(ch, 60, 100, 1.2 + ch * 0.1, 0.4)   # 1 音目。ここで写し取る
+    t = 2.4
+    for vib, mw, cc1 in ((80, 10, 127), (96, 64, 127), (64, 64, 64), (70, 32, 100), (64, 10, 0)):
+        for ch in range(3):
+            ev += [(t, xg([0x08, ch, 0x16, vib])), (t, xg([0x08, ch, 0x20, mw])),
+                   (t, bytes([0xb0 | ch, 1, cc1]))]
+        for ch in range(3):
+            ev += note(ch, 62 + ch * 3, 100, t + 0.2, 1.6)
+        # 鳴らしている途中でホイールを動かす
+        for i, w in enumerate((127, 40, 0)):
+            for ch in range(3):
+                ev += [(t + 0.9 + i * 0.25, bytes([0xb0 | ch, 1, w]))]
+        t += 2.3
+    return [track(seq(ev))], t + 1.0
+
+
+def case_xgvibshort():
+    """**短い音で写し取ったあとの、遅れて掛かるビブラート**（doc/native-engine.md の 6.217）。
+
+    native の口は、遅れてせり上がるビブラート（レジスタ `0x0a`）を写し取りの録画から流していた。
+    写し取った 1 音目が短いと、録画がせり上がりの途中で切れ、あとで長く伸ばした音もそこで止まって
+    いた（Violin の Vib Depth 127 で firmware は 0xad まで上がるのに 0x7f のまま）。
+    Violin・Dyna Saw（バンク 0/18）・Flute を Vib Depth 127 にして 0.1 秒だけ鳴らして写し取り、
+    Vib Depth 127・96・64・40 で 3 秒ずつ伸ばす。
+    """
+    ev = head()
+    ev += [(0.9, bytes([0xb1, 0, 0])), (0.9, bytes([0xb1, 32, 18]))]   # ch2 は Dyna Saw（0/18）
+    for ch, pg in enumerate((40, 81, 73)):                             # Violin / Dyna Saw / Flute
+        ev += [(1.0, bytes([0xc0 | ch, pg]))]
+    for ch in range(3):
+        ev += [(1.1, xg([0x08, ch, 0x16, 127]))]
+    for ch in range(3):
+        ev += note(ch, 60, 100, 1.3 + ch * 0.2, 0.1)   # 1 音目は短く。ここで写し取る
+    t = 2.2
+    for vib in (127, 96, 64, 40):
+        for ch in range(3):
+            ev += [(t, xg([0x08, ch, 0x16, vib]))]
+        for ch in range(3):
+            ev += note(ch, 62 + ch * 3, 100, t + 0.2, 3.0)
+        t += 3.6
+    return [track(seq(ev))], t + 1.0
+
 def case_xghpf():
     """**パートの HPF**（`0A pp 20`。パートの塊の番地は 08 ではなく 0A）。
 
@@ -1593,8 +1650,39 @@ def case_xgsys():
     return [track(seq(ev))], t + 2.0
 
 
+def case_calshort():
+    """**写し取りが足りないまま鳴らす**（doc/native-engine.md の 6.219）。
+
+    要素を 2 つ以上持つ音色の「写し取りの音」を、ほかのパートで声を埋めた
+    ところで鳴らすと、firmware がこちらのスロットを取り返して**要素の数より
+    少ない数しか写し取れない**。そのあとの音で native の口は写し取りの記録が
+    無いまま組むことになる。ここを確かめずに見ていて**落ちていた**"""
+    ev = head()
+    # ほかの 15 パートを厚い音色にして、声をめいっぱい使う
+    for ch in range(1, 16):
+        if ch == 9:
+            continue
+        ev.append((1.0, bytes([0xc0 | ch, 48 + (ch % 8)])))     # Strings 系（要素が多い）
+    for ch in range(1, 16):
+        if ch == 9:
+            continue
+        base = 40 + ch
+        for j, k in enumerate((base, base + 3, base + 7, base + 12)):
+            ev += note(ch, k, 100, 1.2 + ch * 0.01 + j * 0.005, 3.0)
+    # 声が埋まっているあいだに、パート 1 の写し取りの音を鳴らす。
+    # 音色は要素を 2 つ持つもの（prog 60 = French Horn）。奪い合いが起きると
+    # 写し取りは 1 つしか残らない
+    ev.append((1.5, bytes([0xc0, 60])))
+    ev += note(0, 60, 100, 1.9, 0.6)
+    # 埋まりが解けてから、同じ音色でもう一度。ここが native の道
+    ev += note(0, 64, 100, 5.2, 1.2)
+    ev += note(0, 67, 100, 5.4, 1.2)
+    return [track(seq(ev))], 7.5
+
+
 CASES = {
     "piano":   case_piano,
+    "calshort": case_calshort,
     "chord":   case_chord,
     "drums":   case_drums,
     "effects": case_effects,
@@ -1648,7 +1736,9 @@ CASES = {
     "xgpeg":   case_xgpeg,
     "xghpf":   case_xghpf,
     "xgpegatk": case_xgpegatk,
+    "xgmwvib": case_xgmwvib,
     "xgsys":   case_xgsys,
+    "xgvibshort": case_xgvibshort,
 }
 
 

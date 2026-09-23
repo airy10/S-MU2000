@@ -152,7 +152,11 @@ public:
 		// **つまみの割り当てで音程を書き直す印**（6.195）。
 		// 実機は受けた瞬間ではなく、**次の 10ms の刻み**で書く
 		bool pdirty = false;
-		int vfull = 0;         // つまみまで入れた、せり上がり切った深さ
+		int vfull = 0;         // つまみまで入れた、せり上がり切った深さ（今は使わない。6.217）
+		// **Vib Depth のぶんのせり上がり**（6.217）。0 から 20ms ごとに 5 ずつ
+		int vcnt2 = 0;
+		int vdep = 64;         // 押したときの Vib Depth（08 pp 16）
+		bool vramp = false;    // 遅れて掛かるビブラートを式で動かしている（録画の 0x0a は流さない）
 		u64 vnext = ~u64(0);   // つぎに進める時刻
 		// **音程の包絡線の段**（0 が押した直後の段。3 で終わり）。
 		// チップが行き先に着いたら次の段を張る（doc の 6.80）
@@ -179,6 +183,15 @@ public:
 	// 尾をどこまで追うかはこれで決める
 	void set_slot_held(peek_fn f) { m_slot_held = std::move(f); }
 	void set_rom(const u8 *rom) { m_rom = rom; }
+	// **そのスロット（マスタの声 0-63）を今 native が鳴らしているなら、そのパート**。
+	// 鳴らしていなければ -1（画面のスペクトラムが声をパートに振り分けるのに使う）
+	int slot_part(int i) const
+	{
+		if (i < 0 || i >= SLOTS)
+			return -1;
+		const slot_use &s = m_slot[size_t(i)];
+		return (s.on || s.rel) ? s.part : -1;
+	}
 	// ワーク RAM（firmware が音色を選んだ結果を読む）
 	void set_ram(u8 *ram) { m_ram = ram; m_ramw = ram; }
 
@@ -278,6 +291,8 @@ public:
 	const std::unordered_map<u64, std::vector<nv::voice_cal>> &drum_map() const { return m_drum; }
 	size_t cal_count() const { return m_cal.size() + m_drum.size(); }
 	int peak_slots() const { return m_peak; }
+	// 写し取りの記録が足りないまま組んだ音の数（6.219）
+	u32 cal_missing() const { return m_cal_missing; }
 
 	// **firmware が最近触ったスロット**を覚える。firmware はこちらの使用中を
 	// 知らないので、避けないと「firmware が自分の音の続きを書く」ときに
@@ -288,6 +303,39 @@ public:
 		for (int i = 0; i < SLOTS; i++)
 			if ((mask >> i) & 1)
 				m_fw_touch[i] = m_clock + 1;   // 0 は「触っていない」
+	}
+
+	// **firmware が声のレジスタに書いたスロットも、その firmware のものとみなす**
+	//（6.220）。鍵を押した瞬間の印だけだと、firmware の音が 2 秒より長く伸びる
+	// ときに印が切れ、こちらがそのスロットを取ってしまう。すると firmware は
+	// 自分の音の続き（フィルタの包絡線 0x00・0x01・0x04 など）を書き続けるので、
+	// こちらの音が途中で化ける。書いている間は避け続ければ、それが起きない。
+	// **毎サンプル書き替わる MEG の戻り（0x0e・0x0f・0x38-0x3f）は除く**こと。
+	// それを含めると全スロットが firmware のものになってしまう（呼ぶ側で除く）
+	void mark_fw_slot(u32 slot)
+	{
+		if (slot < SLOTS)
+			m_fw_touch[slot] = m_clock + 1;
+	}
+
+	// **踏まれたスロットは諦める**（6.220）。firmware が、こちらが鳴らしている
+	// スロットに自分の音を置いてしまったときに呼ばれる。そこはもう firmware の
+	// 包絡線が走っているので、こちらが書き続けても**二重に書いた音**にしかならない。
+	// こちらの音は手放して（キーオフは送らない。送ると firmware の音が切れる）、
+	// 以後そのスロットは firmware のものとして避ける。
+	// `SMU2000_NO_YIELD=1` で、この譲りを止めて前のままにできる
+	void yield_slot(u32 slot)
+	{
+		static const bool off = std::getenv("SMU2000_NO_YIELD") != nullptr;
+		if (off || slot >= SLOTS)
+			return;
+		slot_use &u = m_slot[slot];
+		if (!u.on && !u.rel)
+			return;
+		u.on = u.held = u.sost = u.rel = false;
+		u.cal = nullptr;
+		u.elem = nullptr;
+		m_fw_touch[slot] = m_clock + 1;
 	}
 
 	// **包絡線の格子の位相**。実機の包絡線は 441 サンプルの全体共通の格子で
@@ -543,7 +591,8 @@ public:
 					// **式で出せるときだけ録画を捨てる**。ドラムは要素を持たない
 					// ので式が動かない。捨てるとフィルタの包絡線が丸ごと消える
 					if (s.elem && ((fenv_on() && re[s.rpos].reg == 0x00)
-					               || re[s.rpos].reg == 0x04)) {
+					               || re[s.rpos].reg == 0x04
+					               || (s.vramp && re[s.rpos].reg == 0x0a))) {   // 6.217
 						s.rpos++;
 						continue;
 					}
@@ -619,9 +668,14 @@ public:
 			// 削って、なくなったら乱数を引いて音程をずらす
 			// **遅れて掛かるビブラート**（6.175）。20ms ごとに
 			// 遅れを 1 づつ削って、無くなったら深さを 1 歩ずつ上げる
-			if (s.vdly > 0 || s.vcnt < s.vtgt) {
+			// 6.217: Vib Depth のぶんも同じ刻みで別にせり上げ、大きいほうを書く（写し取りの録画は使わない。
+			// 録画は写し取った音が短いと、せり上がりの途中で切れて、そこで止まっていた）
+			auto vib_moving = [&](const slot_use &x) {
+				return x.vdly > 0 || x.vcnt < x.vtgt || (x.vramp && x.vcnt2 < nv::VIB_PART_CNT_END);
+			};
+			if (vib_moving(s)) {
 				bool movp = false, mova = false;
-				while (clock >= s.vnext && (s.vdly > 0 || s.vcnt < s.vtgt)) {
+				while (clock >= s.vnext && vib_moving(s)) {
 					if (s.vdly > 0) {
 						s.vdly--;
 						if (!s.vdly && s.vamp > 0)
@@ -635,6 +689,7 @@ public:
 						s.vcnt += s.vstep;
 						if (s.vcnt > s.vtgt)
 							s.vcnt = s.vtgt;
+						s.vcnt2 = std::min(nv::VIB_PART_CNT_END, s.vcnt2 + 5);
 						movp = true;
 					}
 					s.vnext += nv::VIB_TICK;
@@ -644,9 +699,10 @@ public:
 					       u16(0xaa00 | u16(nv::amod_reg(
 					           assign_amod(s.part, s.keynote), s.vamp / 2))));
 				if (movp) {
-					const int d = nv::vib_ramp_reg(m_rom, s.vcnt) & 0x7f;
-					m_poke(u32(i) * 64 + 0x0a,
-					       u16(s.vhi | u16(d < s.vfull ? d : s.vfull)));
+					// 音色のぶんと Vib Depth のぶんの大きいほう（6.217）。モジュレーションとの大きいほうは
+					// lfo_reg が取る（6.215）。今の値は s.lfo に置く（つまみが動いたときの元になる）
+					s.lfo = u16(s.vhi | u16(nv::vib_ramp_value(m_rom, s.vdep, s.vcnt, s.vcnt2)));
+					m_poke(u32(i) * 64 + 0x0a, s.cal ? lfo_reg(s.lfo, *s.cal, s.part, s.keynote) : s.lfo);
 					// 実機はこの刻みでも切る高さを作り直す
 					//（6.189。位相は進めない）
 					if (s.lstep && s.elem && fenv_on()) {
@@ -656,7 +712,7 @@ public:
 						       cut_with_cc(s, s.cut));
 					}
 				}
-				if ((s.vdly > 0 || s.vcnt < s.vtgt) && s.vnext < next)
+				if (vib_moving(s) && s.vnext < next)
 					next = s.vnext;
 			}
 			// ポルタメント: 10ms ごとに残りのずれを step だけ 0 へ寄せて、
@@ -686,7 +742,8 @@ public:
 				u16 v = fe[s.tpos].v;
 				// **式で出せるときだけ録画を捨てる**（上の但し書きを見よ）
 				if (s.elem && ((fenv_on() && fe[s.tpos].reg == 0x00)
-				               || fe[s.tpos].reg == 0x04)) {
+				               || fe[s.tpos].reg == 0x04
+				               || (s.vramp && fe[s.tpos].reg == 0x0a))) {   // 6.217
 					s.tpos++;
 					continue;
 				}
@@ -2171,18 +2228,23 @@ private:
 		}
 	}
 
-	// LFO のレジスタ。下位が深さで、つまみのぶんを足す（6.198）。
-	// 写し取ったときの値との**差**で動かすのはこれまでどおり。
-	// 割り当てが既定（深さ 10）なら、前の 10 段の表と同じ値になる
+	// LFO のレジスタ。下位が深さで、つまみのぶん（6.198）と音色自身の深さの**大きいほう**（6.215）。
+	// 実機は 表[max(つまみの合計の頭打ち, 音色自身の目盛り)] で、足さない。表（VIB_REG_TAB）は
+	// 単調なので、レジスタの値どうしの max と同じ。base は音色自身の値（ビブラートのつまみ・
+	// 遅れてせり上がる分を含む）。写し取りの値がちょうどつまみのぶんなら、音色自身は
+	// それ以下で分からないので 0 と見る（写し取りをつまみを上げたまま取ったときだけ）
 	u16 lfo_reg(u16 base, const nv::voice_cal &c, int part, int note = 60) const
 	{
+		if (!m_rom)
+			return base;
 		const int now = m_cc[part].mod;
 		const int sum = assign_pmod(part, note, now < 0 ? c.cal_mod : now);
-		const int was = assign_pmod(part, note, c.cal_mod, 0x2000);
-		if (sum == was || !m_rom)
-			return base;
-		const int d = nv::pmod_reg(m_rom, sum) - nv::pmod_reg(m_rom, was);
-		return u16((base & 0xff00) | nv::clamp_att(int(base & 0xff) + d));
+		const int was = nv::pmod_reg(m_rom, assign_pmod(part, note, c.cal_mod, 0x2000));
+		int own = int(base & 0xff);
+		if (was > 0 && own == was)
+			own = 0;
+		const int wheel = nv::pmod_reg(m_rom, sum);
+		return u16((base & 0xff00) | (own > wheel ? own : wheel));
 	}
 
 public:
@@ -2622,16 +2684,21 @@ public:
 
 	// その音を native で鳴らせるか（実際に鳴らす前に決める必要がある。
 	// 鳴らせないなら firmware に回すので、遅らせてはいけない）
-	// **写し取りを 1 音もしない道**（段 4。`SMU2000_NOCAL=1`）。
-	// 式だけでレジスタを組み、つまみの基準は既定の位置に置く
-	// （`nv::default_cal`）。まだ式で出せない所（パート EQ・ミキサ）は
-	// 実測の定数のままなので、そこを詰めるための足場でもある
-	// 環境変数のほかに、プラグインからも入れられる
-	// （`plugin.ini` の `nocal=1`。鳴らし始める前に呼ぶこと）
+	// **写し取りを 1 音もしない道が既定**（段 4。2026-09-24 に切り替えた。6.223）。
+	// 式だけでレジスタを組み、つまみの基準は既定の位置に置く（`nv::default_cal`）。
+	//
+	// 写し取りの道（firmware に 1 音鳴らさせてレジスタを写す）に戻すには
+	// **`SMU2000_CAL=1`**（プラグインは `plugin.ini` の `cal=1`。鳴らし始める前に呼ぶこと）。
+	// 前からある `SMU2000_NOCAL=1` は既定と同じなので、そのままでも動く。
+	//
+	// 切り替えた理由（6.223）: 実機の曲で式だけの道のほうが近く（帯域のずれ 0.50dB 対
+	// 0.61dB）、firmware に 1 音も鳴らさせないのでスロットの取り合い（6.219・6.220）が
+	// そもそも起きない。速さも落ちない。まだ式で出せない所（パート EQ・ミキサ）は
+	// `nv::defaults` の実測の定数のまま
 	static void set_nocal(bool on) { nocal_flag() = on ? 1 : 0; }
 	static int &nocal_flag()
 	{
-		static int v = std::getenv("SMU2000_NOCAL") ? 1 : 0;
+		static int v = std::getenv("SMU2000_CAL") ? 0 : 1;
 		return v;
 	}
 	static bool nocal_mode() { return nocal_flag() != 0; }
@@ -2662,6 +2729,10 @@ public:
 		const u32 rec = record_of(part);
 		if (!rec)
 			return false;
+		// **写し取りが要素の数だけ揃っていなくても native で鳴らす**（6.219）。
+		// 足りないぶんは「合成の写し」で組む（note_on）。firmware に戻す道も
+		// 試したが、鳴る時刻がずれてスロットの取り合いも変わるので、
+		// 実機との差はかえって開いた（パンのずれ 0.41dB 対 0.65dB）
 		return nocal_mode() || m_cal.find(cal_key(rec, part)) != m_cal.end();
 	}
 
@@ -2725,6 +2796,23 @@ public:
 			if (!c && size_t(used) < cals.size()) {
 				c = &cals[used];
 				taken |= u32(1) << used;
+			}
+			// **写し取りが足りないときは「合成の写し」に落とす**（6.219）。
+			// 要素の数より写し取った数が少ないことがある（写し取りの音の最中に
+			// firmware がこちらのスロットを取り返すと、その要素は記録が残らない）。
+			// ここを null のままにしていたので、**パン・送り・フィルタ・共振を
+			// 丸ごと書かずに鳴らしていた**（音が大きく外れる）。nocal の道と同じ
+			// 合成の写しを渡せば、式の道としてひと通り組まれる。
+			// **使い回しの器**を指すこと（スロットが指したまま残るので、
+			// 一時物を指すと宙に浮く）
+			if (!c) {
+				const std::vector<nv::voice_cal> &sc = synth_cals();
+				c = &sc[size_t(used) % sc.size()];
+				m_cal_missing++;
+				if (debug_on())
+					std::fprintf(stderr, "cal 足りない part=%d note=%d vel=%d 要素 %d 個目/%d"
+					                     " 写し取り %d 個 → 合成の写しで組む\n",
+					             part + 1, note, vel, k + 1, nelem, int(cals.size()));
 			}
 			used++;
 			const int slot = take_slot(part, note);
@@ -2817,7 +2905,8 @@ public:
 			// **遅れて掛かるビブラート**（6.175）。遅れのあと
 			// 20ms ごとに深さをせり上げる。`0x0a` の上位（型と刻み）は
 			// 押した瞬間のまま使い回す
-			su.vcnt = su.vtgt = su.vdly = 0;
+			su.vcnt = su.vtgt = su.vdly = su.vcnt2 = 0;
+			su.vramp = false;
 			su.vnext = ~u64(0);
 			su.vamp = 0;
 			// **フィルタ側の LFO**（6.189）。鍵を押すと
@@ -2847,6 +2936,9 @@ public:
 				su.vamp  = nv::vib_amp_depth(el);
 				su.vfull = nv::vib_depth(nv::vib_ramp_reg(m_rom, su.vtgt) & 0x7f,
 				                         pc.vdep);
+				su.vdep  = pc.vdep < 0 ? 64 : pc.vdep;
+				su.vcnt2 = 0;
+				su.vramp = true;
 				su.vnext = su.fnext;     // 包絡線と同じ格子に乗せる
 				m_traj = true;
 				m_traj_next = 0;
@@ -3145,6 +3237,9 @@ public:
 			const int att0 = c.has(9) ? (c.reg[9] & 0xff) : 0x40;
 			slot_use &su = m_slot[slot];
 			su.elem = nullptr;               // ドラムは離しの速さを写しの値で済ませる
+			su.vcnt = su.vtgt = su.vdly = su.vcnt2 = 0;   // 前の音のビブラートのせり上がりを持ち越さない（6.217）
+			su.vramp = false;
+			su.vnext = ~u64(0);
 			su.wave = nullptr;
 			su.cal = &c;
 			su.tpos = 0;
@@ -3582,6 +3677,7 @@ private:
 	u64 m_clock = 0;
 	u64 m_alt_kill_next = ~u64(0);  // つぎに止めを刺す時刻（6.151）
 	int m_peak = 0;
+	u32 m_cal_missing = 0;
 	bool m_traj = false;
 	bool m_rec = false;            // 写し取りの最中（段が後から増える）
 	u64 m_traj_next = 0;           // つぎに段を書く時刻

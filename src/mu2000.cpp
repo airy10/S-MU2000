@@ -35,8 +35,11 @@ const char *getenv_or2(const char *name, const char *def)
 // MIDI は 31250bps。28MHz の CPU から見て 1 ビット = 896 サイクル
 constexpr u64 MIDI_BIT_CYCLES = 28000000 / 31250;
 
-// USB は実機で 19,500 byte/s 出た（doc/dump/usb.md）。1 バイトぶんのサイクル数
-constexpr u64 USB_BYTE_CYCLES = 28000000 / 19500;
+// **USB で受ける速さは実機で 10,000 byte/s**（2026-09-23 に実機を録って測った。
+// doc/native-engine.md の 6.218）。`doc/dump/usb.md` の 19,500 byte/s は
+// **実機 → PC の向き**（334 バイトの SysEx を吸ったとき）の値で、こちらとは別の道。
+// 1 バイトぶんのサイクル数
+constexpr u64 USB_BYTE_CYCLES = 28000000 / 10000;
 
 bool read_file(const std::string &path, std::vector<u8> &out, size_t expect)
 {
@@ -84,8 +87,152 @@ mu2000::mu2000()
 	m_sampram.assign(0x400000, 0);   // SWP30 のサンプリング RAM
 	m_swpm.set_sample_ram(m_sampram.data(), m_sampram.size());
 	m_swps.set_sample_ram(m_sampram.data(), m_sampram.size());
+	// パートの音を拾う口（見たいパートが無ければ、渡された所ですぐ帰る）
+	for (auto &o : m_scope_owner)
+		o.store(-1, std::memory_order_relaxed);
+	m_swpm.m_voice_tap = &mu2000::scope_tap_fn;
+	m_swpm.m_voice_tap_ctx = &m_scope_ctx[0];
+	m_swps.m_voice_tap = &mu2000::scope_tap_fn;
+	m_swps.m_voice_tap_ctx = &m_scope_ctx[1];
+	m_swpm.m_meg_tap = &mu2000::scope_meg_fn;
+	m_swpm.m_meg_tap_ctx = &m_scope_ctx[0];
+	m_swps.m_meg_tap = &mu2000::scope_meg_fn;
+	m_swps.m_meg_tap_ctx = &m_scope_ctx[1];
 
 	build_bus();
+}
+
+// ---- パートの音（画面のスペクトラム用）
+
+void mu2000::set_scope_part(int part)
+{
+	const int p = (part >= 0 && part < 64) ? part : -1;
+	if (m_scope_part.exchange(p, std::memory_order_relaxed) != p && p >= 0)
+		scope_refresh_owner();
+}
+
+void mu2000::scope_tap_fn(void *ctx, const s32 *samples)
+{
+	const scope_tap &t = *static_cast<const scope_tap *>(ctx);
+	mu2000 &m = *t.self;
+	const int part = m.m_scope_part.load(std::memory_order_relaxed);
+	if (part < 0)
+		return;
+	float sum = 0.0f;
+	const int base = t.chip * 64;
+	for (int i = 0; i < 64; i++)
+		if (samples[i] && m.m_scope_owner[size_t(base + i)].load(std::memory_order_relaxed) == part)
+			sum += float(samples[i]);
+	const u32 w = m.m_scope_w[size_t(t.chip)].load(std::memory_order_relaxed);
+	m.m_scope_ring[size_t(t.chip)][w & (SCOPE_N - 1)] = sum;
+	m.m_scope_w[size_t(t.chip)].store(w + 1, std::memory_order_release);
+}
+
+namespace {
+// エフェクト（mu2000::scope_fx の順）の入口・出口: チップと m20 からの組の番号（左右の 2 本で 1 組）。
+// firmware が組む MEG の割り付け。エミュで送りと出口を比べて実測した（2026-09-22）:
+//   マスタ  m20/21 乾いた音と戻りを混ぜたもの、m24/25 リバーブ、m26/27 コーラス、m28/29 インサーション 1、
+//           m2c/2d バリエーション（システム接続でもインサーション接続でも）
+//   スレーブ m28/29・m2a/2b・m2c/2d がインサーション 2-4
+constexpr int SCOPE_FX_CHIP[8] = { 0, 1, 1, 1, 0, 0, 0, 0 };
+constexpr int SCOPE_FX_PAIR[8] = { 4, 4, 5, 6, 6, 3, 2, 0 };
+// MEG の目盛りは声の和と同じ（THRU のインサーションで入口・出口・声の和の rms が 0.00 dB でそろった）
+}
+
+void mu2000::scope_meg_fn(void *ctx, const s32 *in, const s32 *out)
+{
+	const scope_tap &t = *static_cast<const scope_tap *>(ctx);
+	mu2000 &m = *t.self;
+	if (m.m_scope_part.load(std::memory_order_relaxed) < 0)
+		return;
+	const u32 w = m.m_fx_w[size_t(t.chip)].load(std::memory_order_relaxed) & (SCOPE_N - 1);
+	float *ring = m.m_fx_ring.data() + size_t(t.chip) * 16 * SCOPE_N;
+	for (int p = 0; p < 8; p++) {
+		ring[size_t(p * 2) * SCOPE_N + w]     = (float(in[p * 2]) + float(in[p * 2 + 1])) * 0.5f;
+		ring[size_t(p * 2 + 1) * SCOPE_N + w] = (float(out[p * 2]) + float(out[p * 2 + 1])) * 0.5f;
+	}
+	m.m_fx_w[size_t(t.chip)].fetch_add(1, std::memory_order_release);
+}
+
+void mu2000::scope_read_fx(int fx, bool out, float *dst, size_t n) const
+{
+	n = std::min(n, SCOPE_N);
+	if (fx < 0 || fx >= SCOPE_FX_N) {
+		std::fill(dst, dst + n, 0.0f);
+		return;
+	}
+	const int c = SCOPE_FX_CHIP[fx];
+	const float *ring = m_fx_ring.data() + (size_t(c) * 16 + size_t(SCOPE_FX_PAIR[fx] * 2 + (out ? 1 : 0))) * SCOPE_N;
+	const u32 end = m_fx_w[size_t(c)].load(std::memory_order_acquire);
+	for (size_t i = 0; i < n; i++) {
+		const u32 k = end - u32(n) + u32(i);
+		dst[i] = (end >= n || k < end) ? ring[k & (SCOPE_N - 1)] : 0.0f;
+	}
+}
+
+void mu2000::scope_refresh_owner()
+{
+	// 見ているパートに付いているインサーション（XG 03 0n 0C がパート番号。7F は無し）
+	{
+		const int part = m_scope_part.load(std::memory_order_relaxed);
+		int ins = -1;
+		for (int n = 0; n < 4 && part >= 0; n++) {
+			u32 off = 0;
+			if (xg::ram::locate(u32(0x03 << 14 | n << 7 | 0x0c), off) && off < m_ram.size() &&
+			    (m_ram[off] & 0x7f) == part) {
+				ins = n;
+				break;
+			}
+		}
+		m_scope_ins.store(ins, std::memory_order_relaxed);
+	}
+	// パートの塊の番地（下 16bit）→ パート
+	static const std::array<u16, 64> PART_PTR = [] {
+		std::array<u16, 64> a{};
+		for (int p = 0; p < 64; p++)
+			a[size_t(p)] = u16(0x400000 + xg::ram::part_base(p));
+		return a;
+	}();
+	constexpr u32 VOICE_TABLE = 0x24386;     // 0x424386: 声ごとの記録（148 バイト）の +6 がパートの塊の番地
+	constexpr u32 VOICE_STRIDE = 148;
+	for (int v = 0; v < 128; v++) {
+		int owner = -1;
+		if (m_native_engine && v < 64)
+			owner = m_ndrv.slot_part(v);
+		if (owner < 0) {
+			const u32 off = VOICE_TABLE + u32(v) * VOICE_STRIDE;
+			const u16 ptr = u16(m_ram[off] << 8 | m_ram[off + 1]);
+			for (int p = 0; p < 64; p++)
+				if (PART_PTR[size_t(p)] == ptr) {
+					owner = p;
+					break;
+				}
+		}
+		m_scope_owner[size_t(v)].store(s8(owner), std::memory_order_relaxed);
+	}
+}
+
+void mu2000::scope_read(float *out, size_t n) const
+{
+	n = std::min(n, SCOPE_N);
+	const u32 w0 = m_scope_w[0].load(std::memory_order_acquire);
+	const u32 w1 = m_scope_w[1].load(std::memory_order_acquire);
+	const u32 end = std::min(w0, w1);
+	for (size_t i = 0; i < n; i++) {
+		const u32 k = end - u32(n) + u32(i);
+		out[i] = (end >= n || k < end) ? m_scope_ring[0][k & (SCOPE_N - 1)] + m_scope_ring[1][k & (SCOPE_N - 1)] : 0.0f;
+	}
+}
+
+int mu2000::scope_read_post(float *out, size_t n) const
+{
+	const int ins = m_scope_ins.load(std::memory_order_relaxed);
+	if (ins < 0) {
+		scope_read(out, n);
+		return 0;
+	}
+	scope_read_fx(SCOPE_INS1 + ins, true, out, n);
+	return ins + 1;
 }
 
 mu2000::~mu2000()
@@ -1035,9 +1182,9 @@ void mu2000::usb_step(u64 now)
 		return;
 
 	// 受信。1 バイト渡すごとに IRQ3（ベクタ 67）を上げる。
-	// 間隔は実機で測った USB の実効帯域 19,500 byte/s に合わせる
-	// （doc/dump/usb.md の実測）。DIN の 3,125 byte/s より 6 倍速いが、
-	// 発音の間隔は firmware 側が頭打ちなので実測とは食い違わない。
+	// 間隔は実機で測った USB の受けの速さ 10,000 byte/s に合わせる
+	// （2026-09-23・doc/native-engine.md の 6.218）。DIN の 3,125 byte/s より
+	// 3 倍速い。荷物の大きさを振って実機と並べると、ずれは平均 3ms に収まる。
 	// 4 つの口が 1 本の流れを分け合うので、遅くすると互いに待たせてしまう
 	if (!u.have && now >= u.next && (!u.cmd.empty() || !u.rx.empty())) {
 		// コマンドを先に渡す
@@ -1194,8 +1341,23 @@ void mu2000::note_fw_swp(bool master, u32 reg, u16 value)
 	// MEG の戻りのミキサは毎サンプル書き替わるので数えない
 	if (rr == 0x0e || rr == 0x0f || (rr >= 0x38 && rr <= 0x3f))
 		return;
-	if ((m_ndrv.slot_mask() >> (reg / 64)) & 1)
+	if ((m_ndrv.slot_mask() >> (reg / 64)) & 1) {
 		m_ne_fw_stomp++;
+		static const bool dbg = std::getenv("SMU2000_STOMP_DEBUG") != nullptr;
+		if (dbg)
+			std::fprintf(stderr, "stomp slot=%u reg=%02x value=%04x\n", reg / 64, rr, value);
+		// そこはもう firmware の音が走っている。二重に書かず、譲って避ける
+		m_ndrv.yield_slot(reg / 64);
+		return;
+	}
+	// **書いたスロットは firmware のものとして避け続ける**（6.220）。
+	// 鍵を押した瞬間の印（上の 0x20e）だけだと、firmware の音が 2 秒より
+	// 長く伸びるときに印が切れてしまい、こちらが取ったあとも firmware が
+	// 自分の音の続きを書いてきて、鳴っている音が途中で化ける。
+	// **いま鳴らしているスロットには印を付けない**（上で返している）。
+	// そこはもう取り合いになっていて、避けても今の音は直らないうえ、
+	// 使える枠だけが減って下のほう（firmware が使う側）へ押し出される
+	m_ndrv.mark_fw_slot(reg / 64);
 }
 
 void mu2000::set_native_engine(int mode)
@@ -2700,6 +2862,9 @@ void mu2000::run_sample(s32 &left, s32 &right)
 	// S-MU2000: 軽量モードでは、XG の設定をときどき読み直す
 	if (m_nfx_on && !(++m_nfx_tick & 0x1ff))
 		native_fx_update();
+	// 画面がパートの音を見ているときは、声 → パートを 256 サンプル（6ms）ごとに読み直す
+	if (m_scope_part.load(std::memory_order_relaxed) >= 0 && !(++m_scope_tick & 0xff))
+		scope_refresh_owner();
 
 	// 台数が変わっていたら別スレッドの使い方を見直す（8192 サンプルごと）
 	if (m_want_threaded && !(++m_thread_check & 0x1fff))
