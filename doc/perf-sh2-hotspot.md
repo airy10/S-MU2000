@@ -63,11 +63,13 @@ bite; the first version without the reload corrupted timing and failed
 63 fingerprint rows). Full suite green serially; one dial-LCD row
 flaked once under load (encoder pulse timing, passes in isolation).
 
-MEASURED, calm machine, dense.mid 256: upstream 0.716 ms / SH-2 1046 ns
-vs branch 0.725 ms / SH-2 1049 ns — noise, no gain. Lesson: on Apple
-silicon the eliminated round-trips were already ~free (hot cache lines,
-store forwarding, OoO absorption). Bookkeeping is not the bottleneck;
-only executing fewer guest ops (below) or cheaper guest work moves it.
+MEASURED, calm machine, dense.mid 256: upstream 0.716 ms / SH-2 1046 ns;
+branch 0.725 ms / 1049 ns here, 0.684 ms / 981 ns on a second run of the
+same binary. Run-to-run variance (±6% on identical code: alignment,
+thermal state) dominates any effect — inconclusive, needs interleaved
+A/B/A/B before any claim. Lesson stands: bookkeeping removal alone
+shows no systematic gain; only executing fewer guest ops (below) or
+cheaper guest work moves sustained CPU.
 Kept for the simplified emitted code, not for speed.
 3. **Wait-loop fast-forward.** The poll loops above, if they ever show
    up mid-song: recognize pure MMIO-test loops, jump `icount` to the
