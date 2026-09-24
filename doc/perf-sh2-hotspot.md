@@ -57,11 +57,13 @@ not latency or boot. Branch: `perf/sh2-hotspot`, on top of upstream/main.
 Holding `icount` in W23 is IMPLEMENTED on this branch (commit
 "Hold SH2 icount in W23 across the block"): one load in the prologue,
 sub-only decrements, writeback before every helper call and on every
-exit, reload after the `jit_exec` fallback (whose interpreter loop
-consumes from the state count — found by inspection before it could
-bite; the first version without the reload corrupted timing and failed
-63 fingerprint rows). Full suite green serially; one dial-LCD row
-flaked once under load (encoder pulse timing, passes in isolation).
+exit, reload after every call (a helper can abort the timeslice,
+zeroing the state count, or consume from it as the interpreter
+fallback does — trusting the register past a call overruns the slice
+and corrupts accounting; found via a deterministic piano divergence
+at one byte offset, after several stale-binary false alarms along
+the way). Full serial suite green; one dial-LCD row flaked once
+under load (encoder pulse timing, passes in isolation).
 
 MEASURED, calm machine, dense.mid 256, best of interleaved runs.
 Upstream: 0.700 ms / CPU 1064 ns / SH-2 1026 ns. Branch: 0.675 ms /

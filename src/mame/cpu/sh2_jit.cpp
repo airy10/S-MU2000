@@ -1144,6 +1144,11 @@ sh2_device::jit::code_t sh2_device::jit::compile(sh2_device &cpu, u32 pc)
 		sync_icount();
 		a.mov_imm64_x17(u64(uintptr_t(fn)));
 		a.blr_x17();
+		// A helper can abort the timeslice (zeroing the state count) or
+		// consume from it (the interpreter fallback): re-read instead of
+		// trusting the register past the call. Rare paths only; the hot
+		// straight-line code never pays for this.
+		a.ldr_w_big(W23, X20, S_icount);
 	};
 	// Register roles by internal convention: w0 = loaded value / ALU result (also
 	// the helper return value), w1 = address, w2 = value to store, w3 = scratch
@@ -1763,9 +1768,6 @@ sh2_device::jit::code_t sh2_device::jit::compile(sh2_device &cpu, u32 pc)
 			a.mov_x(X0, X19);
 			a.movz(W1, op, 0);
 			call(reinterpret_cast<void *>(&sh2_device::jit_exec));
-			// The interpreter consumed cycles from the state count while
-			// running; pick them up instead of overwriting them below.
-			a.ldr_w_big(W23, X20, S_icount);
 			r = k == kind::delayed ? delayed : k == kind::ends ? ends : memop;
 			pc_stale = false;
 		} else if (!slot && lazy_pc && !trace) {
@@ -1849,6 +1851,20 @@ sh2_device::jit::code_t sh2_device::jit::compile(sh2_device &cpu, u32 pc)
 	u8 *dst = static_cast<u8 *>(buf) + used;
 	exec_mem::copy_code(dst, a.code.data(), a.code.size() * 4);
 	used += a.code.size() * 4;
+	// Block dump for tools/jit_dump.py: SMU2000_JIT_DUMP=<hex pc> prints
+	// "blk <pc> <len>" plus the words for blocks starting there. Off
+	// unless asked.
+	static const u32 want = [] {
+		u32 v = 0xffffffffu;
+		if (const char *e = std::getenv("SMU2000_JIT_DUMP"))
+			std::sscanf(e, "%x", &v);
+		return v;
+	}();
+	if (want == (pc & 0x3fffff)) {
+		std::fprintf(stderr, "blk %x %zu\n", pc, a.code.size());
+		for (u32 w : a.code)
+			std::fprintf(stderr, "%08x\n", w);
+	}
 	return dst;
 }
 
