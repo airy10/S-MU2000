@@ -1133,7 +1133,7 @@ void route_cell(int part, xg::model &m, bridge &br, float w, float h)
 		{ UI_TEXT(ps_pre_cr, "C-R"), UI_TEXT(ps_pre_cr_about, "Chorus out to reverb only"), 0, 0, 127 },
 	};
 	ImGui::PushFont(nullptr, fs * 0.8f);
-	ImGui::TextDisabled(UI_TEXT(ps_flow_ways, "Flow"));
+	ImGui::TextDisabled("%s", UI_TEXT(ps_flow_ways, "Flow"));
 	for (const preset &pr : PRESETS) {
 		// 入らなければ次の行へ
 		const float bw = ImGui::CalcTextSize(pr.name).x + ImGui::GetStyle().FramePadding.x * 2.0f;

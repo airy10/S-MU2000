@@ -69,7 +69,9 @@ void ensure_backing(HDC dc, int w, int h)
 	SelectObject(g_win->mem_dc, g_win->mem_bmp);
 	g_win->mem_w = w;
 	g_win->mem_h = h;
-}LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+}
+
+LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
 	switch (msg) {
 	case WM_CREATE:
