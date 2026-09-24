@@ -827,12 +827,15 @@ probe: $(BUILD)/vst3probe$(EXE) $(VST3_BIN)
 AU_DIR := $(BUILD)/S-MU2000.component
 AU_BIN := $(AU_DIR)/Contents/MacOS/S-MU2000
 
-# The editor is the VST3 view, so the AU carries that too: editor_mac.mm makes a
-# smu2000::vst3::plug_view and hands it to the host inside an NSView. Its own
-# files are plugin.cpp and editor_mac.mm; everything below them is the same panel
+# The editor is the VST3 view, so the AU carries that too: panel_nsview.mm makes
+# a smu2000::vst3::plug_view and hands it back inside an NSView, and the AUv3
+# asks that same file for the same view. Its own files are plugin.cpp and
+# editor_mac.mm, which is now only the AUv2 way of being asked; everything below
+# them is the same panel
 # iids.cpp is view.cpp's: it answers IPlugView's interface id, and view.cpp
 # refers to it even when the host on the other side is an AU rather than a VST3
 AU_SRCS := src/au/plugin.cpp src/au/editor_mac.mm src/vst3/engine.cpp src/vst3/iids.cpp \
+           src/vst3/panel_nsview.mm \
            $(PANEL_VIEW_SRCS) $(PANEL_SRCS) $(VST3_SDK_SRCS)
 AU_OBJS := $(AU_SRCS:%.cpp=$(BUILD)/vst3obj/%.o)
 AU_OBJS := $(AU_OBJS:%.mm=$(BUILD)/vst3obj/%.o)
@@ -895,9 +898,11 @@ AUV3_BIN   := $(AUV3_APPEX)/Contents/MacOS/S-MU2000AU
 AUV3_HOST  := $(AUV3_APP)/Contents/MacOS/S-MU2000
 
 # The sound engine is the same one VST3 uses (no VST3 types in it).
-# The UI is the same panel VST3 and AUv2 show (view_controller.mm hosts plug_view)
+# The UI is the same panel VST3 and AUv2 show, and literally the same editor:
+# panel_nsview.mm builds the NSView, view_controller.mm only puts it in the
+# NSViewController the AUv3 hands its host
 AUV3_SRCS := src/auv3/audio_unit.mm src/auv3/factory.mm src/auv3/view_controller.mm \
-             src/vst3/engine.cpp src/vst3/iids.cpp \
+             src/vst3/engine.cpp src/vst3/iids.cpp src/vst3/panel_nsview.mm \
              $(PANEL_VIEW_SRCS) $(PANEL_SRCS) $(VST3_SDK_SRCS)
 AUV3_OBJS := $(AUV3_SRCS:%.cpp=$(BUILD)/auv3obj/%.o)
 AUV3_OBJS := $(AUV3_OBJS:%.mm=$(BUILD)/auv3obj/%.o)
