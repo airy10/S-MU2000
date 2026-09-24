@@ -1,0 +1,44 @@
+# Build every target on every platform, on each commit.
+#
+# ROMs are local-only and never committed, so the audio tests skip
+# themselves here (run_tests.py says so out loud); what CI does check on
+# every commit is: full compilation with -Wformat-security clean, the
+# localization tables (tools/check_texts.py, no ROM needed), and whatever
+# ROM-free test steps exist. Anything needing ROMs stays local.
+
+name: build
+
+on: [push, pull_request]
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: brew install sdl3 pkg-config
+      - run: make -j$(sysctl -n hw.ncpu) all
+      - run: python3 tools/check_texts.py
+      - run: make test
+
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: >
+          sudo apt-get update -qq &&
+          sudo apt-get install -y -qq build-essential pkg-config
+          libasound2-dev libsdl3-dev libfontconfig-dev libcairo2-dev
+      - run: make -j$(nproc) all
+      - run: python3 tools/check_texts.py
+      - run: make test
+
+  windows:
+    # Cross-compiled with mingw-w64 (same as `make CROSS=windows` on macOS).
+    # Binaries cannot run here, so this job is compile-only.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: >
+          sudo apt-get update -qq &&
+          sudo apt-get install -y -qq build-essential mingw-w64
+      - run: make CROSS=windows -j$(nproc) all
