@@ -54,7 +54,12 @@ void begin_hint_bar();
 void end_hint_bar();
 bool hint_bar();
 // 説明を出す。帯があれば帯へ、無ければ直前の部品のツールチップへ（printf の書式）
-void hint(const char *fmt, ...);
+#if defined(__GNUC__) || defined(__clang__)
+#define UI_PRINTF_FMT(a, b) __attribute__((format(printf, a, b)))
+#else
+#define UI_PRINTF_FMT(a, b)
+#endif
+void hint(const char *fmt, ...) UI_PRINTF_FMT(1, 2);
 const std::string &hint_text();
 // 絵の点の字（実際の時間や音程）を集める。begin_values と end_values の間に描いた字を、
 // 出せなかった分も含めて 1 行ずつ返す（音色の窓が、区画にカーソルが載ったとき帯に並べる）
