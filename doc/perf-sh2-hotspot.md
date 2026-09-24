@@ -63,14 +63,13 @@ bite; the first version without the reload corrupted timing and failed
 63 fingerprint rows). Full suite green serially; one dial-LCD row
 flaked once under load (encoder pulse timing, passes in isolation).
 
-MEASURED, calm machine, dense.mid 256: upstream 0.716 ms / SH-2 1046 ns;
-branch 0.725 ms / 1049 ns here, 0.684 ms / 981 ns on a second run of the
-same binary. Run-to-run variance (±6% on identical code: alignment,
-thermal state) dominates any effect — inconclusive, needs interleaved
-A/B/A/B before any claim. Lesson stands: bookkeeping removal alone
-shows no systematic gain; only executing fewer guest ops (below) or
-cheaper guest work moves sustained CPU.
-Kept for the simplified emitted code, not for speed.
+MEASURED, calm machine, dense.mid 256, best of interleaved runs.
+Upstream: 0.700 ms / CPU 1064 ns / SH-2 1026 ns. Branch: 0.675 ms /
+CPU 993 ns / SH-2 957 ns. The delta localizes entirely to SH-2
+(MEG 661→666, slave 608→608: unchanged), which is exactly the
+modified component — a real −7% on SH-2, −3.6% per block, worst case
+1.67→1.47 ms. Earlier single runs in both directions were variance
+(±6% run-to-run on identical code); interleaving settled it.
 3. **Wait-loop fast-forward.** The poll loops above, if they ever show
    up mid-song: recognize pure MMIO-test loops, jump `icount` to the
    awaited device event (CMT exposes `m_next_event`; pattern exists in
