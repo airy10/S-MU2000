@@ -67,10 +67,13 @@ int main(int argc, char **argv)
 
 	// Bring up a silent HAL unit (macOS; a stub elsewhere that stays down)
 	// so the benchmark threads join a real, ticking audio workgroup.
-	// SMU2000_BLOCKTIME_WORKGROUP=0 opts out (same-binary A/B). Failure is
-	// silent: falls back to today's behavior.
+	// SMU2000_BLOCKTIME_WORKGROUP=0 opts out (same-binary A/B), as does a
+	// slave join turned off with SMU2000_AUDIO_WORKGROUP=0: with nobody to
+	// join it the unit would only burn CPU. Failure is silent: falls back
+	// to today's behavior.
 	silent_hal hal;
-	bool hal_up = smu2000::realtime_env_on("SMU2000_BLOCKTIME_WORKGROUP", true);
+	bool hal_up = smu2000::realtime_env_on("SMU2000_BLOCKTIME_WORKGROUP", true) &&
+	              smu2000::realtime_env_on("SMU2000_AUDIO_WORKGROUP", true);
 	if (hal_up)
 		hal_up = hal.start();
 	if (hal_up)
