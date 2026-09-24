@@ -1130,8 +1130,18 @@ sh2_device::jit::code_t sh2_device::jit::compile(sh2_device &cpu, u32 pc)
 
 	std::vector<size_t> to_finish, to_ret;
 
+	// icount lives in W23 for the block's duration (callee-saved, so helper
+	// calls preserve it). Everything below decrements the register; it is
+	// written back before any helper call (in call()) and on every exit
+	// (at ret:), so helpers, the interpreter fallback and the dispatcher
+	// always see the true count.
+	const auto sync_icount = [&]() {
+		a.str_w_big(W23, X20, S_icount);
+	};
+
 	// Helper calls: Apple C ABI, arguments in x0-x2
 	const auto call = [&](void *fn) {
+		sync_icount();
 		a.mov_imm64_x17(u64(uintptr_t(fn)));
 		a.blr_x17();
 	};
@@ -1161,9 +1171,7 @@ sh2_device::jit::code_t sh2_device::jit::compile(sh2_device &cpu, u32 pc)
 		mergeT(W17);
 	};
 	const auto dec_icount = [&](u32 k) {
-		a.ldr_w_big(W16, X20, S_icount);
-		a.sub_imm(W16, W16, k);
-		a.str_w_big(W16, X20, S_icount);
+		a.sub_imm(W23, W23, k);
 	};
 	// Read. Address in w1, value into w0 (sz bytes in big-endian order, no sign
 	// extension). ROM and work RAM are read inline, anything else goes through
@@ -1704,6 +1712,7 @@ sh2_device::jit::code_t sh2_device::jit::compile(sh2_device &cpu, u32 pc)
 	};
 
 	bool slot = false;
+	a.ldr_w_big(W23, X20, S_icount);   // the block's cycle budget, held in a register
 	for (int i = 0; ; i++) {
 		const u32 at = pc + 2 * u32(i);
 		const u16 op = cpu.m_decrypted_program->read_word(at);
@@ -1754,6 +1763,9 @@ sh2_device::jit::code_t sh2_device::jit::compile(sh2_device &cpu, u32 pc)
 			a.mov_x(X0, X19);
 			a.movz(W1, op, 0);
 			call(reinterpret_cast<void *>(&sh2_device::jit_exec));
+			// The interpreter consumed cycles from the state count while
+			// running; pick them up instead of overwriting them below.
+			a.ldr_w_big(W23, X20, S_icount);
 			r = k == kind::delayed ? delayed : k == kind::ends ? ends : memop;
 			pc_stale = false;
 		} else if (!slot && lazy_pc && !trace) {
@@ -1781,9 +1793,7 @@ sh2_device::jit::code_t sh2_device::jit::compile(sh2_device &cpu, u32 pc)
 			a.cmp_reg(W16, W17);
 			to_finish.push_back(a.b_cond(NE));
 		}
-		a.ldr_w_big(W16, X20, S_icount);
-		a.subs_imm(W16, W16, 1);
-		a.str_w_big(W16, X20, S_icount);
+		a.subs_imm(W23, W23, 1);
 		if (pc_stale)
 			stale_rets.emplace_back(a.b_cond(LE), stale_pc);   // write the pc, then exit
 		else
@@ -1818,6 +1828,7 @@ sh2_device::jit::code_t sh2_device::jit::compile(sh2_device &cpu, u32 pc)
 	const size_t ret = a.code.size();
 	for (size_t p : to_ret)
 		a.patch_to(p, ret);
+	sync_icount();
 	a.mov_imm64_x17(u64(uintptr_t(next_block)));
 	a.br_x17();
 
