@@ -87,21 +87,13 @@ run_in() { # $1 = binary path, $2 = label, rest = env
 	echo "| config | avg ms/block | worst ms | % of real time (avg) | % of real time (worst) | blocks overrun |"
 	echo "|---|---|---|---|---|---|"
 # ---- the matrix ---------------------------------------------------------------
-rows="$(run_in ./build/blocktime          "arm64 native - both JITs")"$'\n'
-echo  $rows
-rows="$(run_in ./build/blocktime          "arm64 native - MEG JIT only" SMU2000_SH2_JIT=0)"$'\n'
-echo  $rows
-rows="$(run_in ./build/blocktime          "arm64 native - SH2 JIT only" SMU2000_MEG_JIT=0)"$'\n'
-echo  $rows
-rows="$(run_in ./build/blocktime          "arm64 native - interpreter" SMU2000_SH2_JIT=0 SMU2000_MEG_JIT=0)"$'\n'
-echo  $rows
+run_in ./build/blocktime          "arm64 native - both JITs"
+run_in ./build/blocktime          "arm64 native - MEG JIT only" SMU2000_SH2_JIT=0
+run_in ./build/blocktime          "arm64 native - SH2 JIT only" SMU2000_MEG_JIT=0
+run_in ./build/blocktime          "arm64 native - interpreter" SMU2000_SH2_JIT=0 SMU2000_MEG_JIT=0
 if [ "$ROSETTA" = 1 ]; then
-rows="$(run_in ./build-x86_64/blocktime   "x86_64 Rosetta - both JITs")"$'\n'
-echo $rows
-rows="$(run_in ./build-x86_64/blocktime   "x86_64 Rosetta - MEG JIT only" SMU2000_SH2_JIT=0)"$'\n'
-echo $rows
-rows="$(run_in ./build-x86_64/blocktime   "x86_64 Rosetta - SH2 JIT only" SMU2000_MEG_JIT=0)"$'\n'
-echo $rows
-rows="$(run_in ./build-x86_64/blocktime   "x86_64 Rosetta - interpreter" SMU2000_SH2_JIT=0 SMU2000_MEG_JIT=0)"
-echo $rows
+	run_in ./build-x86_64/blocktime   "x86_64 Rosetta - both JITs"
+	run_in ./build-x86_64/blocktime   "x86_64 Rosetta - MEG JIT only" SMU2000_SH2_JIT=0
+	run_in ./build-x86_64/blocktime   "x86_64 Rosetta - SH2 JIT only" SMU2000_MEG_JIT=0
+	run_in ./build-x86_64/blocktime   "x86_64 Rosetta - interpreter" SMU2000_SH2_JIT=0 SMU2000_MEG_JIT=0
 fi
