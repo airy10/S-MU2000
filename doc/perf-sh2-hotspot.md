@@ -91,6 +91,13 @@ Rebased onto upstream past the MEG-stats and pitch-bend commits:
 4. **MEG side untouched.** DSP numbers (≈700ns/sample/instance) were
    not investigated; NEON vectorization of the mixer is the big lever
    there, i.e. a rewrite, not a tune.
+5. **Not retried (opt/arm64-2's own verdicts, folded here).** SR in w27:
+   seven A/B runs dead even (~1051 vs ~1056, M1 hides L1 round-trips;
+   retry as compare/branch fusion, not caching). Bake-again via
+   smull64: master −2.7%, slave +1.5%, effects confirmed the loss;
+   retry only as threshold-gated conditional spec. Bounds hoisting
+   incl. the four-register RAM-only retry: flat both times (bounds fit
+   one movz each; prologue eats the saving).
 
 ## Repro
 
