@@ -860,7 +860,17 @@ private:
 	s32 m_slave_l = 0, m_slave_r = 0;
 	void slave_loop(u64 seen);
 
+	// Parallel real-time audio workgroup (macOS) for the slave thread below,
+	// as an os_workgroup_t. Plain void* so this header stays platform-free;
+	// only macOS front ends set it. The slave joins whatever is set (null
+	// keeps today's behavior); see slave_loop for the join itself.
+	std::atomic<void *> m_rt_wg_want{nullptr};
+
 public:
+	// Parallel real-time audio workgroup (macOS) for the slave thread: an
+	// os_workgroup_t, kept as void* so this header stays platform-free.
+	void set_realtime_workgroup(void *wg) { m_rt_wg_want.store(wg, std::memory_order_release); }
+
 	// 速さの手掛かり。1 サンプルあたり実行ループを何周したか
 	u64 m_loops = 0, m_timer_fires = 0, m_event_fires = 0;
 	// 区間ごとの所要時間（QueryPerformanceCounter の刻み）。
