@@ -73,7 +73,9 @@ modified component — a real −7% on SH-2, −3.6% per block, worst case
 1.67→1.47 ms. Earlier single runs in both directions were variance
 (±6% run-to-run on identical code); interleaving settled it.
 Rebased onto upstream past the MEG-stats and pitch-bend commits:
-0.674 ms / SH-2 964 ns, same −6% — the gain survives.
+0.674 ms / SH-2 964 ns, same −6% — the gain survives. W23-only
+(without plan C): SH-2 953 ns (−7.1%), block average barely moves
+(MEG ~670 ns dominates the total) — the delta lives entirely in SH-2.
 2. **Bailout reduction: attempted, reverted.** Ported opt/arm64-2's
    slow-checks two ways. Full version (no per-memop checks) audibly
    delays interrupts — `C_test` can be raised from another thread at
