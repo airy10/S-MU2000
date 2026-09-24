@@ -62,9 +62,13 @@ consumes from the state count — found by inspection before it could
 bite; the first version without the reload corrupted timing and failed
 63 fingerprint rows). Full suite green serially; one dial-LCD row
 flaked once under load (encoder pulse timing, passes in isolation).
-1. **Measure it.** `blocktime` before/after on a cool machine.
-2. **Bailout reduction.** 2.6M dispatcher round-trips (delay-slot +
-   irq-flag paths). Batch irq checks; longer blocks.
+
+MEASURED, calm machine, dense.mid 256: upstream 0.716 ms / SH-2 1046 ns
+vs branch 0.725 ms / SH-2 1049 ns — noise, no gain. Lesson: on Apple
+silicon the eliminated round-trips were already ~free (hot cache lines,
+store forwarding, OoO absorption). Bookkeeping is not the bottleneck;
+only executing fewer guest ops (below) or cheaper guest work moves it.
+Kept for the simplified emitted code, not for speed.
 3. **Wait-loop fast-forward.** The poll loops above, if they ever show
    up mid-song: recognize pure MMIO-test loops, jump `icount` to the
    awaited device event (CMT exposes `m_next_event`; pattern exists in
