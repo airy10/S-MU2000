@@ -72,6 +72,8 @@ CPU 993 ns / SH-2 957 ns. The delta localizes entirely to SH-2
 modified component — a real −7% on SH-2, −3.6% per block, worst case
 1.67→1.47 ms. Earlier single runs in both directions were variance
 (±6% run-to-run on identical code); interleaving settled it.
+Rebased onto upstream past the MEG-stats and pitch-bend commits:
+0.674 ms / SH-2 964 ns, same −6% — the gain survives.
 3. **Wait-loop fast-forward.** The poll loops above, if they ever show
    up mid-song: recognize pure MMIO-test loops, jump `icount` to the
    awaited device event (CMT exposes `m_next_event`; pattern exists in
