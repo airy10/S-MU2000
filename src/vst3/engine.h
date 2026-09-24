@@ -193,10 +193,10 @@ public:
 	void card_flush();
 	std::string card_path() const;
 
-	// 機械の並列スレッドが入る audio workgroup (macOS)。渡すのは
-	// os_workgroup_t（ここでは void* のまま）。描き出しの糸から来るので
-	// 待たずに置くだけで、fill() が錠を持っているときに機械へ渡す。
-	// 起動前に来た分も残る
+	// The machine's parallel thread's audio workgroup (macOS): an
+	// os_workgroup_t, kept as void*. Arrives on the render thread, so it
+	// is only stashed here; fill() forwards it while holding the lock.
+	// Pre-boot wants survive too.
 	void set_realtime_workgroup(void *wg);
 
 private:
@@ -265,9 +265,9 @@ private:
 	ui::bridge m_bridge;
 	// 口の入切（-1 は「頑みが無い」）と、いまの口
 	std::atomic<int> m_want_native{-1};
-	// 入れたい audio workgroup と、機械へ渡し済みのもの。observer は描き出しの
-	// 糸から来るので待てない: ここへ置くだけにして、fill() が持っている錠の
-	// 内側で渡す（m_want_native と同じ形）。m_wg_sent は m_machine が守る
+	// The wanted audio workgroup and the one already forwarded to the
+	// machine. The observer must not wait: stash here and forward inside
+	// fill() (same shape as m_want_native). m_machine guards m_wg_sent.
 	std::atomic<void *> m_wg_want{nullptr};
 	void *m_wg_sent = nullptr;
 	std::atomic<int> m_native_engine{0};

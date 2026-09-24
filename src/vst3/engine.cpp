@@ -647,7 +647,7 @@ void engine::fill(float *left, float *right, int n, const float *in_l, const flo
 		m_mu->set_native_engine(want);
 		m_native_engine.store(want);
 	}
-	// 入れたい workgroup が変わっていたら機械へ渡す（m_machine を持っている）
+	// Forward a changed workgroup want to the machine (holding m_machine)
 	if (void *want = m_wg_want.load(std::memory_order_acquire); want != m_wg_sent) {
 		m_mu->set_realtime_workgroup(want);
 		m_wg_sent = want;
@@ -864,9 +864,9 @@ std::string engine::card_path() const
 
 void engine::set_realtime_workgroup(void *wg)
 {
-	// observer は描き出しの糸から来るので、ここでは錠に触らず置くだけ。
-	// fill() が持っている錠の内側で機械へ渡す。m_mu がまだ無い間の分も
-	// 残るので、起動前後の競合は起きない
+	// The observer arrives on the render thread, so never wait here: just
+	// stash it. fill() forwards it while already holding the lock. Wants
+	// that arrive before boot survive too, so no boot-time race.
 	m_wg_want.store(wg, std::memory_order_release);
 }
 
