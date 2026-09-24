@@ -198,9 +198,9 @@ last merge introduced:
   answered nothing for `kAudioUnitProperty_TailTime`, so a host stopped at the
   last note and clipped the tail. It answers 4.0 seconds now.
 
-The AU **view** cannot diverge from the VST3 one: `editor_mac.mm` builds a
-`vst3::plug_view`, and `src/vst3/view.cpp` and `view_mac.mm` are the same files
-in both bundles (see `AU_SRCS` in the Makefile). What the AU has of its own is
+The AU **view** cannot diverge from the VST3 one: `src/vst3/panel_nsview.mm`
+builds a `vst3::plug_view`, and it, `src/vst3/view.cpp` and `view_mac.mm` are the
+same files in both bundles (see `AU_SRCS` in the Makefile). What the AU has of its own is
 `au/plugin.cpp` and `au/probe.cpp`, and those were compared against
 `vst3/plugin.cpp` and `vst3/probe.cpp` instead.
 
@@ -696,11 +696,22 @@ Objective-C++ and holds the class. That is the same split, for the same reason,
 as `src/ui/window_mac.mm`: Cocoa's `BOOL` and Quickdraw's `Polygon` cannot share
 a translation unit with `compat/gdi.h`.
 
-The view built there is an `SMUAUEditorView` holding a
-`smu2000::vst3::plug_view` — the panel the VST3 build already shows, not a second
-one. What is shared is the panel, not the host interface around it: the AU needs
-an `NSView` and the VST3 wants an `IPlugView`, so each format keeps its own
-wrapper and both draw the same thing.
+The view itself is not built here. `editor_mac.mm` asks
+`smu2000::vst3::make_panel_view` (`src/vst3/panel_nsview.mm`) for it, and what
+comes back is an `SMU2000PanelView` holding a `smu2000::vst3::plug_view` — the
+panel the VST3 build already shows, not a second one. The AUv3 asks the same
+function for the same view (`src/auv3/view_controller.mm`), so the three formats
+have one editor between them rather than three that look alike. What is not
+shared is the host interface around it: the AU needs an `NSView` and the VST3
+wants an `IPlugView`, so each format keeps its own way of being asked and all
+draw the same thing.
+
+`make_panel_view`'s `owner` argument is the one thing that differs. The view
+holds a strong reference to it for as long as it lives, because a host may let go
+of the plug-in before the view it was handed (`auval` does) and the panel's
+teardown reaches back into the engine. The AUv3 passes its `AUAudioUnit`; the
+AUv2's engine is owned by an instance the host tears down after the view, so it
+passes `nil`.
 
 One detail is worth knowing before touching this. The `AudioUnit` a host passes
 to the view factory is **not** the pointer the plug-in was given as `self` — the
@@ -885,7 +896,7 @@ Run again from a clean build on arm64, with the ROMs in `roms/`:
 | `--shot` regression | face `#c4bdaa` and the art-only `#404040` still where they were |
 | `make probe` | factory found, 1 class, 4194 parameters |
 | `make au-probe` | opens, 2 parameters, latency 0 |
-| `make check-au` | `OK: エディタ SMUAUEditorView が画面を作った（下位ビュー 1 枚）`, **0 problems** |
+| `make check-au` | `OK: エディタ SMU2000PanelView が画面を作った（下位ビュー 1 枚）`, **0 problems** |
 | `auval -v aumu SMU2 Trbh` | `VERIFYING CUSTOM UI / Cocoa Views Available: 1` … **AU VALIDATION SUCCEEDED** |
 
 ## Plug-ins
