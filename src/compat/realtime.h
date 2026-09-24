@@ -17,6 +17,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstdio>
 #include <cstdlib>
 
 #if defined(__APPLE__)
@@ -89,10 +90,19 @@ public:
 			os_workgroup_leave(m_wg, &m_token);
 			m_wg = nullptr;
 		}
-		if (w && os_workgroup_join(w, &m_token) == 0)
+		if (w && os_workgroup_join(w, &m_token) == 0) {
 			m_wg = w;
-		else
+			if (!m_logged) {
+				m_logged = true;
+				std::fprintf(stderr, "[wg] slave joined\n");
+			}
+		} else {
 			m_refused = w;
+			if (!m_logged) {
+				m_logged = true;
+				std::fprintf(stderr, "[wg] slave join refused, staying out\n");
+			}
+		}
 #else
 		(void)want;
 #endif
@@ -107,6 +117,7 @@ private:
 	os_workgroup_t m_wg = nullptr;
 	os_workgroup_join_token_s m_token{};
 	os_workgroup_t m_refused = nullptr;
+	bool m_logged = false;
 #else
 	// Nothing to join anywhere else; active() is false so the caller
 	// skips even the handle load and reset() never runs.
