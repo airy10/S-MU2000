@@ -30,11 +30,38 @@ jobs:
       - uses: actions/checkout@v4
       - run: >
           sudo apt-get update -qq &&
-          sudo apt-get install -y -qq build-essential pkg-config
-          libasound2-dev libsdl3-dev libfontconfig-dev libcairo2-dev
-      - run: make -j$(nproc) all
+          sudo apt-get install -y -qq build-essential pkg-config cmake ninja-build git
+          libasound2-dev libfontconfig-dev libcairo2-dev
+      # No libsdl3-dev on Ubuntu 24.04: build the documented release
+      # (doc/porting-linux-gui.md) from source, video/audio backends
+      # off except what headless --selftest needs (dummy + software).
+      - name: Cache SDL3
+        uses: actions/cache@v4
+        with:
+          path: ~/sdl3
+          key: sdl3-3.4.16-ubuntu24
+      - name: Build SDL3
+        run: |
+          test -f ~/sdl3/lib/libSDL3.so -o -f ~/sdl3/lib/x86_64-linux-gnu/libSDL3.so && exit 0
+          git clone --depth 1 --branch release-3.4.16 https://github.com/libsdl-org/SDL /tmp/SDL
+          cmake -S /tmp/SDL -B /tmp/SDL/build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=$HOME/sdl3 \
+            -DSDL_SHARED=ON -DSDL_STATIC=OFF -DSDL_TESTS=OFF \
+            -DSDL_X11=OFF -DSDL_WAYLAND=OFF -DSDL_KMSDRM=OFF -DSDL_OPENGL=OFF -DSDL_OPENGLES=OFF \
+            -DSDL_PULSEAUDIO=OFF -DSDL_PIPEWIRE=OFF -DSDL_JACK=OFF -DSDL_SNDIO=OFF \
+            -DSDL_JOYSTICK=OFF -DSDL_HAPTIC=OFF -DSDL_HIDAPI=OFF -DSDL_SENSOR=OFF \
+            -DSDL_CAMERA=OFF
+          cmake --build /tmp/SDL/build
+          cmake --install /tmp/SDL/build
+      - run: |
+          export PKG_CONFIG_PATH="$HOME/sdl3/lib/pkgconfig:$HOME/sdl3/lib/x86_64-linux-gnu/pkgconfig"
+          export LD_LIBRARY_PATH="$HOME/sdl3/lib:$HOME/sdl3/lib/x86_64-linux-gnu"
+          make -j$(nproc) all
       - run: python3 tools/check_texts.py
-      - run: make test
+      - run: |
+          export PKG_CONFIG_PATH="$HOME/sdl3/lib/pkgconfig:$HOME/sdl3/lib/x86_64-linux-gnu/pkgconfig"
+          export LD_LIBRARY_PATH="$HOME/sdl3/lib:$HOME/sdl3/lib/x86_64-linux-gnu"
+          SDL_VIDEODRIVER=dummy make test
 
   windows:
     # The owner's own setup (MSYS2 mingw64): native build, texts, and the
@@ -49,7 +76,7 @@ jobs:
         with:
           msystem: mingw64
           update: true
-          install: mingw-w64-x86_64-toolchain mingw-w64-x86_64-make mingw-w64-x86_64-python
+          install: mingw-w64-x86_64-toolchain mingw-w64-x86_64-make mingw-w64-x86_64-python make
       - run: make -j$(nproc) all
       - run: python3 tools/check_texts.py
       - run: make test
