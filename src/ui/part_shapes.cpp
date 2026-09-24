@@ -1338,15 +1338,22 @@ void part_shapes::draw(xg::model &m, const xg_snapshot &ram, bridge &br)
 			const float h = (room_h - st.ScrollbarSize - st.ItemSpacing.y) * 0.5f;
 			const float tall = h * 2.0f + st.ItemSpacing.y;
 			ImGui::BeginChild("flow", ImVec2(0, room_h), ImGuiChildFlags_None, ImGuiWindowFlags_HorizontalScrollbar);
-			ImGui::BeginGroup();
-			panel("vib", UI_TEXT(ps_title_vib, "Vibrato (VIB)"), w, h, part, m, br, { "part.vib_rate", "part.vib_depth", "part.vib_delay" }, 0,
-			      [](int p, xg::model &mm, bridge &b, float pw, float ph) { overview::vib_cell(p, mm, b, pw, ph, false); },
-			      UI_TEXT(ps_about_vib, "Voice wobble (vibrato). The picture is the actual wobble including Depth (the thin gray line is the voice's own wobble at the default Depth 64). The faders change speed (Rate), depth (Depth) and delay (Delay)"));
-			panel("mod", UI_TEXT(ps_title_mod, "Modulation (MW)"), w, h, part, m, br,
-			      { "part.mw_lfo_pmod", "part.mw_pitch", "part.mw_filter", "part.mw_amp", "part.mw_lfo_fmod", "part.mw_lfo_amod" }, 5,
-			      [](int p, xg::model &mm, bridge &b, float pw, float ph) { overview::mod_cell(p, mm, b, pw, ph, false); },
-			      UI_TEXT(ps_about_mod, "Extra vibrato from raising the modulation wheel. Sideways is wheel position, up/down is depth. The left wheel is CC1, the right is MW LFO PM. Louder of the two wins over the voice's own wobble (the background band)"));
-			ImGui::EndGroup();
+			// **ビブラートとモジュレーションは 1 つの区画にまとめ、ピッチベンドも足した**。
+			// 上から「音色そのものの揺れ」「ホイールで足す揺れ」「ベンド」と、
+			// 同じ『揺らすもの』が縦に並ぶ
+			panel("wobble", UI_TEXT(ps_title_wobble, "Wobble (VIB/MW/BEND)"), w, tall, part, m, br,
+			      { "part.vib_rate", "part.vib_depth", "part.vib_delay",
+			        "part.mw_lfo_pmod", "part.mw_pitch", "part.mw_filter", "part.mw_amp",
+			        "part.mw_lfo_fmod", "part.mw_lfo_amod" }, 0,
+			      [](int p, xg::model &mm, bridge &b, float pw, float ph) {
+				      const float fs2 = ImGui::GetFontSize();
+				      const float bend_h = std::max(fs2 * 1.5f, ph * 0.12f);
+				      const float each = std::max(fs2 * 4.0f, (ph - bend_h - ImGui::GetStyle().ItemSpacing.y * 2.0f) * 0.5f);
+				      overview::vib_cell(p, mm, b, pw, each, false);
+				      overview::mod_cell(p, mm, b, pw, each, false);
+				      overview::bend_cell(p, mm, b, pw, bend_h);
+			      },
+			      UI_TEXT(ps_about_wobble, "The wobble in the sound and the wheels that move it. Top is vibrato (the voice's own wobble), below is the extra wobble from the modulation wheel, and at the bottom is pitch bend. Drag the bend sideways to bend; letting go springs back to the middle (Ctrl+release keeps it)"));
 			ImGui::SameLine();
 			panel("filter", UI_TEXT(ps_title_filterenv, "Filter and EQ (FILTER/EQ)"), w, tall, part, m, br,
 			      { "part.cutoff", "part.resonance", "part.hpf_cutoff",
