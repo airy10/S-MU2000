@@ -74,6 +74,14 @@ modified component — a real −7% on SH-2, −3.6% per block, worst case
 (±6% run-to-run on identical code); interleaving settled it.
 Rebased onto upstream past the MEG-stats and pitch-bend commits:
 0.674 ms / SH-2 964 ns, same −6% — the gain survives.
+2. **Bailout reduction: attempted, reverted.** Ported opt/arm64-2's
+   slow-checks two ways. Full version (no per-memop checks) audibly
+   delays interrupts — `C_test` can be raised from another thread at
+   any time (USB MIDI dropped bytes). Narrowed plan C (keep `C_test`,
+   move only the pc-compare) was bit-exact but measured inside the
+   noise band (0.696 vs 0.675 best — unresolvable ±6%), so reverted:
+   extra machinery for no provable gain. Lesson: this machine resolves
+   ~5%+, not ~1%.
 3. **Wait-loop fast-forward.** The poll loops above, if they ever show
    up mid-song: recognize pure MMIO-test loops, jump `icount` to the
    awaited device event (CMT exposes `m_next_event`; pattern exists in
