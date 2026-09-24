@@ -12,11 +12,15 @@ on: [push, pull_request]
 
 jobs:
   macos:
+    # macOS needs nothing beyond Xcode: SDL is Linux-only, CoreAudio and
+    # friends ship with the OS. auv3/clap are not in `all`, so they build
+    # explicitly (AUV3_ROMS=none: no ROMs in the bundle; running anything
+    # still needs them, like everywhere else).
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-      - run: brew install sdl3 pkg-config
       - run: make -j$(sysctl -n hw.ncpu) all
+      - run: make auv3 AUV3_ROMS=none clap
       - run: python3 tools/check_texts.py
       - run: make test
 
@@ -42,3 +46,21 @@ jobs:
           sudo apt-get update -qq &&
           sudo apt-get install -y -qq build-essential mingw-w64
       - run: make CROSS=windows -j$(nproc) all
+
+  windows-native:
+    # The owner's own setup (MSYS2 mingw64): native build, texts, and the
+    # ROM-free test steps, exactly as verified locally before merging.
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: mingw64
+          update: true
+          install: mingw-w64-x86_64-toolchain mingw-w64-x86_64-make mingw-w64-x86_64-python
+      - run: make -j$(nproc) all
+      - run: python3 tools/check_texts.py
+      - run: make test
