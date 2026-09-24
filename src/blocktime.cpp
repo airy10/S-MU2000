@@ -12,7 +12,6 @@
 // **同じ区間を何回も測って中央値を出す。** 1 回だけだと、ほかのアプリや
 // 周波数の上げ下げで数 % 揺れて、小さな改善が測れない。起動の直後の状態を
 // 保存しておき、毎回そこへ戻してから流すので、どの回も中身は同じ仕事になる。
-#include "blocktime_hal.h"
 #include "compat/platform.h"
 #include "compat/realtime.h"
 #include "mu2000.h"
@@ -65,21 +64,6 @@ int main(int argc, char **argv)
 	// mu2000::slave_loop raises itself the same way.
 	smu2000::realtime_raise_self();
 
-	// Bring up a silent HAL unit (macOS; a stub elsewhere that stays down)
-	// so the benchmark threads join a real, ticking audio workgroup.
-	// SMU2000_BLOCKTIME_WORKGROUP=0 opts out (same-binary A/B), as does a
-	// slave join turned off with SMU2000_AUDIO_WORKGROUP=0: with nobody to
-	// join it the unit would only burn CPU. Failure is silent: falls back
-	// to today's behavior.
-	silent_hal hal;
-	bool hal_up = smu2000::realtime_env_on("SMU2000_BLOCKTIME_WORKGROUP", true) &&
-	              smu2000::realtime_env_on("SMU2000_AUDIO_WORKGROUP", true);
-	if (hal_up)
-		hal_up = hal.start();
-	if (hal_up)
-		std::fprintf(stderr, "[wg] silent HAL up, workgroup %s\n",
-		             hal.wg ? "ok" : "null");
-
 	std::vector<smf::event> events;
 	std::string err;
 	if (!smf::load(argv[2], events, err)) { std::fprintf(stderr, "%s\n", err.c_str()); return 1; }
@@ -89,8 +73,6 @@ int main(int argc, char **argv)
 	if (!mu.load_wave(dir + "/dump")) { std::fprintf(stderr, "%s\n", mu.error().c_str()); return 1; }
 	mu.load_sintab(dir + "/standin/sin-table.bin");
 	mu.set_threaded(!std::getenv("SMU2000_SINGLE"));
-	if (hal_up)
-		mu.set_realtime_workgroup(hal.wg);
 	// 軽量モード（doc/native-dsp.md）でも測れるように
 	if (const char *e = std::getenv("SMU2000_NATIVE_FX"))
 		mu.set_native_fx(std::atoi(e));
@@ -110,8 +92,6 @@ int main(int argc, char **argv)
 		m->set_wave_rom(mu.wave_rom());
 		m->set_sintab_rom(mu.sintab_rom());
 		m->set_threaded(!std::getenv("SMU2000_SINGLE"));
-		if (hal_up)
-			m->set_realtime_workgroup(hal.wg);
 		if (const char *e = std::getenv("SMU2000_NATIVE_FX"))
 			m->set_native_fx(std::atoi(e));
 		m->reset();
