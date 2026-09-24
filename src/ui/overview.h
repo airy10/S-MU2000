@@ -81,9 +81,9 @@ public:
 	static void vib_small(int part, xg::model &m, bridge &br, float w, float h, bool compact);
 	// モジュレーションのビブラート（ホイールの位置ごとの揺れの深さ。音色の窓）
 	static void mod_cell(int part, xg::model &m, bridge &br, float w, float h, bool compact);
-	// **ピッチベンドのつまみ**（音色の窓の「ゆれ」の区画）。16384 段のまま扱い、
-	// つまんで動かすと受信チャンネルへ 0xE0 を流す。離すと真ん中へ戻る（実物と同じ）
-	static void bend_cell(int part, xg::model &m, bridge &br, float w, float h);
+	// **ゆれ（VIB・MW・BEND）**。ビブラートとモジュレーションを 1 枚の絵にした区画
+	// （音色の窓）。上が絵、下がフェーダーで、ピッチベンドの縦フェーダーもここに居る
+	static void wobble_cell(int part, xg::model &m, bridge &br, float w, float h);
 	// そのパートのベンドの今の値（送ったばかりならその値。真ん中からの離れ）と、動かして送る
 	static int  bend_now(int part, int slot);
 	static void bend_send(int part, int slot, int value, bridge &br);

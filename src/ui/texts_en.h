@@ -177,7 +177,7 @@ inline const ui_texts &en_texts()
 		.ps_tab_all = "All",
 		.ps_title_vib = "Vibrato (VIB)",
 		.ps_title_wobble = "Wobble (VIB/MW/BEND)",
-		.ps_about_wobble = "The wobble in the sound and the wheels that move it. Top is vibrato (the voice's own wobble), below is the extra wobble from the modulation wheel, and at the bottom is pitch bend. Drag the bend sideways to bend; letting go springs back to the middle (Ctrl+release keeps it)",
+		.ps_about_wobble = "One picture for the wobble. Sideways is the modulation wheel (0 at the left, 127 at the right), up/down is cents. The background wave is the vibrato itself, getting deeper towards the right. The orange dotted line is the voice's own depth (it moves with Vib Depth); where the curve passes it, the wheel starts to win. Below are Rate, Depth, Delay and MW LFO PM, plus the live MW (CC1) and pitch bend. Letting the bend go springs it back to the middle (Ctrl+release keeps it)",
 		.ps_bend_hint_fmt = "PITCH BEND  %+d (%+.2f semitones)\nDrag sideways to bend (Shift for finer, wheel for steps). Letting go springs back to the middle, Ctrl+release keeps it. Sends pitch bend to the receive channel",
 		.ps_title_mod = "Modulation (MW)",
 		.ps_title_filterenv = "Filter and EQ (FILTER/EQ)",
