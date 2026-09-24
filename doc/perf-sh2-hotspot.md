@@ -54,11 +54,15 @@ not latency or boot. Branch: `perf/sh2-hotspot`, on top of upstream/main.
 
 ## Still open (ranked)
 
-1. **Per-op `icount` traffic.** `dec_icount` emits ldr+sub+str on every
-   guest op — 3 state round-trips per instruction, the largest
-   structural overhead left. Batching (register-held across the block,
-   writeback on exits) needs a free callee-saved reg or helper
-   cooperation; design only, not attempted.
+Holding `icount` in W23 is IMPLEMENTED on this branch (commit
+"Hold SH2 icount in W23 across the block"): one load in the prologue,
+sub-only decrements, writeback before every helper call and on every
+exit, reload after the `jit_exec` fallback (whose interpreter loop
+consumes from the state count — found by inspection before it could
+bite; the first version without the reload corrupted timing and failed
+63 fingerprint rows). Full suite green serially; one dial-LCD row
+flaked once under load (encoder pulse timing, passes in isolation).
+1. **Measure it.** `blocktime` before/after on a cool machine.
 2. **Bailout reduction.** 2.6M dispatcher round-trips (delay-slot +
    irq-flag paths). Batch irq checks; longer blocks.
 3. **Wait-loop fast-forward.** The poll loops above, if they ever show
