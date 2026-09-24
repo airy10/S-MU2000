@@ -98,6 +98,12 @@ Rebased onto upstream past the MEG-stats and pitch-bend commits:
    retry only as threshold-gated conditional spec. Bounds hoisting
    incl. the four-register RAM-only retry: flat both times (bounds fit
    one movz each; prologue eats the saving).
+6. **PGO: tried, no gain, one hazard.** Generate on dense.mid, merge,
+   rebuild with `-fprofile-use`: 0.667–0.773 vs 0.72–0.77 baseline
+   (noise), renders bit-exact vs interpreter and vs clean JIT. Not
+   worth the doubled build. Hazard: ThinLTO+PGO miscompiles
+   (`sh2_device::execute_run` segfaults at startup through a bad
+   register) — plain PGO is fine. Never combine the two here.
 
 ## Repro
 
