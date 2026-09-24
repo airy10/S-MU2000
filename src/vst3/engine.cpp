@@ -647,6 +647,11 @@ void engine::fill(float *left, float *right, int n, const float *in_l, const flo
 		m_mu->set_native_engine(want);
 		m_native_engine.store(want);
 	}
+	// 入れたい workgroup が変わっていたら機械へ渡す（m_machine を持っている）
+	if (void *want = m_wg_want.load(std::memory_order_acquire); want != m_wg_sent) {
+		m_mu->set_realtime_workgroup(want);
+		m_wg_sent = want;
+	}
 	const auto cpu_t0 = std::chrono::steady_clock::now();
 
 	m_drv.apply_buttons(*m_mu, m_bridge);
@@ -859,9 +864,10 @@ std::string engine::card_path() const
 
 void engine::set_realtime_workgroup(void *wg)
 {
-	std::lock_guard<std::mutex> lock(m_machine);
-	if (m_mu)
-		m_mu->set_realtime_workgroup(wg);
+	// observer は描き出しの糸から来るので、ここでは錠に触らず置くだけ。
+	// fill() が持っている錠の内側で機械へ渡す。m_mu がまだ無い間の分も
+	// 残るので、起動前後の競合は起きない
+	m_wg_want.store(wg, std::memory_order_release);
 }
 
 void engine::card_flush()
