@@ -37,17 +37,6 @@ jobs:
       - run: make test
 
   windows:
-    # Cross-compiled with mingw-w64 (same as `make CROSS=windows` on macOS).
-    # Binaries cannot run here, so this job is compile-only.
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - run: >
-          sudo apt-get update -qq &&
-          sudo apt-get install -y -qq build-essential mingw-w64
-      - run: make CROSS=windows -j$(nproc) all
-
-  windows-native:
     # The owner's own setup (MSYS2 mingw64): native build, texts, and the
     # ROM-free test steps, exactly as verified locally before merging.
     runs-on: windows-latest
