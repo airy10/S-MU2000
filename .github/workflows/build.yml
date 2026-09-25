@@ -81,3 +81,21 @@ jobs:
       - run: make -j$(nproc) all
       - run: python3 tools/check_texts.py
       - run: make test
+
+  windows-32bit:
+    # 32 bit (MSYS2 mingw32). It has its own arm of the MEG JIT and its own
+    # linker flags, and it is the path that broke unnoticed in #48 because
+    # only x86-64 gets compiled on the maintainer's machine. Build only:
+    # the audio tests need ROMs, which never enter the repo.
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: mingw32
+          update: true
+          install: mingw-w64-i686-toolchain mingw-w64-i686-make mingw-w64-i686-python make
+      - run: make -j$(nproc) all
