@@ -1,6 +1,6 @@
 # S-MU2000
 
-## [Click here for an English version.](README.en.md)
+## [English version can be found here.](README.en.md)
 
 Yamaha MU2000 のソフトウェア音源。DAW に挿して使えることを目指す。
 
