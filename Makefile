@@ -190,7 +190,8 @@ ifeq ($(PLATFORM),windows)
 all: $(BUILD)/verify$(EXE) $(BUILD)/boot$(EXE) $(BUILD)/render$(EXE) \
      $(BUILD)/live$(EXE) $(BUILD)/midisend$(EXE) $(BUILD)/panel$(EXE) $(BUILD)/gui$(EXE) \
      $(BUILD)/statetest$(EXE) $(BUILD)/rec$(EXE) $(BUILD)/blocktime$(EXE) \
-     vst3 $(BUILD)/vst3probe$(EXE) clap $(BUILD)/clapprobe$(EXE) \n     vsti $(BUILD)/vstiprobe$(EXE)
+     vst3 $(BUILD)/vst3probe$(EXE) clap $(BUILD)/clapprobe$(EXE) \
+     vsti $(BUILD)/vstiprobe$(EXE)
 else ifeq ($(PLATFORM),linux)
 # Linux (issue #25). The windowed program (gui, SDL3 + Cairo) and the
 # headless plug-ins build here too (doc/porting-linux-gui.md)
