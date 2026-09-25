@@ -185,6 +185,12 @@ void program_pane(int part, xg::model &m, const xg_snapshot *ram, bridge &br);
 // 入ってきた MIDI から**取る（式だけの口では firmware にベンドを渡さないので、
 // RAM の PART_BEND は真ん中のまま動かない）。ram が無ければ何も出さない
 void bend_now_line(int part, xg::model &m, const xg_snapshot *ram);
+
+// そのパートの**見かけのバンク MSB**。XG はドラムを MSB 127（効果音は 126）で選ぶが、
+// **GS はドラムでも MSB が 0 のまま**で、キットかどうかはパートの MODE（08 pp 07）で
+// 決まる。MSB だけ見ると GS のドラムチャンネルが旋律に見えるので（issue #52）、
+// ドラムの MODE なら 127 として扱う。XG の 126/127 はそのまま返す
+int shown_bank_msb(int part, xg::model &m, int msb);
 // 試聴で鳴らしている音を止める（窓を閉じたとき）
 void audition_stop(bridge &br);
 // 試聴で鳴らす鍵。パートの音色の窓の鍵盤を右クリックして決める（目印が付く）。

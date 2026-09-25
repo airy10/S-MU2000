@@ -1217,6 +1217,7 @@ void part_shapes::draw(xg::model &m, const xg_snapshot &ram, bridge &br)
 	int msb = 0, lsb = 0, prog = 0;
 	std::string voice = "--";
 	if (m.get(P("part.bank_msb"), part, msb) && m.get(P("part.bank_lsb"), part, lsb) && m.get(P("part.program"), part, prog)) {
+		msb = shown_bank_msb(part, m, msb);      // GS のドラム（issue #52）
 		voice = voice_text(msb, lsb, prog);
 		if (const xg::voice_rom *vr = voices()) {
 			const std::string real = vr->name(ram.parts[part], msb, prog);
