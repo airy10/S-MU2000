@@ -173,12 +173,23 @@ Not done:
   **That is expected to change on its own once a card is recognised**, because the
   firmware doing the programming is the real one - which is an argument for
   getting recognition right before building anything else.
-- **A card's transmit timing**, which is why the card above answers nothing.
-  SCI4 samples a bit every few microseconds and an audio sample is 22.7 of them,
-  so a card that emits a byte from `run()` puts all ten edges inside one instant
-  and the chip sees framing errors. A card has to be called at the bit rate, and
-  the honest place to do that is where SCI4 samples rather than in a second copy
-  of its divisor.
+- **A card's transmit timing.** A card cannot emit a byte from `run()`: the chip
+  samples a bit every 2 us and an audio sample is 22.7 of them, so all ten edges
+  would land inside one instant. The card is now **stepped** instead, by SCI4's
+  own bit clock - `set_line_source()` on the chip, a free-running poll at the
+  period `wait()` already computes from the divisor the firmware programmed. The
+  card hands back one bit per call and cannot drift from the chip. A card must
+  also **idle its line high**, and so must an empty slot: SCI4's multiplexed
+  receive line is the AND of the selected lines, so an empty slot holding its line
+  low masks out the card in another slot. `host::midi_tx()` returns 1 for that
+  reason, and it is the one thing here that was wrong before it was measured.
+- **The bit phase, which is the last thing between this and a recognised card.**
+  `tests/plg/answer.c` sends the two replies a real PLG150-AP sends, and the
+  card is stepped correctly - but the host receives 20 bytes and 14 framing
+  errors instead of `F0 43 10 4E 01 10 00 00 07 00 F7`. So the rate is right and
+  the phase is not: the chip's mid-bit sample instants are falling on the card's
+  transitions. `boot --trace-sci4-in` is the instrument for it, and it is the same
+  question MAME's sci4 log answered from the other end.
 - **A real card** (`src/plg/plg150dx_device`): the SH7043, the two flashes, a
   YMP706 model. The connector and SCI4 are already there to hang it on.
 - **Discovery** (a `plg.txt` beside the bundle, the way `roms.txt` works) and a

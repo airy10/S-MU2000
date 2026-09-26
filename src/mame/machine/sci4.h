@@ -27,6 +27,26 @@ public:
 	// irq line numbers are 0..3
 	template<int irq> auto write_irq() { return m_irq[irq].bind(); }
 
+	// S-MU2000: an optional source for a line, polled **at the chip's own bit
+	// clock** (doc/plg-cards.md 4). A PLG card drives its TX line from its own
+	// firmware, and the host has no other way to sample it in step: a bit at
+	// 500 kHz is 2 us and an audio sample is 22.7 us, so polling once per sample
+	// puts a whole byte's ten edges inside one instant and the chip reads the
+	// same bit ten times. Pulling the line where the bit clock already lives is
+	// the only place the timing is right.
+	//
+	// The source replaces do_rx_w for that channel: the edge is detected where the
+	// bit is sampled and rx_changed() is called exactly as do_rx_w would, so the
+	// start-bit handling and the resync stay the chip's own rather than a copy.
+	using line_fn = int (*)(void *ctx, int sci);
+	void set_line_source(line_fn fn, void *ctx);
+
+	// S-MU2000: report what arrived on a line, for `boot --trace-sci4-in`.
+	// MAME's sci4 logs the same two events with logerror, which goes
+	// nowhere in a build with no debugger. This is the same question from the
+	// other end: did the card's bytes arrive intact?
+	void set_rx_trace(std::FILE *f) { m_rx_trace = f; }
+
 	// S-MU2000: address_map の代わりに素の振り分け。中身は sci4.cpp の末尾
 	u8   read8 (offs_t offset);
 	void write8(offs_t offset, u8 data);
@@ -41,6 +61,8 @@ protected:
 
 	emu_timer *m_tx_timer[4];
 	emu_timer *m_rx_timer[4];
+	emu_timer *m_line_timer = nullptr;   // S-MU2000: the free-running line poll
+	std::FILE *m_rx_trace = nullptr;      // S-MU2000
 
 	std::array<u8, 7> m_rx;
 	std::array<u8, 4> m_enable, m_status, m_datamode, m_div, m_cur_rx;
@@ -48,7 +70,16 @@ protected:
 	std::array<u8, 4> m_rdr, m_rsr, m_rdr_full, m_rx_step, m_rx_active;
 	u8 m_targets = 0;
 
+	// S-MU2000: the line source, see set_line_source(). Spelled out rather than
+	// using the typedef below, because the member is declared before it.
+	int (*m_line_fn)(void *ctx, int sci) = nullptr;
+	void *m_line_ctx = nullptr;
+
 	void do_rx_w(int sci, int state);
+	void pull_line(int sci);   // S-MU2000: see set_line_source()
+	TIMER_CALLBACK_MEMBER(line_tick);   // the free-running poll, at half a bit
+
+	// S-MU2000: an optional source for a line, polled **at the chip's own bit
 
 	void default_w(offs_t offset, u8 data);
 	u8 default_r(offs_t offset);

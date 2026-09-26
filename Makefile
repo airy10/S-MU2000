@@ -359,6 +359,18 @@ $(PLG_ECHO): $(BUILD)/tests/plg/echo.o
 	@mkdir -p $(dir $@)
 	$(CC) $(PLG_SHARED) -o $@ $<
 
+# The card that answers, and gets recognised: the two replies a real PLG150-AP
+# sends, captured from MAME with a real card in the slot (doc/plg-cards.md 6).
+PLG_ANSWER    := $(BUILD)/plg_answer$(PLG_SUFFIX)
+
+$(BUILD)/tests/plg/answer.o: tests/plg/answer.c src/plg/plg1500.h
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(PLG_CFLAGS) -c -o $@ $<
+
+$(PLG_ANSWER): $(BUILD)/tests/plg/answer.o
+	@mkdir -p $(dir $@)
+	$(CC) $(PLG_SHARED) -o $@ $<
+
 #   build/plgtest [card path]
 # With no path it loads the stub next to the executable. CI runs `make all` on
 # all three platforms, so dlopen gets exercised on all three.
@@ -366,7 +378,7 @@ $(BUILD)/plgtest$(EXE): $(PLG_OBJS) $(BUILD)/src/plgtest.o
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
 
-plgtest: $(BUILD)/plgtest$(EXE) $(PLG_STUB) $(PLG_ECHO)
+plgtest: $(BUILD)/plgtest$(EXE) $(PLG_STUB) $(PLG_ECHO) $(PLG_ANSWER)
 	$(BUILD)/plgtest$(EXE)
 
 # PC editor (doc/pc-editor.md). Dear ImGui (MIT), vendored in third_party/imgui.
@@ -1216,7 +1228,7 @@ check: $(BUILD)/verify$(EXE) $(BUILD)/plgtest$(EXE) $(PLG_STUB)
 # The test names are the same on both platforms: run_tests.py is the one that
 # knows whether the binaries carry an .exe suffix (tools/run_tests.py)
 TEST_EXES := $(BUILD)/verify$(EXE) $(BUILD)/statetest$(EXE) $(BUILD)/render$(EXE) $(BUILD)/xgtest$(EXE) \
-             $(BUILD)/samptest$(EXE) $(BUILD)/plgtest$(EXE) $(PLG_STUB) $(PLG_ECHO) \
+             $(BUILD)/samptest$(EXE) $(BUILD)/plgtest$(EXE) $(PLG_STUB) $(PLG_ECHO) $(PLG_ANSWER) \
              $(BUILD)/boot$(EXE)
 
 test: $(TEST_EXES)

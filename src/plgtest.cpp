@@ -419,7 +419,11 @@ int main(int argc, char **argv)
 		int32_t out[2] = { -1, -1 };
 		host.run(0, nullptr, out);
 		ok(out[0] == 0 && out[1] == 0, "  抜いた後 run は無音");
-		ok(host.midi_tx(0) == 0, "  抜いた後 MIDI の TX は 0");
+		// **1, not 0.** An undriven line idles high, and SCI4's multiplexed
+		// receive line is the AND of the selected ones, so an empty slot holding
+		// its line low would mask out a card in another slot. Asserted here
+		// because it is the opposite of what the first version of this test said.
+		ok(host.midi_tx(0) == 1, "  抜いた後 MIDI の TX は 1（空の線は high）");
 		// Ejecting twice, and ejecting an empty slot, must be harmless: the
 		// screen's "remove" button and a project's missing card both land here.
 		host.eject(0);

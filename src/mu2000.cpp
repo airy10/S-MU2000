@@ -1087,6 +1087,35 @@ void mu2000::reset()
 	if (m_plg)
 		m_plg->set_tx_sink(m_plg_tx_sink);
 
+	// SCI4 には、**チップ自身のビットクロックで**カードの TX 線を引いてもらう。
+	// ここが正しい場所である理由が 2 つある（doc/plg-cards.md 4）:
+	//
+	//  * ビットは 2 マイクロ秒、1 サンプルは 22.7 マイクロ秒。run() から
+	//    1 バイト出すと 10 本の辺が同じ瞬間に入ってしまう。
+	//  * スタートビットの待ちと再同期はチップ自身の処理なので、写さない。
+	//
+	// 500 kHz ��� MAME がカード側の SCI に設定している値
+	// （plg150-ap.cpp の sci_set_external_clock_period）であり、実測でも
+	// フレーミングエラーは 0 だった。
+	m_plg_line = [](void *ctx, int sci) -> int {
+		mu2000 *m = static_cast<mu2000 *>(ctx);
+		// SCI4 のポート 30,31,32 が内部チャンネル 3,4,5 で、スロット 0,1,2 に
+		// なる（LIFO と同じ 4 ポート + 3 独立という並びの���ち、0,1,2 が独立で
+		// 3,4,5,6 が多重化されている）。
+		//
+		// **スロットでない線には 1 を返す。** 0 は「線が低い」で、SCI4 は
+		// 立ち下がりをスタートビットと見る。0 を返すと-Mu ALWAYS スタートビット
+		// 待ち状態の���ま sponges、能源の根��騰aceous った���* には����为之に
+		// �� perceptible である。**画像**。
+		if (sci < 3 || sci > 5)
+			return 1;
+		return m->m_plg ? m->m_plg->midi_tx(sci - 3) : 1;
+	};
+	// Deliberately **not** installed here. A machine with no card must behave
+	// exactly as it did before: the poll touches the chip on every line, and
+	// pulling lines that nothing drives is not a no-op. It goes in when a card
+	// host arrives (set_plg_host) and comes out when one leaves.
+
 	// 2 個のチップで乱数の数列を分ける。同じ種だと雑音まで揃ってしまう
 	m_swpm.set_rand_seed(0x9d14abd7);
 	m_swps.set_rand_seed(0x6c1f35e9);
@@ -2971,8 +3000,15 @@ void mu2000::set_plg_host(plg::host *h)
 	if (m_plg && m_plg_tx_sink)
 		m_plg->set_tx_sink({});
 	m_plg = h;
-	if (m_plg && m_plg_tx_sink)
-		m_plg->set_tx_sink(m_plg_tx_sink);
+	if (m_plg) {
+		if (m_plg_tx_sink)
+			m_plg->set_tx_sink(m_plg_tx_sink);
+		// Only now, with a card host actually present, is the line stepped at the
+		// bit clock. See the note where the lambda is defined.
+		m_sci4->set_line_source(m_plg_line, this);
+	} else {
+		m_sci4->set_line_source(nullptr, nullptr);
+	}
 }
 
 int mu2000::plg_slot_for(u32 model_id) const
@@ -2986,6 +3022,11 @@ int mu2000::plg_slot_for(u32 model_id) const
 	// is enough until then.
 	(void)model_id;
 	return 0;
+}
+
+unsigned mu2000::plg_lamps() const
+{
+	return unsigned((m_ledsw1 >> 6) & 0xf);
 }
 
 s32 mu2000::plg_out(int slot, int ch) const

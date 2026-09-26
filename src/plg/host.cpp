@@ -525,11 +525,17 @@ void host::midi_rx(int slot, int level)
 
 int host::midi_tx(int slot) const
 {
+	// **1, not 0, when there is no card.** A line with nothing driving it idles
+	// high, and that is not a detail: SCI4's multiplexed receive line is the AND
+	// of the selected lines (do_rx_w in sci4.cpp), so an empty slot holding its
+	// line low masks out the card that *is* in another slot. Returning 0 here is
+	// what made PLG-1's card invisible. A card must idle its own line high too,
+	// which the ABI says and answer.c does.
 	if (slot < 0 || slot >= SLOTS || !m_slot[slot])
-		return 0;
+		return 1;
 	const impl *s = m_slot[slot].get();
 	if (!s->card || !s->cut_ok || s->fault || !s->cut.midi_tx)
-		return 0;
+		return 1;
 	return s->cut.midi_tx(s->card) ? 1 : 0;
 }
 

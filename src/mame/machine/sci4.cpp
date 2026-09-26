@@ -76,6 +76,8 @@ void sci4_device::device_start()
 	for(u32 i=0; i != 4; i++) {
 		m_tx_timer[i] = timer_alloc(FUNC(sci4_device::tx_tick), this);
 		m_rx_timer[i] = timer_alloc(FUNC(sci4_device::rx_tick), this);
+	// S-MU2000: only armed when a line source is set (set_line_source).
+	m_line_timer = timer_alloc(FUNC(sci4_device::line_tick), this);
 	}
 }
 
@@ -99,6 +101,15 @@ void sci4_device::device_reset()
 	std::fill(m_rx_active.begin(), m_rx_active.end(), 0);
 
 	m_targets = 0;
+
+	// S-MU2000: the host installs its line source in its constructor, which is
+	// before this device's timers exist, so the poll is armed here rather than
+	// there. Doing it on every reset also picks up the divisor the firmware
+	// programmed, which is not known any earlier.
+	if(m_line_fn && m_line_timer) {
+		const u32 div = m_div[3] ? m_div[3] : 0x100;
+		m_line_timer->adjust(attotime::from_ticks(div * 8, clock()));
+	}
 }
 
 void sci4_device::do_rx_w(int sci, int state)
@@ -118,6 +129,52 @@ void sci4_device::do_rx_w(int sci, int state)
 		m_cur_rx[3] = rx;
 		rx_changed(3);
 	}
+}
+
+// S-MU2000: pull a line from a source instead of from a wire, and hand it to
+// do_rx_w() as if it had arrived on one. That is the whole point: the edge
+// detection, the multiplexed-line composite and the start-bit handling are the
+// chip's own, so none of them is copied here. Only where the level comes from
+// changes. See set_line_source() in the header.
+void sci4_device::pull_line(int sci)
+{
+	if(!m_line_fn)
+		return;
+	do_rx_w(sci, m_line_fn(m_line_ctx, sci) ? 1 : 0);
+}
+
+// S-MU2000: the free-running poll. Nothing calls do_rx_w() for a line that comes
+// from a card, because nothing pushes it - the card is *stepped*, not listened
+// to, and it emits one bit per step. So the poll rate is the bit rate exactly:
+// twice per bit would make the card talk at twice the rate the chip samples, and
+// the chip would read every other bit. wait() computes the period the same way,
+// from the divisor the firmware programmed, so this tracks whatever rate is set
+// rather than assuming one - which is how a card set to 500 kHz ends up at 2 us
+// a bit without that number appearing anywhere here.
+TIMER_CALLBACK_MEMBER(sci4_device::line_tick)
+{
+	if(m_line_fn)
+		for(int i = 0; i < 7; i++)
+			pull_line(i);
+	const u32 div = m_div[3] ? m_div[3] : 0x100;
+	m_line_timer->adjust(attotime::from_ticks(div * 8, clock()));
+}
+
+// S-MU2000: arm the poll when a source appears, and stop it when one goes away.
+// Nothing else in the chip knows this timer exists, so a machine with no card
+// behaves exactly as before - which is the case for every tool here today.
+void sci4_device::set_line_source(line_fn fn, void *ctx)
+{
+	m_line_fn  = fn;
+	m_line_ctx = ctx;
+	if(!m_line_timer)
+		return;
+	if(!fn) {
+		m_line_timer->adjust(attotime::never);
+		return;
+	}
+	const u32 div = m_div[3] ? m_div[3] : 0x100;
+	m_line_timer->adjust(attotime::from_ticks(div * 8, clock()));
 }
 
 void sci4_device::default_w(offs_t offset, u8 data)
@@ -334,6 +391,10 @@ TIMER_CALLBACK_MEMBER(sci4_device::tx_tick)
 
 TIMER_CALLBACK_MEMBER(sci4_device::rx_tick)
 {
+	// S-MU2000: the bit clock is here, so a line that comes from a card is
+	// sampled here too - before the value is read, and before the start-bit
+	// check that the step-0 comment below talks about.
+	pull_line(param);
 	u32 step = m_rx_step[param]++;
 	if(step == 0)
 		wait(1, 1, param); // Value already checked in rx_changed
@@ -343,10 +404,19 @@ TIMER_CALLBACK_MEMBER(sci4_device::rx_tick)
 		wait(1, 1, param);
 
 	} else {
-		if(!m_rx[param])
+		if(!m_rx[param]) {
 			logerror("chan %s framing error/break\n", chan_id(param, m_targets >> 4));
+			// S-MU2000: the same event, on a trace the caller opened.
+			if(m_rx_trace)
+				std::fprintf(m_rx_trace, "SCI4I %s framing error\n",
+				             chan_id(param, m_targets >> 4).c_str());
+		}
 		else {
 			logerror("chan %s recieved %02x\n", chan_id(param, m_targets >> 4), m_rsr[param]);
+			// S-MU2000: and the byte itself, which is the whole point of the trace.
+			if(m_rx_trace)
+				std::fprintf(m_rx_trace, "SCI4I %s rx %02x\n",
+				             chan_id(param, m_targets >> 4).c_str(), m_rsr[param]);
 			m_rx_active[param] = 0;
 			m_rdr[param] = m_rsr[param];
 			if(m_rdr_full[param] && (m_enable[param] & 4))

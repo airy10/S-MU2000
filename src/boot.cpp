@@ -36,6 +36,7 @@ int main(int argc, char **argv)
 	const char *porttrace = nullptr;
 	const char *updtrace = nullptr;
 	const char *sci4trace = nullptr;
+	const char *sci4intrace = nullptr;
 	const char *lcddump = nullptr;
 	const char *plgcard = nullptr;
 	u64 pcskip = 0;
@@ -48,6 +49,8 @@ int main(int argc, char **argv)
 			sci4trace = argv[++i];
 		else if (!std::strcmp(argv[i], "--lcd-dump") && i + 1 < argc)
 			lcddump = argv[++i];
+		else if (!std::strcmp(argv[i], "--trace-sci4-in") && i + 1 < argc)
+			sci4intrace = argv[++i];
 		else if (!std::strcmp(argv[i], "--plg") && i + 1 < argc)
 			plgcard = argv[++i];
 		else if (!std::strcmp(argv[i], "--trace-pc") && i + 1 < argc)
@@ -104,6 +107,17 @@ int main(int argc, char **argv)
 		mu.set_sci4_trace(sf);
 	}
 
+	// カードinas 返してきたもの。firmware が送ったもの��は別の記録になる。
+	std::FILE *sif = nullptr;
+	if (sci4intrace) {
+		sif = std::fopen(sci4intrace, "w");
+		if (!sif) {
+			std::fprintf(stderr, "書けない: %s\n", sci4intrace);
+			return 1;
+		}
+		mu.set_sci4_in_trace(sif);
+	}
+
 	mu.reset();
 
 	std::FILE *pf = nullptr, *hf = nullptr;
@@ -158,6 +172,14 @@ int main(int argc, char **argv)
 		for (int slot = 0; slot < plg::host::SLOTS; slot++)
 			std::printf("PLG%d の戻り L=%d R=%d\n", slot + 1,
 			            mu.plg_out(slot, 0), mu.plg_out(slot, 1));
+		// The panel's MU / PLG-1 / PLG-2 / PLG-3 lamps. **This is the
+		// recognition observable**: the firmware lights PLG-1 itself once it has
+		// accepted a card, so a card that takes bit 1 from 0 to 1 here has been
+		// recognised without anybody in this project deciding so.
+		const unsigned lamps = mu.plg_lamps();
+		std::printf("PLG ランプ: MU=%s PLG-1=%s PLG-2=%s PLG-3=%s\n",
+		            (lamps & 1) ? "on" : "off", (lamps & 2) ? "on" : "off",
+		            (lamps & 4) ? "on" : "off", (lamps & 8) ? "on" : "off");
 	}
 
 	if (hf)
@@ -168,6 +190,8 @@ int main(int argc, char **argv)
 		std::fclose(tf);
 	if (sf)
 		std::fclose(sf);
+	if (sif)
+		std::fclose(sif);
 
 	// 液晶を最後に出す。PLG が見つかったかどうか（`NO BOARD` かどうか）は、
 	// この文字列だけで分かる（mu2000_flash.bin の 0x1dda8d にある）。

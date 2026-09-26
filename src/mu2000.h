@@ -355,6 +355,9 @@ public:
 	// That string is the observable for "the card was recognised", read back out
 	// of lcd(). NULL turns the trace off.
 	void set_sci4_trace(std::FILE *f) { m_sci4_trace = f; }
+	// S-MU2000: what arrived on a PLG line, as opposed to what the firmware
+	// sent. `boot --trace-sci4-in` opens it.
+	void set_sci4_in_trace(std::FILE *f) { m_sci4->set_rx_trace(f); }
 
 	// ---- PLG cards (doc/plg-cards.md) ---------------------------------------
 	//
@@ -382,6 +385,12 @@ public:
 	// slave's inputs. This is how a test checks the audio path without listening:
 	// a card that puts a known value on out[0] has to show up here.
 	s32 plg_out(int slot, int ch) const;
+	// The panel's MU / PLG-1 / PLG-2 / PLG-3 lamps, as four bits: bit 0 is MU and
+	// bit 1+n is PLG-(n+1) (the latch itself is bits 6..9, src/ui/panel.cpp:797).
+	// **This is the recognition observable**: the firmware lights PLG-1 itself once
+	// it has accepted a card, so a card that goes from dark to lit here has been
+	// recognised without anybody in this project deciding so.
+	unsigned plg_lamps() const;
 	// 0xf00000 への読み書きの回数。**記録 Commodityg なくても数える**:
 	// 「アクセスが無い」ことと「記録ファイルを書けていない」を
 	// 取り違えないため（これは実際に取り違えた）。
@@ -907,6 +916,9 @@ private:
 	plg::host  *m_plg = nullptr;
 	// カードの TX 線を SCI4 の RX へ入れる脐。/cards で 1 本だけ。
 	std::function<void(int, int)> m_plg_tx_sink;
+	// The function SCI4's bit clock pulls a card's TX line with, and the context
+	// to hand it (this). Installed once, in the constructor.
+	int (*m_plg_line)(void *ctx, int sci) = nullptr;
 
 	// 44.1kHz 1 サンプルあたりの CPU サイクル。端数は繰り越す
 	u64 m_cycle_debt = 0;
