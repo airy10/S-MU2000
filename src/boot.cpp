@@ -44,6 +44,7 @@ int main(int argc, char **argv)
 	const char *lcddump = nullptr;
 	const char *plgcard = nullptr;
 	int plgbuiltin = -1;   // built-in カードの番号。--plg-list で一覧
+	u64 plglate = 0;     // cycles to run before inserting a card, 0 = before boot
 	bool have_card = false;
 	u64 pcskip = 0;
 	u64 pccount = 2000000;
@@ -59,6 +60,8 @@ int main(int argc, char **argv)
 			sci4intrace = argv[++i];
 		else if (!std::strcmp(argv[i], "--plg-builtin") && i + 1 < argc)
 			plgbuiltin = std::atoi(argv[++i]);
+		else if (!std::strcmp(argv[i], "--plg-late") && i + 1 < argc)
+			plglate = std::strtoull(argv[++i], nullptr, 0);
 		else if (!std::strcmp(argv[i], "--plg-list"))
 			plgbuiltin = -2;
 		else if (!std::strcmp(argv[i], "--plg") && i + 1 < argc)
@@ -160,6 +163,18 @@ int main(int argc, char **argv)
 	// 入れる。カードの読み込みは機械の錠を取り中の別の糸ですることが約束で、
 	// boot には糸が 1 本しかないので、立ち上がり前にやってしまうのが素直。
 	plg::host cards;
+	// **--plg-late inserts after some cycles instead of before the machine
+	// starts.** The PLG scan is part of the boot sequence, so a card that was not
+	// there at power-on is not the case the hardware ever presents - but the host
+	// keeps polling afterwards, so it may well notice one that appears later. That
+	// decides whether the gui and the plug-ins can insert a card while running, the
+	// way SmartMedia does, or have to be told before the machine starts.
+	if (plglate) {
+		std::printf("先に %llu サイクル回してからカードを入れる\n",
+		            (unsigned long long)plglate);
+		mu.run_cycles(plglate);
+		plglate = 0;
+	}
 	if (plgcard) {
 		std::string cerr;
 		mu.set_plg_host(&cards);
