@@ -834,11 +834,6 @@ void mu2000::build_bus()
 		mem_bus::device d;
 		d.start = 0xc80000; d.end = 0xc80000;
 		d.r8 = [this](offs_t) {
-			// Temporary: who calls the panel scan, and does the caller change with
-			// a card present. First 400 only - after that it is just the loop.
-			if (m_panel_reads < 400 && (m_panel_reads < 10 || m_panel_reads % 40 == 0))
-				std::fprintf(stderr, "panel read #%llu pc=%08x\n",
-				             (unsigned long long)m_panel_reads, m_cpu->pc());
 			m_panel_reads++;
 			return ledsw_r();
 		};
@@ -3055,14 +3050,6 @@ int mu2000::plg_line_source(void *ctx, int sci)
 void mu2000::plg_tx_bit(void *ctx, int slot, int level, int bit)
 {
 	mu2000 *m = static_cast<mu2000 *>(ctx);
-	// Temporary: prove the card's line actually toggles in the gui.
-	static int last_lv[3] = { -1, -1, -1 };
-	static int ntrans = 0;
-	if (slot >= 0 && slot < 3 && level != last_lv[slot] && ntrans < 80) {
-		last_lv[slot] = level;
-		ntrans++;
-		std::fprintf(stderr, "plg tx%d %d->%d (bit %d)\n", slot, 1 - level, level, bit);
-	}
 	if (m->m_plg && slot >= 0 && slot < plg::host::SLOTS)
 		m->m_plg->midi_rx(slot, level, bit);
 }

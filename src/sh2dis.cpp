@@ -42,10 +42,19 @@
 //
 // The groups that end in a displacement nibble (1, 3, 5, 6) are why this cannot
 // be a mask on the low nibble: for `0001nnnn` that nibble is the displacement.
+// One instruction is two bytes unless it carries a displacement:
+//   groups 1, 3, 5, D   always 4 (MOV with a displacement)
+//   group 4             4 only for low nibble C and up (MOV.L with displacement)
+//   group 6             always 2 (all the @Rm/@Rm+/MAC forms; the displacement
+//                       MOV.L @(disp,Rn) is group 1)
+//   group C             4 from 7 up (MUL.L, TST/AND/XOR/OR, CMP/Pxx)
+//   everything else     2
+// The groups that end in a displacement nibble cannot be a mask on the low
+// nibble alone: for `0001nnnn` that nibble IS the displacement.
 static int insn_len(u16 w)
 {
 	switch ((w >> 12) & 0xf) {
-	case 0x1: case 0x3: case 0x5: case 0x6: case 0xd:
+	case 0x1: case 0x3: case 0x5: case 0xd:
 		return 4;
 	case 0x4:
 		return (w & 0xf) >= 0xc ? 4 : 2;
