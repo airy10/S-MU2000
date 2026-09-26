@@ -4,11 +4,11 @@ The module ABI for a PLG card (a PLG150-DX and friends) and the host side that
 loads one. Implementation in `src/plg/`, the contract itself in
 `src/plg/plg1500.h`, the checks in `src/plgtest.cpp` and `tests/plg/stub.c`.
 
-**Where it stands: the ABI, the host side (loading, lifetime, state, safety), and
-the SCI4 line from the firmware to a card are done and checked.** What is not done
-is the audio path - `mu2000::run_sample()` still does not call
-`plg::host::run()` - and a card's own transmit timing. A card in a slot hears the
-firmware; nothing yet hears the card.
+**Where it stands: the ABI, the host side, the SCI4 line in both directions, the
+card's transmit timing, the audio path and a card that is built into the program
+rather than loaded — all done and checked. A card can hear the firmware and put a
+value on the audio wire. What is not done is *recognition*: PLG-1 stays dark, and
+the reason is in section 5.
 
 ## 1. What the hardware has
 
@@ -183,13 +183,28 @@ Not done:
   receive line is the AND of the selected lines, so an empty slot holding its line
   low masks out the card in another slot. `host::midi_tx()` returns 1 for that
   reason, and it is the one thing here that was wrong before it was measured.
-- **The bit phase, which is the last thing between this and a recognised card.**
-  `tests/plg/answer.c` sends the two replies a real PLG150-AP sends, and the
-  card is stepped correctly - but the host receives 20 bytes and 14 framing
-  errors instead of `F0 43 10 4E 01 10 00 00 07 00 F7`. So the rate is right and
-  the phase is not: the chip's mid-bit sample instants are falling on the card's
-  transitions. `boot --trace-sci4-in` is the instrument for it, and it is the same
-  question MAME's sci4 log answered from the other end.
+- **Recognition. PLG-1 stays dark**, and the blocker is now in the card's
+  *receive* framing rather than in the host. The host's side is finished: the
+  card is stepped by SCI4's own bit clock, its two replies reach the chip intact
+  (zero framing errors, byte for byte what a real PLG150-AP sends), and the
+  firmware changes behaviour - it sends 89 messages against a real card's 94 and
+  the same polls in the same order. But the card never sees a whole message:
+  its log shows six "messages" whose entire content is `f7`, and zero polls, so
+  every message it thinks it received is the *last byte* of one the host sent.
+  Its receive framing is a byte out of step and it has no resync, so a single
+  lost bit costs it every message after. That is the thing to fix next, and
+  `answer.c`'s per-message log is the instrument.
+- **A correction worth keeping.** "MU came on" was reported for a while as
+  evidence that a card had been recognised. It is not: MU lights after about
+  25 seconds **with no card at all** (`boot roms 700000000`, no `--plg`). The
+  lamp print used to be gated on a card being present, so the baseline was never
+  taken. `boot` now prints the lamps either way, because a signal with no
+  baseline is not a signal. The only recognition observable is PLG-1.
+- **Never start a card test from a snapshot.** The PLG scan happens *during* the
+  boot sequence - `Checking PLG` is a boot screen - so anything that skips the
+  boot never probes the slots. `boot` and `render` are cold by default
+  (`--bootcache` is opt-in and must stay unused here), and neither loads NVRAM
+  from disk, which is why the scan runs on every run.
 - **A real card** (`src/plg/plg150dx_device`): the SH7043, the two flashes, a
   YMP706 model. The connector and SCI4 are already there to hang it on.
 - **Discovery** (a `plg.txt` beside the bundle, the way `roms.txt` works) and a

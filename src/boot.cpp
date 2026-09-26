@@ -207,14 +207,21 @@ int main(int argc, char **argv)
 	// カードが音道路上に戻した値。meli 10..15 が差し込み口なので、ここが
 	// 非 0 なら「カードが選んだ値が音道路まで来た」ことになる
 	// （doc/plg-cards.md 5）。聞くため��す���のではなく、値を確か���ため。
-	if (plgcard) {
+	{
 		for (int slot = 0; slot < plg::host::SLOTS; slot++)
-			std::printf("PLG%d の戻り L=%d R=%d\n", slot + 1,
-			            mu.plg_out(slot, 0), mu.plg_out(slot, 1));
+			if (plgcard)
+				std::printf("PLG%d の戻り L=%d R=%d\n", slot + 1,
+				            mu.plg_out(slot, 0), mu.plg_out(slot, 1));
 		// The panel's MU / PLG-1 / PLG-2 / PLG-3 lamps. **This is the
 		// recognition observable**: the firmware lights PLG-1 itself once it has
 		// accepted a card, so a card that takes bit 1 from 0 to 1 here has been
 		// recognised without anybody in this project deciding so.
+	}
+	// Printed with or without a card: the lamps are the recognition signal, so
+	// a run with no card is the baseline that gives them meaning. Printing them
+	// only when a card was inserted is what made "MU came on" look like evidence
+	// for a while.
+	{
 		const unsigned lamps = mu.plg_lamps();
 		std::printf("PLG ランプ: MU=%s PLG-1=%s PLG-2=%s PLG-3=%s\n",
 		            (lamps & 1) ? "on" : "off", (lamps & 2) ? "on" : "off",

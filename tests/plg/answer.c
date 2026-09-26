@@ -36,6 +36,21 @@
  * PLG_NAME below is what the MU2000 is told this card is called. Change it and
  * re-run: if the firmware displays the new string, it read what we sent, which is
  * worth knowing separately from whether it accepted the card at all.
+ *
+ * ## Never test this from a snapshot
+ *
+ * The PLG scan is part of the boot sequence - `Checking PLG` is a boot screen -
+ * so anything that starts from a saved state never probes the slots, and the
+ * card's behaviour cannot be tested that way. `boot` and `render` are cold by
+ * default; `--bootcache` is opt-in and has no business being passed here.
+ *
+ * ## Known fault, as of 2026-09-26
+ *
+ * The receive framing is a byte out of step, and there is no resync. The card
+ * logs six "messages" whose whole content is `f7` and sees zero polls, so every
+ * message it thinks it got is the last byte of one the host sent - and the
+ * poll-only answer below therefore never fires. The host's side is finished and
+ * checked; this is the card's half. See doc/plg-cards.md section 5.
  */
 #include "plg/plg1500.h"
 
@@ -75,7 +90,11 @@ struct answer {
 	unsigned shift;
 	int      rx_frames;      /* complete host messages seen */
 	int      rx_bytes;    /* bytes in the message being received */
+	unsigned char rx[4];  /* its first four, to recognise it */
 	int      rx_total;    /* bytes since reset, for the report */
+	int      rx_polls;    /* messages seen that look like a poll */
+	char     rx_log[8][16];  /* the first messages, as the card saw them */
+	int      rx_log_n;
 
 	/* Transmit: a queue of the two replies, one bit handed over per midi_tx(). */
 	int            tx_byte;      /* index into tx_buf, -1 when nothing to send */
@@ -83,7 +102,10 @@ struct answer {
 	int            tx_hold;      /* polls per bit */
 	int            hold_per_bit; /* the above, as a knob: see read_knobs() */
 	int            start_delay;  /* idle polls before a start bit */
-	int            once;         /* answer only the first host message, like the AP */
+	int            once;         /* answer one message in total, like the AP */
+	int            on_poll;      /* answer the poll rather than the first message */
+	int            want_poll;    /* the knob's value, kept across reset() */
+	int            read_on_poll; /* the knob's value, kept across reset() */
 	unsigned char  tx_buf[sizeof(REPLY_CATEGORY) + sizeof(REPLY_NAME)];
 	int            tx_len;
 	int            tx_next;      /* where the next reply starts in tx_buf */
@@ -124,6 +146,9 @@ static void read_knobs(struct answer *a)
 	a->once = 1;
 	if ((e = getenv("SMU2000_CARD_ONCE")) != 0 && atoi(e) == 0)
 		a->once = 0;
+	a->want_poll = 1;
+	if ((e = getenv("SMU2000_CARD_ON_POLL")) != 0 && atoi(e) == 0)
+		a->want_poll = 0;
 }
 
 /* Lay the replies out once. Called from create, so it is not on any hot path. */
@@ -179,9 +204,15 @@ PLG_EXPORT void plg1500_destroy(plg_card *c)
 		return;
 	char line[256];
 	snprintf(line, sizeof(line),
-	         "answer: heard %d byte(s) in %d message(s), sent %d repl%s",
-	         a->rx_total, a->rx_frames, a->sent, a->sent == 1 ? "y" : "ies");
+	         "answer: heard %d byte(s) in %d message(s) (%d poll), sent %d repl%s",
+	         a->rx_total, a->rx_frames, a->rx_polls, a->sent,
+	         a->sent == 1 ? "y" : "ies");
 	a->host->log(a->host->ctx, line);
+	for (int i = 0; i < a->rx_log_n; i++) {
+		char l2[64];
+		snprintf(l2, sizeof(l2), "  msg%d: %s", i, a->rx_log[i]);
+		a->host->log(a->host->ctx, l2);
+	}
 }
 
 /* One bit of one reply, per call. The call rate is the host's bit clock. */
@@ -244,8 +275,9 @@ static void answer_rx(plg_card *c, int level)
 	level = level ? 1 : 0;
 	if (a->bit == 0) {
 		if (!level) {
-			a->bit   = 1;
-			a->shift = 0;
+			a->bit      = 1;
+			a->shift    = 0;
+			a->rx_bytes = 0;      /* per message, not since reset */
 		}
 		return;
 	}
@@ -253,18 +285,40 @@ static void answer_rx(plg_card *c, int level)
 		if (level) {
 			a->rx_bytes++;
 			a->rx_total++;
+			if (a->rx_bytes <= (int)sizeof(a->rx))
+				a->rx[a->rx_bytes - 1] = (unsigned char)a->shift;
 			/* A complete message from the host is the cue to answer, which is
 			 * what the real card does: it is addressed, it replies. Queueing both
 			 * replies here rather than matching the request keeps this card free
 			 * of any protocol knowledge, which is the point of it. */
 			if (a->shift == 0xf7) {
 				a->rx_frames++;
-				/* The real AP answered twice in total and then stayed quiet, so
-				 * `once` is the default here: answering every message is measurably
-				 * worse - the firmware ends up writing voice data at the card
-				 * instead of reading its parameters back, and takes a branch the real
-				 * card never sees. SMU2000_CARD_ONCE=0 answers every message. */
-				if (a->tx_byte < 0 && a->tx_next >= a->tx_len && !(a->once && a->sent))
+				/* A short log of what arrived, because "the host sent a poll and the
+				 * card did not see one" is only answerable by looking at both. */
+				if (a->rx_log_n < 8) {
+					char *dst = a->rx_log[a->rx_log_n++];
+					int k = 0;
+					for (int i = 0; i < a->rx_bytes && k < 15; i++) {
+						const unsigned b = i < (int)sizeof(a->rx) ? a->rx[i]
+						                                : 0xff;
+						k += snprintf(dst + k, 16 - k, "%02x", b);
+					}
+					dst[k] = 0;
+				}
+				/* **Which message is worth answering is a measured question, not a
+				 * guess.** The capture of a real AP shows the host sending a read
+				 * (F0 43 10 4E 00 10 02 01) and then a poll (F0 43 30 4E 01 10 00),
+				 * and the card's two replies arriving **after the poll**. Answering
+				 * the read instead is measurably worse: the firmware stops reading
+				 * the card's parameters and starts writing voice data at it.
+				 * So the poll is the default, and the read is one knob away. */
+				const int is_poll = a->rx_bytes >= 3 && a->rx[0] == 0xf0 &&
+				                    a->rx[1] == 0x43 && a->rx[2] == 0x30;
+				if (is_poll)
+					a->rx_polls++;
+				const int want = a->on_poll ? is_poll : 1;
+				if (want && a->tx_byte < 0 && a->tx_next >= a->tx_len &&
+				    !(a->once && a->sent))
 					a->tx_next = 0;
 			}
 		}
@@ -293,13 +347,14 @@ static void answer_reset(plg_card *c)
 	struct answer *a = (struct answer *)c;
 	a->bit = 0;
 	a->shift = 0;
-	a->rx_frames = a->rx_bytes = a->rx_total = 0;
+	a->rx_frames = a->rx_bytes = a->rx_total = a->rx_polls = 0;
 	a->tx_byte = -1;
 	a->tx_bit  = 0;
 	a->tx_hold = 0;
 	a->start_delay = 0;
 	a->tx_level = 1;
 	a->sent = a->accepted = 0;
+	a->on_poll = a->want_poll;
 	build_replies(a);
 }
 
