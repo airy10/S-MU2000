@@ -267,7 +267,7 @@ public:
 	{
 		snapshot s;
 		hd44780_device &lcd = mu.lcd();
-		const u8 *img = lcd.render();
+		const u8 *img = mu.lcd_render();
 		const int cols = lcd.line_size();
 		for (int row = 0; row < LCD_ROWS; row++)
 			for (int col = 0; col < LCD_COLS; col++)

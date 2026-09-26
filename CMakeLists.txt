@@ -96,7 +96,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     third_party/imgui/imgui_widgets.cpp)
   set(LINUX_PANEL_SRCS
     src/compat/gdi_linux.cpp
-    src/ui/panel.cpp src/ui/layout.cpp src/ui/svg.cpp src/ui/editor.cpp
+    src/ui/panel.cpp src/ui/layout.cpp src/ui/svg.cpp src/ui/png.cpp src/ui/editor.cpp
     src/ui/effects.cpp src/xg/model.cpp
     src/ui/xg_ui.cpp src/ui/fx_help.cpp src/ui/fx_icons.cpp
     ${IMGUI_CORE})

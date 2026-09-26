@@ -43,6 +43,7 @@ build/gui.exe <rom ディレクトリ> --layout panel.txt
 1. いま居るところの `panel.txt`
 2. `gui.exe` と同じところの `panel.txt`
 3. `%LOCALAPPDATA%\S-MU2000\panel.txt`
+4. 付属の写真調の絵 `art/real/panel.txt`（exe の横、その一つ上、いま居るところの順）
 
 どこにも無ければ組み込みの配置を使う。**VST3 は 3 番目だけを見る**ので、
 DAW でも同じ絵にしたければそこに置く。
@@ -226,6 +227,7 @@ build/gui.exe <rom ディレクトリ> --layout art/mame/panel.txt
 |---|---|
 | `art/sample/panel.txt` | こちらの採寸 ＋ SVG のボタン・LED・つまみ |
 | `art/mame/panel.txt` | **MAME の絵**（DIN コネクタ、ジャック、通気口ほか）＋ 同じボタン |
+| `art/real/panel.txt` | **実機の写真に合わせた絵**（既定。`tools/panel_art/make_panel.py` で作る） |
 
 ボタン・LED・つまみの絵は両方とも `art/parts/` を指している。
 

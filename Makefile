@@ -353,7 +353,7 @@ VST3_SDK_SRCS := 	third_party/vst3/pluginterfaces/base/funknown.cpp 	third_party
 
 VST3_SRCS := src/vst3/plugin.cpp src/vst3/engine.cpp src/vst3/iids.cpp src/vst3/automation.cpp \
              src/vst3/view.cpp src/vst3/view_win.cpp \
-             src/ui/panel.cpp src/ui/layout.cpp src/ui/svg.cpp src/ui/editor.cpp \
+             src/ui/panel.cpp src/ui/layout.cpp src/ui/svg.cpp src/ui/png.cpp src/ui/editor.cpp \
              src/ui/effects.cpp src/xg/model.cpp $(VST3_SDK_SRCS)
 VST3_OBJS := $(VST3_SRCS:%.cpp=$(BUILD)/vst3obj/%.o)
 
@@ -566,7 +566,7 @@ VST3_SDK_SRCS := \
 	third_party/vst3/pluginterfaces/base/ustring.cpp
 
 LINUX_PANEL_SRCS := src/compat/gdi_linux.cpp \
-              src/ui/panel.cpp src/ui/layout.cpp src/ui/svg.cpp src/ui/editor.cpp \
+              src/ui/panel.cpp src/ui/layout.cpp src/ui/svg.cpp src/ui/png.cpp src/ui/editor.cpp \
               src/ui/effects.cpp src/xg/model.cpp \
               src/ui/xg_ui.cpp src/ui/fx_help.cpp src/ui/fx_icons.cpp $(IMGUI_CORE)
 
@@ -750,7 +750,7 @@ VST3_SDK_SRCS := \
 # view_win.cpp in place of view_mac.mm)
 PANEL_VIEW_SRCS := src/vst3/view.cpp src/vst3/view_mac.mm
 PANEL_SRCS := src/compat/gdi_mac.cpp \
-              src/ui/panel.cpp src/ui/layout.cpp src/ui/svg.cpp src/ui/editor.cpp \
+              src/ui/panel.cpp src/ui/layout.cpp src/ui/svg.cpp src/ui/png.cpp src/ui/editor.cpp \
               src/ui/effects.cpp src/xg/model.cpp
 
 VST3_SRCS := src/vst3/plugin.cpp src/vst3/engine.cpp src/vst3/iids.cpp src/vst3/automation.cpp \

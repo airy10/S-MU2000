@@ -164,6 +164,7 @@ layout::layout()
 
 	dial[0] = 893; dial[1] = 268; dial[2] = 58;
 	volume[0] = 141; volume[1] = 154; volume[2] = 30;
+	adgain[0] = adgain[1] = adgain[2] = 0;
 
 	// 実機の写真から測った（上の面の点の間隔が単位）
 	const double lx[11] = { 0, 11.96, 30.5, 48.5, 56.1, 62.2, 70.3, 78.3, 86.1, 92.5, 102.9 };
@@ -173,6 +174,9 @@ layout::layout()
 	columns_y = 186;
 	modes_x = 686;
 	plg[0] = 524; plg[1] = 37; plg[2] = 341;
+	plg_size[0] = plg_size[1] = 12;
+	labels_in_art = false;
+	lcd_frame = true;
 
 	const double cd[4] = { 57, 336, 201, 21 };
 	const double ad[4] = { 8, 44, 60, 130 };
@@ -377,13 +381,15 @@ bool layout::load(const std::string &path, std::string &err)
 				}
 			}
 		}
-		else if (key == "dial" || key == "volume") {
-			double *v = (key == "dial") ? dial : volume;
+		else if (key == "dial" || key == "volume" || key == "adgain") {
+			double *v = (key == "dial") ? dial : (key == "volume") ? volume : adgain;
 			if (!need(4)) continue;
 			for (int i = 0; i < 3; i++) v[i] = num(t[1 + i]);
 			// 4 つ目に SVG を書くと、組み込みの絵の代わりに回して描く
-			std::string &pth = (key == "dial") ? dial_art_path : volume_art_path;
-			std::shared_ptr<svg_art> &pic = (key == "dial") ? dial_art : volume_art;
+			std::string &pth = (key == "dial") ? dial_art_path
+			                 : (key == "volume") ? volume_art_path : adgain_art_path;
+			std::shared_ptr<svg_art> &pic = (key == "dial") ? dial_art
+			                              : (key == "volume") ? volume_art : adgain_art;
 			pth.clear();
 			pic.reset();
 			if (t.size() >= 5 && !t[4].empty()) {
@@ -394,8 +400,21 @@ bool layout::load(const std::string &path, std::string &err)
 			}
 		}
 		else if (key == "mode.r") { if (need(3)) { mode_r = num(t[1]); mode_led_r = num(t[2]); } }
+		else if (key == "mode.on") {
+			if (!need(3)) continue;
+			int at = -1;
+			for (int i = 0; i < 6; i++) if (t[1] == MODE_NAMES[i]) at = i;
+			if (at < 0) { bad("そんな丸ボタンは無い"); continue; }
+			auto pic = std::make_shared<svg_art>();
+			if (!pic->load_file(beside(path, t[2])))
+				bad("ボタンの絵を開けない（または読めない形）");
+			else { mode_on[at] = pic; mode_on_path[at] = t[2]; }
+		}
 		else if (key == "columns.y") { if (need(2)) columns_y = num(t[1]); }
 		else if (key == "modes.x")   { if (need(2)) modes_x = num(t[1]); }
+		else if (key == "plg.size")  { if (need(3)) { plg_size[0] = num(t[1]); plg_size[1] = num(t[2]); } }
+		else if (key == "labels")    { if (need(2)) labels_in_art = (t[1] == "art"); }
+		else if (key == "lcd.frame") { if (need(2)) lcd_frame = num(t[1]) != 0; }
 		else if (key == "plg")    { if (need(4)) for (int i = 0; i < 3; i++) plg[i] = num(t[1 + i]); }
 		else if (key == "card")   { if (need(5)) for (int i = 0; i < 4; i++) card[i] = num(t[1 + i]); }
 		else if (key == "adin")   { if (need(5)) for (int i = 0; i < 4; i++) adin[i] = num(t[1 + i]); }
@@ -491,6 +510,12 @@ bool layout::save(const std::string &path) const
 	             volume_art_path.empty() ? "" : " \"",
 	             volume_art_path.c_str(),
 	             volume_art_path.empty() ? "" : "\"");
+	if (adgain[2] > 0)
+		std::fprintf(f, "adgain %g %g %g%s%s%s      # A/D INPUT のつまみ  中心 x y と半径\n",
+		             adgain[0], adgain[1], adgain[2],
+		             adgain_art_path.empty() ? "" : " \"",
+		             adgain_art_path.c_str(),
+		             adgain_art_path.empty() ? "" : "\"");
 	{
 		// ボタンと表示灯の絵。渡されていれば書き出す
 		const struct { const char *key; const art_set *a; } sets[] = {
@@ -507,6 +532,9 @@ bool layout::save(const std::string &path) const
 					std::fprintf(f, " \"%s\"", e.a->path[i].c_str());
 			std::fprintf(f, "\n");
 		}
+		for (int i = 0; i < 6; i++)
+			if (!mode_on_path[i].empty())
+				std::fprintf(f, "mode.on %s \"%s\"\n", MODE_NAMES[i], mode_on_path[i].c_str());
 	}
 	std::fprintf(f, "plg  %g %g %g      # MU / PLG-1..3 の表示灯  左端 間隔 y\n",
 	             plg[0], plg[1], plg[2]);
@@ -518,8 +546,12 @@ bool layout::save(const std::string &path) const
 	             phones[0], phones[1], phones[2], phones[3]);
 	std::fprintf(f, "columns.y %g        # 窓の下の札（PART VOL EXP …）の高さ\n",
 	             columns_y);
-	std::fprintf(f, "modes.x %g          # 右の札（XG GS PERFORM）の左端。高さは液晶の ▶ に合わせる\n\n",
+	std::fprintf(f, "modes.x %g          # 右の札（XG GS PERFORM）の左端。高さは液晶の ▶ に合わせる\n",
 	             modes_x);
+	std::fprintf(f, "plg.size %g %g      # 表示灯の絵の幅と高さ\n", plg_size[0], plg_size[1]);
+	std::fprintf(f, "labels %s           # art: 印刷された札は絵に入っている（コードで書かない）\n",
+	             labels_in_art ? "art" : "code");
+	std::fprintf(f, "lcd.frame %d          # 0: LCD のまわりの枠は絵に入っている\n\n", lcd_frame ? 1 : 0);
 
 	std::fprintf(f,
 		"# LCD 下段の並び。単位は上段の点 1 つぶん（doc/lcd-segments.md）。\n"
@@ -603,6 +635,15 @@ std::string layout::find_default()
 			if (exists(q))
 				return q;
 		}
+	}
+	// 4. 付属の写真調の絵（art/real）。exe の横、build/ から見た上、いまいる場所
+	{
+		const std::string dir = smu2000::exe_dir();
+		for (const std::string &q : { dir.empty() ? std::string() : dir + "art/real/panel.txt",
+		                              dir.empty() ? std::string() : dir + "../art/real/panel.txt",
+		                              std::string("art/real/panel.txt") })
+			if (!q.empty() && exists(q))
+				return q;
 	}
 	return {};
 }
