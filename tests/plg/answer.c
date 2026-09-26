@@ -118,9 +118,11 @@ struct answer {
 	int            start_delay;  /* idle polls before a start bit */
 	int            once;         /* answer one message in total, like the AP */
 	int            on_poll;      /* answer the poll rather than the first message */
-	unsigned char  tx_buf[sizeof(REPLY_NAME)];   /* one reply at a time, the larger */
-	int            tx_len;
-	int            tx_next;      /* where the next reply starts in tx_buf */
+	unsigned char  tx_buf[sizeof(REPLY_NAME)];   /* the mailbox: one reply at a time */
+	int            tx_len;      /* bytes in the mailbox */
+	int            tx_queued;   /* the mailbox holds a reply waiting to go out */
+	unsigned char  tx_out[sizeof(REPLY_NAME)];   /* the reply actually on the wire */
+	int            tx_out_len;  /* bytes in tx_out */
 	int            sent_cat;     /* the category reply went out */
 	int            sent_name;    /* the name reply went out */
 	int            tx_level;     /* the level being held */
@@ -229,7 +231,7 @@ static void queue_reply(struct answer *a, int kind)
 		memcpy(a->tx_buf, REPLY_NAME, sizeof(REPLY_NAME));
 		a->tx_len = (int)sizeof(REPLY_NAME);
 	}
-	a->tx_next = 0;
+	a->tx_queued = 1;
 }
 
 static const plg_card_info g_info = {
@@ -262,7 +264,8 @@ PLG_EXPORT plg_card *plg1500_create(const plg_host *host, void *ctx, char *err, 
 	}
 	a->host = host;
 	read_knobs(a);
-	a->tx_len = a->tx_next = 0;   /* nothing queued yet */
+	a->tx_len = 0;
+	a->tx_queued = 0;      /* nothing in the mailbox yet */
 	a->sent_cat = a->sent_name = 0;
 	return (plg_card *)a;
 }
@@ -293,7 +296,14 @@ static int answer_tx(plg_card *c)
 
 	/* Nothing queued: the line idles high. */
 	if (a->tx_byte < 0) {
-		if (a->tx_next < a->tx_len) {
+		if (a->tx_queued) {
+			/* Take the mailbox onto the wire. The copy matters: the host
+			 * sends the name poll while this reply is still shifting out,
+			 * and a mailbox that is also the transmit buffer would have
+			 * the name land in the middle of the category. */
+			memcpy(a->tx_out, a->tx_buf, (size_t)a->tx_len);
+			a->tx_out_len = a->tx_len;
+			a->tx_queued = 0;
 			a->tx_byte = 0;
 			a->tx_bit  = 0;
 		} else {
@@ -308,9 +318,9 @@ static int answer_tx(plg_card *c)
 		a->start_delay--;
 		return 1;
 	}
-	/* The reply is queued (tx_next < tx_len) but its first bit waits out the
-	 * delay. Once shifting, this never triggers again for this reply. */
-	if (a->tx_byte < 0 && a->tx_next < a->tx_len && a->delay_polls > 0) {
+	/* The reply is queued but its first bit waits out the delay. Once shifting,
+	 * this never triggers again for this reply. */
+	if (a->tx_byte < 0 && a->tx_queued && a->delay_polls > 0) {
 		a->delay_polls--;
 		return 1;
 	}
@@ -320,7 +330,7 @@ static int answer_tx(plg_card *c)
 	}
 	a->tx_hold = a->hold_per_bit - 1;
 
-	const unsigned char b = a->tx_buf[a->tx_byte];
+	const unsigned char b = a->tx_out[a->tx_byte];
 	int level;
 	if (a->tx_bit == 0)
 		level = 0;                              /* start bit */
@@ -334,9 +344,11 @@ static int answer_tx(plg_card *c)
 	if (a->tx_bit >= 10) {
 		a->tx_bit = 0;
 		a->tx_byte++;
-		if (a->tx_byte >= a->tx_len) {
+		if (a->tx_byte >= a->tx_out_len) {
 			a->tx_byte = -1;
-			a->tx_next = a->tx_len;              /* both replies are out */
+			/* The mailbox is left alone. Whether a reply is waiting is
+			 * tx_queued, not a position - finishing one must not discard
+			 * the next, which is exactly what this used to do. */
 			a->sent++;
 			if (a->sent >= NREPLY)
 				a->accepted = 1;
@@ -437,19 +449,23 @@ static void answer_rx(plg_card *c, int level, int bit)
 	 * category answers the read, and it must go out while a slot is selected
 	 * (targets=11), not into the deaf targets=07 window the read arrives in. */
 	if (is_poll && a->read_seen && !(a->once && a->sent_cat) &&
-	   a->tx_byte < 0 && a->tx_next >= a->tx_len) {
+	   a->tx_byte < 0 && !a->tx_queued) {
 		queue_reply(a, 0);
 		a->sent_cat = 1;
 		a->sent++;
 		a->read_seen = 0;
 		return;
 	}
-	/* The name answers the page-00 poll, not the regular one. */
-	const int is_name_poll = a->msg_n == 7 && a->msg[0] == 0xf0 && a->msg[1] == 0x43 &&
+	/* The name answers the page-00 poll, not the regular one. The poll is eight
+	 * bytes - f0 43 30 4e 01 00 00 f7 - and msg_n saturates at sizeof(msg),
+	 * which is also eight, so the test is == 8. It was == 7, which nothing can
+	 * ever satisfy once a message reaches the buffer's width, and the name was
+	 * therefore never sent at all. */
+	const int is_name_poll = a->msg_n == 8 && a->msg[0] == 0xf0 && a->msg[1] == 0x43 &&
 	                         a->msg[2] == 0x30 && a->msg[3] == 0x4e && a->msg[4] == 0x01 &&
 	                         a->msg[5] == 0x00 && a->msg[6] == 0x00;
 	if (is_name_poll && !(a->once && a->sent_name) &&
-	   a->tx_byte < 0 && a->tx_next >= a->tx_len) {
+	   a->tx_byte < 0 && !a->tx_queued) {
 		/* **When to answer, counted in polls.** Kept from the earlier version:
 		 * answering the very first matching poll is what is measured to work. */
 		if (a->seen_poll && a->after > 0) {
@@ -490,7 +506,8 @@ static void answer_reset(plg_card *c)
 	a->after = a->after_polls;
 	a->delay_polls = a->delay_polls;
 	a->seen_poll = 0;
-	a->tx_len = a->tx_next = 0;   /* nothing queued yet */
+	a->tx_len = 0;
+	a->tx_queued = 0;      /* nothing in the mailbox yet */
 }
 
 static size_t answer_save(plg_card *c, void *dst, size_t cap)
