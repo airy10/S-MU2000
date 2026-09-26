@@ -32,6 +32,8 @@
 #include "nvram.h"
 
 #include "compat/platform.h"
+#include "plg/cards.h"
+#include "plg/host.h"
 
 #include <atomic>
 #include <cstdio>
@@ -44,6 +46,22 @@ namespace ui {
 
 struct engine {
 	mu2000 mu;
+
+	// A PLG card, and what was asked for. **The card goes in before reset()**,
+	// inside boot(), because the PLG scan is part of the boot sequence: a board
+	// that appears later is never noticed (boot --plg-late measures it - zero
+	// messages, no lamp). The ordering lives here rather than in a comment,
+	// because getting it wrong is silent.
+	plg::host   m_plg;
+	std::string m_plg_path;
+	int         m_plg_builtin = -1;
+	std::string m_plg_msg;    // why the card is not in the slot, if it is not
+
+	// Which card to put in slot 1. `path` is a shared library; `builtin` is an
+	// index into plg::builtin_card(). Empty and -1 means none. Call before boot().
+	void set_plg_card(const std::string &path, int builtin)
+	{ m_plg_path = path; m_plg_builtin = builtin; }
+	const std::string &plg_message() const { return m_plg_msg; }
 	bridge   &br;
 	midi_in  &midi;        // MIDI IN A（パート 1-16）
 	// B-D。B は実機の 2 つめの DIN、C・D は USB だけの口（パート 33-64）。
@@ -101,6 +119,22 @@ struct engine {
 			std::printf(UI_TEXT(engine_nvram_fmt, "Settings: %s\n"), smu2000::nvram::path(mu).c_str());
 		// 鍵は起動に使うワーク RAM も混ぜるので、reset() の前に作る
 		const u64 key = smu2000::bootcache::key(mu);
+		// **The PLG card goes in before reset().** The scan is part of the boot
+		// sequence, so a card that is not in the slot when the machine starts is
+		// never seen: boot --plg-late inserts one 10 s in and the card is sent
+		// nothing at all. There is no insert-while-running, unlike SmartMedia.
+		mu.set_plg_host(&m_plg);
+		if (!m_plg_path.empty() || m_plg_builtin >= 0) {
+			std::string err;
+			const int slot = mu.plg_slot_for(PLG_MODEL_ANY);
+			const bool ok = (m_plg_builtin >= 0)
+				? m_plg.insert_builtin(slot, plg::builtin_card(m_plg_builtin), err)
+				: m_plg.insert(slot, m_plg_path, err);
+			m_plg_msg = ok ? std::string() : err;
+			std::printf("PLG slot %d: %s\n", slot + 1,
+			            ok ? (m_plg_builtin >= 0 ? "(built in)" : m_plg_path.c_str())
+			               : err.c_str());
+		}
 		mu.reset();
 		// 前に起動し切った姿を取ってあれば、そこから始める（bootcache.h）。
 		// 回した結果と 1 ビットも違わないので、音は同じ。

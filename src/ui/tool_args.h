@@ -42,6 +42,8 @@ inline void print_usage()
                                     "        [--shapes-window] also open the part voice window (double-click a VIB picture etc. in the list)\n"
                                     "        [--master-window] also open the master window (double-click the master row)\n"
                                     "        [--lang ja|en] language (else lang= in editor.ini, else the locale: Japanese iff it says ja)\n"
+                                    "        [--plg <カード>] / [--plg-builtin <番号>]\n"
+                                    "                        PLG カードを入れる（起動前に差し込む）\n"
                                     "        [--help]      show this help\n"
                                     "        gui --dump-layout panel.txt   write out the current layout\n"
                                     "        gui --list\n"
@@ -62,6 +64,8 @@ struct tool_args {
 	bool boot_for_shot = false;
 	bool nomidi = false;                   // open and remember no MIDI port
 	std::string lang;                      // --lang ja|en (empty: editor.ini, then locale)
+	std::string plg;                       // --plg <shared library>
+	int  plg_builtin = -1;                // --plg-builtin <n>: a card built into the program
 };
 
 // Parses argv into args (plus the shared engine/output/window options).
@@ -109,6 +113,8 @@ inline int parse_tool_args(int argc, char **argv, tool_args &a,
 				std::printf("  （なし）\n");
 			return 0;
 		}
+		else if (!std::strcmp(argv[i], "--plg") && i + 1 < argc) a.plg = argv[++i];
+		else if (!std::strcmp(argv[i], "--plg-builtin") && i + 1 < argc) a.plg_builtin = std::atoi(argv[++i]);
 		else if (!std::strcmp(argv[i], "--midi") && i + 1 < argc) a.in_dev[0] = std::atoi(argv[++i]);
 		else if (!std::strcmp(argv[i], "--midi-b") && i + 1 < argc) a.in_dev[1] = std::atoi(argv[++i]);
 		else if (!std::strcmp(argv[i], "--midi-c") && i + 1 < argc) a.in_dev[2] = std::atoi(argv[++i]);

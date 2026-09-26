@@ -91,6 +91,9 @@ int main(int argc, char **argv)
 	gui.wire_engine(eng, eng_opts);
 	gui.eng = &eng;
 	gui.state = &eng.state;
+	// The PLG card goes in before the machine starts (engine::boot() does it),
+	// so all this has to do is say which one.
+	eng.set_plg_card(a.plg, a.plg_builtin);
 	if (!gui.load_machine(eng, a))
 		return 1;
 	const int shot = gui.run_boot_shot(eng, br, a, win_opts);
