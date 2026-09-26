@@ -93,6 +93,9 @@ struct answer {
 	int      rx_bytes;    /* bytes in the message being received */
 	unsigned char msg[8]; /* the current message's head, F0..F7 */
 	int           msg_n;
+	int           seen_poll; /* a poll has been seen, so `after` can count down */
+	int           after;      /* polls still to let pass before answering */
+	int           after_polls; /* the knob's value, restored by reset() */
 	int      rx_total;    /* bytes since reset, for the report */
 	int      rx_polls;    /* messages seen that look like a poll */
 	char     rx_log[8][16];  /* the first messages, as the card saw them */
@@ -106,8 +109,6 @@ struct answer {
 	int            start_delay;  /* idle polls before a start bit */
 	int            once;         /* answer one message in total, like the AP */
 	int            on_poll;      /* answer the poll rather than the first message */
-	int            want_poll;    /* the knob's value, kept across reset() */
-	int            read_on_poll; /* the knob's value, kept across reset() */
 	unsigned char  tx_buf[sizeof(REPLY_CATEGORY) + sizeof(REPLY_NAME)];
 	int            tx_len;
 	int            tx_next;      /* where the next reply starts in tx_buf */
@@ -148,9 +149,15 @@ static void read_knobs(struct answer *a)
 	a->once = 1;
 	if ((e = getenv("SMU2000_CARD_ONCE")) != 0 && atoi(e) == 0)
 		a->once = 0;
-	a->want_poll = 1;
+	a->on_poll = 1;
 	if ((e = getenv("SMU2000_CARD_ON_POLL")) != 0 && atoi(e) == 0)
-		a->want_poll = 0;
+		a->on_poll = 0;
+	a->after_polls = 0;
+	if ((e = getenv("SMU2000_CARD_AFTER")) != 0) {
+		const int v = atoi(e);
+		if (v >= 0 && v <= 16)
+			a->after_polls = v;
+	}
 }
 
 /* Lay the replies out once. Called from create, so it is not on any hot path. */
@@ -330,8 +337,19 @@ static void answer_rx(plg_card *c, int level, int bit)
 	 * poll (F0 43 30 4E 01 10 00), with the card's two replies arriving after the
 	 * poll. */
 	const int is_poll = a->msg_n >= 4 && a->msg[1] == 0x43 && a->msg[2] == 0x30;
-	if (is_poll)
+	if (is_poll) {
 		a->rx_polls++;
+		a->seen_poll = 1;
+	}
+	/* **When to answer, counted in polls.** A real card is a CPU: it boots, sets
+	 * its SCI up and only then answers, which in MAME is long after the host
+	 * started asking. Ours answers in microseconds, which may be *too early* -
+	 * a host can take a reply that arrives before it is listening as stale. So
+	 * this is a knob and the right value is measured (SMU2000_CARD_AFTER). */
+	if (is_poll && a->seen_poll && a->after > 0) {
+		a->after--;
+		return;
+	}
 	const int want = a->on_poll ? is_poll : 1;
 	if (want && a->tx_byte < 0 && a->tx_next >= a->tx_len && !(a->once && a->sent))
 		a->tx_next = 0;
@@ -361,7 +379,8 @@ static void answer_reset(plg_card *c)
 	a->start_delay = 0;
 	a->tx_level = 1;
 	a->sent = a->accepted = 0;
-	a->on_poll = a->want_poll;
+	a->after = a->after_polls;
+	a->seen_poll = 0;
 	build_replies(a);
 }
 
