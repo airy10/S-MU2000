@@ -398,6 +398,9 @@ public:
 	// 「アクセスが無い」ことと「記録ファイルを書けていない」を
 	// 取り違えないため（これは実際に取り違えた）。
 	u64 sci4_hits() const { return m_sci4_hits; }
+	// S-MU2000: temporary - count reads of the panel switch latch, to see whether
+	// the firmware stops scanning the panel when a card is present.
+	u64 panel_reads() const { return m_panel_reads; }
 
 	// **firmware を走らせない口**（doc/native-engine.md の段 2）。
 	// 1: 鍵の上げ下げを native driver でさばき、CPU はその間止める
@@ -916,6 +919,7 @@ private:
 	bool        m_swp_trace_reads = false;
 	std::FILE  *m_sci4_trace = nullptr;
 	u64         m_sci4_hits = 0;
+	mutable u64 m_panel_reads = 0;
 	plg::host  *m_plg = nullptr;
 	// カードの TX 線を SCI4 の RX へ入れる脐。/cards で 1 本だけ。
 	std::function<void(int, int)> m_plg_tx_sink;

@@ -833,7 +833,15 @@ void mu2000::build_bus()
 	{
 		mem_bus::device d;
 		d.start = 0xc80000; d.end = 0xc80000;
-		d.r8 = [this](offs_t) { return ledsw_r(); };
+		d.r8 = [this](offs_t) {
+			// Temporary: who calls the panel scan, and does the caller change with
+			// a card present. First 400 only - after that it is just the loop.
+			if (m_panel_reads < 400 && (m_panel_reads < 10 || m_panel_reads % 40 == 0))
+				std::fprintf(stderr, "panel read #%llu pc=%08x\n",
+				             (unsigned long long)m_panel_reads, m_cpu->pc());
+			m_panel_reads++;
+			return ledsw_r();
+		};
 		d.w8 = [this](offs_t, u8 v) { m_ledsw1 = v; };
 		m_bus.add_device(d);
 	}

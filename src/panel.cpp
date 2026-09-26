@@ -297,6 +297,10 @@ int main(int argc, char **argv)
 	mu.reset();
 
 	std::printf("起動中...");
+	auto plg_report = [&]() {
+		std::printf("panel latch reads: %llu\n", (unsigned long long)mu.panel_reads());
+	};
+	extern u64 plg_panel_reads(mu2000 &mu);
 	std::fflush(stdout);
 	{
 		const size_t limit = size_t(30.0 * RATE);
@@ -469,5 +473,6 @@ int main(int argc, char **argv)
 		}
 	}
 
+	plg_report();
 	return 0;
 }

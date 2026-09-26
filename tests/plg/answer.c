@@ -100,6 +100,8 @@ struct answer {
 	int           after_polls; /* the knob's value, restored by reset() */
 	int           delay_polls; /* sub-poll delay before starting the reply */
 	int           mute;         /* receive only, for the bisect */
+	int           discard;      /* return from midi_rx immediately: separates the
+	                             call itself (timing) from what it does (state) */
 	int      rx_total;    /* bytes since reset, for the report */
 	int      rx_polls;    /* messages seen that look like a poll */
 	char     rx_log[16][24]; /* the first messages, as the card saw them */
@@ -113,9 +115,11 @@ struct answer {
 	int            start_delay;  /* idle polls before a start bit */
 	int            once;         /* answer one message in total, like the AP */
 	int            on_poll;      /* answer the poll rather than the first message */
-	unsigned char  tx_buf[sizeof(REPLY_CATEGORY) + sizeof(REPLY_NAME)];
+	unsigned char  tx_buf[sizeof(REPLY_NAME)];   /* one reply at a time, the larger */
 	int            tx_len;
 	int            tx_next;      /* where the next reply starts in tx_buf */
+	int            sent_cat;     /* the category reply went out */
+	int            sent_name;    /* the name reply went out */
 	int            tx_level;     /* the level being held */
 	int            tx_calls;     /* midi_tx() calls, for the report */
 	int            sent;         /* replies sent so far, for the report */
@@ -183,6 +187,9 @@ static void read_knobs(struct answer *a)
 	a->mute = 0;
 	if ((e = getenv("SMU2000_CARD_MUTE")) != 0 && atoi(e) != 0)
 		a->mute = 1;
+	a->discard = 0;
+	if ((e = getenv("SMU2000_CARD_DISCARD")) != 0 && atoi(e) != 0)
+		a->discard = 1;
 	if ((e = getenv("SMU2000_CARD_AFTER")) != 0) {
 		const int v = atoi(e);
 		if (v >= 0 && v <= 16)
@@ -201,16 +208,25 @@ static void read_knobs(struct answer *a)
 	}
 }
 
-/* Lay the replies out once. Called from create, so it is not on any hot path. */
-static void build_replies(struct answer *a)
+/* Queue one reply. Called when the matching request arrives, so it is on the
+ * receive path but all it does is copy ~22 bytes.
+ *
+ * **One reply per request, because that is what the real card does.** The MAME
+ * capture with a real PLG150-AP shows it answering the identity read
+ * (F0 43 10 4E 00 10 02 01) with the category, and a later `01 00 00` poll with
+ * the name - two separate responses to two separate prompts. Sending both
+ * back-to-back after the first poll gets PLG-1 lit but leaves the panel dead,
+ * so the firmware does tell the difference. */
+static void queue_reply(struct answer *a, int kind)
 {
-	int n = 0;
-	memcpy(a->tx_buf + n, REPLY_CATEGORY, sizeof(REPLY_CATEGORY));
-	n += (int)sizeof(REPLY_CATEGORY);
-	memcpy(a->tx_buf + n, REPLY_NAME, sizeof(REPLY_NAME));
-	n += (int)sizeof(REPLY_NAME);
-	a->tx_len = n;
-	a->tx_next = n;          /* nothing queued yet */
+	if (kind == 0) {
+		memcpy(a->tx_buf, REPLY_CATEGORY, sizeof(REPLY_CATEGORY));
+		a->tx_len = (int)sizeof(REPLY_CATEGORY);
+	} else {
+		memcpy(a->tx_buf, REPLY_NAME, sizeof(REPLY_NAME));
+		a->tx_len = (int)sizeof(REPLY_NAME);
+	}
+	a->tx_next = 0;
 }
 
 static const plg_card_info g_info = {
@@ -243,7 +259,8 @@ PLG_EXPORT plg_card *plg1500_create(const plg_host *host, void *ctx, char *err, 
 	}
 	a->host = host;
 	read_knobs(a);
-	build_replies(a);
+	a->tx_len = a->tx_next = 0;   /* nothing queued yet */
+	a->sent_cat = a->sent_name = 0;
 	return (plg_card *)a;
 }
 
@@ -344,6 +361,8 @@ static void answer_rx(plg_card *c, int level, int bit)
 {
 	struct answer *a = (struct answer *)c;
 	level = level ? 1 : 0;
+	if (a->discard)
+		return;
 	a->rx_bits++;
 	if (bit < 8) {
 		if (level)
@@ -380,27 +399,50 @@ static void answer_rx(plg_card *c, int level, int bit)
 			k += snprintf(dst + k, 16 - k, "%02x", a->msg[i]);
 		dst[k] = 0;
 	}
-	/* **Which message is worth answering is a measured question.** The capture of a
-	 * real AP shows the host sending a read (F0 43 10 4E 00 10 02 01) and then a
-	 * poll (F0 43 30 4E 01 10 00), with the card's two replies arriving after the
-	 * poll. */
+	/* **Which request gets which reply is read off the real card.** The MAME
+	 * capture with a real PLG150-AP shows two separate exchanges:
+	 *
+	 *   host: F0 43 10 4E 00 10 02 01 F7   "two bytes from 0x0010"
+	 *   card: F0 43 10 4E 01 10 00 00 07 00 F7   the category
+	 *   ...
+	 *   host: F0 43 30 4E 01 00 00 F7   a poll with page 00
+	 *   card: F0 43 10 4E 01 00 00 "PLG150-AP     " F7   the name
+	 *
+	 * Sending both replies back-to-back after the first poll gets PLG-1 lit but
+	 * leaves the panel dead, so the firmware does tell the difference. Each reply
+	 * goes out in answer to its own request, and `once` applies per reply: with
+	 * the default the card answers each request the first time it arrives. */
+	if (a->msg_n == 8 && a->msg[0] == 0xf0 && a->msg[1] == 0x43 &&
+	   a->msg[2] == 0x10 && a->msg[3] == 0x4e && a->msg[4] == 0x00 &&
+	   a->msg[5] == 0x10 && a->msg[6] == 0x02 && a->msg[7] == 0x01) {
+		if (!(a->once && a->sent_cat) && a->tx_byte < 0 && a->tx_next >= a->tx_len) {
+			queue_reply(a, 0);
+			a->sent_cat = 1;
+			a->sent++;
+		}
+		return;
+	}
 	const int is_poll = a->msg_n >= 4 && a->msg[1] == 0x43 && a->msg[2] == 0x30;
 	if (is_poll) {
 		a->rx_polls++;
 		a->seen_poll = 1;
 	}
-	/* **When to answer, counted in polls.** A real card is a CPU: it boots, sets
-	 * its SCI up and only then answers, which in MAME is long after the host
-	 * started asking. Ours answers in microseconds, which may be *too early* -
-	 * a host can take a reply that arrives before it is listening as stale. So
-	 * this is a knob and the right value is measured (SMU2000_CARD_AFTER). */
-	if (is_poll && a->seen_poll && a->after > 0) {
-		a->after--;
-		return;
+	/* The name answers the page-00 poll, not the regular one. */
+	const int is_name_poll = a->msg_n == 7 && a->msg[0] == 0xf0 && a->msg[1] == 0x43 &&
+	                         a->msg[2] == 0x30 && a->msg[3] == 0x4e && a->msg[4] == 0x01 &&
+	                         a->msg[5] == 0x00 && a->msg[6] == 0x00;
+	if (is_name_poll && !(a->once && a->sent_name) &&
+	   a->tx_byte < 0 && a->tx_next >= a->tx_len) {
+		/* **When to answer, counted in polls.** Kept from the earlier version:
+		 * answering the very first matching poll is what is measured to work. */
+		if (a->seen_poll && a->after > 0) {
+			a->after--;
+			return;
+		}
+		queue_reply(a, 1);
+		a->sent_name = 1;
+		a->sent++;
 	}
-	const int want = a->on_poll ? is_poll : 1;
-	if (want && a->tx_byte < 0 && a->tx_next >= a->tx_len && !(a->once && a->sent))
-		a->tx_next = 0;
 }
 
 static void answer_run(plg_card *c, plg_slot_io *io)
@@ -424,13 +466,14 @@ static void answer_reset(plg_card *c)
 	a->tx_byte = -1;
 	a->tx_bit  = 0;
 	a->tx_hold = 0;
+	a->sent_cat = a->sent_name = 0;
 	a->start_delay = 0;
 	a->tx_level = 1;
 	a->sent = a->accepted = 0;
 	a->after = a->after_polls;
 	a->delay_polls = a->delay_polls;
 	a->seen_poll = 0;
-	build_replies(a);
+	a->tx_len = a->tx_next = 0;   /* nothing queued yet */
 }
 
 static size_t answer_save(plg_card *c, void *dst, size_t cap)
@@ -492,9 +535,8 @@ static int answer_selftest(plg_card *c)
 			return 3;
 	}
 
-	/* 2. transmit: queue one reply and walk its bits */
-	build_replies(a);
-	a->tx_next = 0;
+	/* 2. transmit: queue the category reply and walk its bits */
+	queue_reply(a, 0);
 	for (got = 0; got < (int)sizeof(REPLY_CATEGORY) * 10; got++) {
 		const int byte = got / 10, step = got % 10;
 		const unsigned char b = REPLY_CATEGORY[byte];

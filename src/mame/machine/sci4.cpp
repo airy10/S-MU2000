@@ -4,6 +4,7 @@
 // Yamaha SCI4 / XV833A00, 7-lines serial chip with 4 multiplexed on one and the other 3 separated
 
 #include "sci4.h"
+#include <cstdlib>
 
 sci4_device::sci4_device(const machine_config &mconfig, const char *tag, device_t *owner, uint32_t clock) :
 	device_t(mconfig, SCI4, tag, owner, clock),
@@ -118,6 +119,10 @@ void sci4_device::device_reset()
 		const u32 div = m_div[3] ? m_div[3] : 0x100;
 		m_line_timer->adjust(attotime::from_ticks(div * 8, clock()));
 	}
+	// S-MU2000: temporary bisect - SMU2000_CARD_NOPOLL kills the poll after arming.
+	// If the panel lives, the poll (not presence) breaks it.
+	if(std::getenv("SMU2000_CARD_NOPOLL"))
+		m_line_timer->adjust(attotime::never);
 }
 
 void sci4_device::do_rx_w(int sci, int state)
@@ -432,7 +437,7 @@ TIMER_CALLBACK_MEMBER(sci4_device::tx_tick)
 		// them sees all of it, so delivering to all of them is the more faithful
 		// behaviour, not the less. Deciding which board is being addressed is the
 		// card's problem, and the firmware broadcasts regardless.
-		if(m_tx_notify && param == 3)
+		if(m_tx_notify && param == 3 && !std::getenv("SMU2000_CARD_DEAF"))
 			for(int line = 0; line != 4; line++)
 				m_tx_notify(m_tx_notify_ctx, line, level, int(step));
 		wait(0, 1, param);
