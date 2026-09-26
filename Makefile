@@ -183,6 +183,7 @@ SRCS := \
 	src/mame/cpu/sh_port.cpp \
 	src/mame/cpu/sh_sci.cpp \
 	src/plg/host.cpp \
+	src/plg/cards.cpp \
 	src/compat/dynlib.cpp
 
 # The PLG card host (doc/plg-cards.md) is in SRCS now: mu2000's SCI4 lines call
@@ -190,7 +191,27 @@ SRCS := \
 # name for it because the build rules below need to name the two files.
 PLG_SRCS := src/plg/host.cpp src/compat/dynlib.cpp
 
-OBJS := $(SRCS:%.cpp=$(BUILD)/%.o)
+# The C card. The generic rule compiles .cpp, so this one is explicit - and it is
+# worth having a C file in the core at all, because it is compiled by the C
+# compiler and linked with C linkage, which is what makes the built-in card a real
+# test of the C ABI rather than a C++ thing that happens to work.
+# `make` builds everything. Stated explicitly on purpose: make's default goal is
+# the first rule in the file, so the card's .o rule sitting above `all` made a
+# bare `make` build that one object and nothing else. It did, once.
+# **It has to be before `all`** or it does not take effect.
+.DEFAULT_GOAL := all
+
+# A separate object from the dylib's, because that one is built -fPIC for a
+# shared library and this one is built for the core. Same source, two objects,
+# each built the way its consumer needs it.
+PLG_CARD_C := tests/plg/answer.c
+PLG_CARD_O := $(BUILD)/plgcard_answer.o
+
+OBJS := $(SRCS:%.cpp=$(BUILD)/%.o) $(PLG_CARD_O)
+
+$(PLG_CARD_O): $(PLG_CARD_C) src/plg/plg1500.h
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -I src -c -o $@ $<
 
 ifeq ($(PLATFORM),windows)
 # vst3 と vst3probe は下で定義している。変数はまだ空なので名前で書く
@@ -317,6 +338,11 @@ endif
 CFLAGS ?= -O2
 
 PLG_OBJS := $(PLG_SRCS:%.cpp=$(BUILD)/%.o)
+
+# The answer card is C and is **built into the core**, not loaded: the point of
+# insert_builtin() is that the reference card needs no shared library and no
+# data, so it can be part of `make check` and of CI.
+PLG_BUILTIN_CFLAGS := $(PLG_CFLAGS)
 
 # The shared library's name and how to link one. Windows differs in both the
 # suffix and the flag. -dynamiclib rather than -bundle on macOS: dlopen opens
@@ -1197,7 +1223,7 @@ ifeq ($(PLATFORM),windows)
 endif
 
 # ROM を要らない検査だけ。**いちばん安い回しかた**。音源に触っていない変更
-# （カード差し込み口、道具、パネル、ビルド）はこれが済む。昔日ここにあった
+# `check` は verify だけだった。この検査も ROM を要らない。
 # `check` は verify だけだった（この検査限り��� 것도houses 方）。
 #   make check
 check: $(BUILD)/verify$(EXE) $(BUILD)/plgtest$(EXE) $(PLG_STUB)

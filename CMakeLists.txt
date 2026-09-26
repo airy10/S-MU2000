@@ -46,7 +46,9 @@ add_library(smu2000_core STATIC
   src/mu2000.cpp
   src/smf.cpp
   src/plg/host.cpp
+  src/plg/cards.cpp
   src/compat/dynlib.cpp
+  tests/plg/answer.c
 )
 target_include_directories(smu2000_core PUBLIC src src/compat)
 target_link_libraries(smu2000_core PUBLIC ${CMAKE_DL_LIBS})

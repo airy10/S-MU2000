@@ -8,6 +8,7 @@
 // rom ディレクトリには MU2000 リポジトリの roms/ をそのまま渡せる。
 
 #include "mu2000.h"
+#include "plg/cards.h"
 #include "plg/host.h"
 
 #include <cstdio>
@@ -27,7 +28,10 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	const std::string dir = argv[1];
+	// A flag in the first position means there is no rom directory: --plg-list
+	// asks about the built-in cards and has no business needing a 4MB flash.
+	const bool dir_is_flag = argv[1][0] == '-';
+	const std::string dir = dir_is_flag ? std::string() : std::string(argv[1]);
 	u64 cycles = 28000000;               // 既定で 1 秒ぶん
 	const char *trace = nullptr;
 	bool with_reads = false;
@@ -39,10 +43,11 @@ int main(int argc, char **argv)
 	const char *sci4intrace = nullptr;
 	const char *lcddump = nullptr;
 	const char *plgcard = nullptr;
+	int plgbuiltin = -1;   // 名前か番号。-builtin で一覧
 	u64 pcskip = 0;
 	u64 pccount = 2000000;
 
-	for (int i = 2; i < argc; i++) {
+	for (int i = dir_is_flag ? 1 : 2; i < argc; i++) {
 		if (!std::strcmp(argv[i], "--trace-swp") && i + 1 < argc)
 			trace = argv[++i];
 		else if (!std::strcmp(argv[i], "--trace-sci4") && i + 1 < argc)
@@ -51,6 +56,10 @@ int main(int argc, char **argv)
 			lcddump = argv[++i];
 		else if (!std::strcmp(argv[i], "--trace-sci4-in") && i + 1 < argc)
 			sci4intrace = argv[++i];
+		else if (!std::strcmp(argv[i], "--plg-builtin") && i + 1 < argc)
+			plgbuiltin = std::atoi(argv[++i]);
+		else if (!std::strcmp(argv[i], "--plg-list"))
+			plgbuiltin = -2;
 		else if (!std::strcmp(argv[i], "--plg") && i + 1 < argc)
 			plgcard = argv[++i];
 		else if (!std::strcmp(argv[i], "--trace-pc") && i + 1 < argc)
@@ -71,6 +80,17 @@ int main(int argc, char **argv)
 			smu2000::g_verbose = true;
 		else
 			cycles = std::strtoull(argv[i], nullptr, 0);
+	}
+
+	if (plgbuiltin == -2) {
+		for (int i = 0; i < plg::builtin_count(); i++) {
+			const plg_card_info *in = plg::builtin_card(i).get_info();
+			std::printf("built-in card %d: %-18s %s (kind %u)\n", i,
+			            in && in->id ? in->id : "?",
+			            in && in->name ? in->name : "?",
+			            in ? unsigned(in->kind) : 0u);
+		}
+		return 0;
 	}
 
 	mu2000 mu;
@@ -148,6 +168,25 @@ int main(int argc, char **argv)
 			std::fprintf(stderr, "カードを入れられない: %s\n", cerr.c_str());
 		else
 			std::printf("PLG スロット %d に %s\n", slot + 1, plgcard);
+	}
+
+	// 中に組み込まれたカード。共有ライブラリが要らないので、check と CI の
+	// 一員にできる。カードの中身は dlopen 版とまったく同じもの。
+
+	if (plgbuiltin >= 0) {
+		if (plgbuiltin >= plg::builtin_count()) {
+			std::fprintf(stderr, "built-in カードの番号が範囲外: %d\n", plgbuiltin);
+			return 1;
+		}
+		std::string cerr;
+		mu.set_plg_host(&cards);
+		cards.set_log_sink([](const std::string &m) { std::printf("[card] %s\n", m.c_str()); });
+		const int slot = mu.plg_slot_for(PLG_MODEL_ANY);
+		if (!cards.insert_builtin(slot, plg::builtin_card(plgbuiltin), cerr))
+			std::fprintf(stderr, "カードを入れられない: %s\n", cerr.c_str());
+		else
+			std::printf("PLG スロット %d に built-in %d\n", slot + 1, plgbuiltin);
+		plgcard = "built in";
 	}
 
 	std::printf("リセット後  PC=%08x\n", mu.cpu().pc());

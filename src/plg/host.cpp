@@ -23,16 +23,10 @@ constexpr unsigned TIMED_EVERY = 64;
 
 namespace {
 
-// The entry points, looked up once per insert. A module missing one of them is
-// not a card, and the message says which, because a forgotten PLG_EXPORT is the
-// mistake a card author makes first.
-struct entry {
-	const plg_card_info *(*get_info)(void) = nullptr;
-	plg_card            *(*create)(const plg_host *, void *, char *, size_t) = nullptr;
-	void                (*destroy)(plg_card *) = nullptr;
-	const plg_card_ops  *(*ops)(const plg_card *) = nullptr;
-};
-
+// Finding the four entry points in a library. A module missing one of them is not
+// a card, and the message says which, because a forgotten PLG_EXPORT is the
+// mistake a card author makes first. The struct itself is in the header, because
+// a card built into the program fills the same one in.
 bool resolve(dynlib &lib, entry &e, std::string &err)
 {
 	e.get_info = reinterpret_cast<const plg_card_info *(*)()>(lib.symbol("plg1500_get_info"));
@@ -55,6 +49,13 @@ bool resolve(dynlib &lib, entry &e, std::string &err)
 		}
 	return true;
 }
+
+
+// Finding the four entry points in a library. A module missing one of them is not
+// a card, and the message says which, because a forgotten PLG_EXPORT is the
+// mistake a card author makes first. The struct itself is in the header, because
+// a card built into the program fills the same one in.
+bool resolve(dynlib &lib, entry &e, std::string &err);
 
 // A descriptor copied out of the module, so the host never keeps a pointer into
 // a library it may close. The strings are std::string rather than a char array
@@ -167,6 +168,7 @@ struct host::impl {
 	plg_card           *card = nullptr;
 	const plg_card_ops *ops  = nullptr;
 	std::string         msg;
+	std::string origin;   // the file it came from, or \"(built in)\"
 
 	// The ops table copied out of the module. Calling through the module's own
 	// pointer would read past the end of a table built against an older header,
@@ -243,33 +245,28 @@ bool host::probe(const std::string &path, plg_card_info &out, std::string &err)
 	return true;
 }
 
-bool host::insert(int slot, const std::string &path, std::string &err)
+// Everything after the four entry points have been found. **One code path for a
+// card out of a library and a card built into the engine**: the only thing that
+// differs between the two is how the functions were found, and everything that
+// can go wrong - a bad abi, an empty id, a card that fails its own selftest -
+// has to behave identically either way, or a card would pass review as a dylib
+// and fail as part of the program.
+bool host::adopt(int slot, std::unique_ptr<impl> filled, std::string &err)
 {
-	if (slot < 0 || slot >= SLOTS) {
-		err = "スロット番号が範囲外";
-		return false;
-	}
-	// A slot holds one card. Inserting over a live one ejects first, and eject
-	// cannot fail, so nothing here can leave two cards sharing a handle.
-	eject(slot);
-
-	// Keep the slot even when the load fails, so message() has something to say.
-	// A slot that failed is present but not running, which is a different thing
-	// from an empty slot and the screen needs to tell them apart.
-	std::unique_ptr<impl> fresh(new impl);
-	m_slot[slot] = std::move(fresh);
-	impl *ip = m_slot[slot].get();
+	// **The impl is moved in, not rebuilt.** For a card out of a library it
+	// already holds the open handle, and the descriptor and the ops table are
+	// pointers into that library's text - so making a fresh impl here and letting
+	// the caller's go out of scope would dlclose the code the card is about to
+	// run. plgtest caught that as a segfault the moment the two paths were
+	// merged, which is the argument for having a test at all.
+	impl *ip = filled.get();
 	ip->slot  = slot;
 	ip->owner = this;
+	// Keep the slot even when this fails, so message() has something to say. A slot
+	// that failed is present but not running, which is a different thing from an
+	// empty slot and the screen needs to tell them apart.
+	m_slot[slot] = std::move(filled);
 
-	if (!ip->lib.open(path.c_str(), err)) {
-		ip->msg = err;
-		return false;
-	}
-	if (!resolve(ip->lib, ip->fn, err)) {
-		ip->msg = err;
-		return false;
-	}
 	const plg_card_info *in = ip->fn.get_info();
 	if (!in) {
 		ip->msg = "plg1500_get_info が 0 を返した";
@@ -383,6 +380,61 @@ bool host::insert(int slot, const std::string &path, std::string &err)
 		}
 	}
 	return true;
+}
+
+
+bool host::insert(int slot, const std::string &path, std::string &err)
+{
+	if (slot < 0 || slot >= SLOTS) {
+		err = "スロット番号が��囲外";
+		return false;
+	}
+	// A slot holds one card. Inserting over a live one ejects first, and eject
+	// cannot fail, so nothing here can leave two cards sharing a handle.
+	eject(slot);
+
+	// Opened on its own impl first, and handed to adopt() only once the four
+	// entry points are found - so a failed load closes the library rather than
+	// leaving a slot holding an open handle to something that is not a card.
+	std::unique_ptr<impl> filled(new impl);
+	impl *probe = filled.get();
+	if (!probe->lib.open(path.c_str(), err))
+		return false;
+	if (!resolve(probe->lib, probe->fn, err))
+		return false;
+	probe->origin = path;
+	return adopt(slot, std::move(filled), err);
+}
+
+bool host::insert_builtin(int slot, const builtin_card &b, std::string &err)
+{
+	if (slot < 0 || slot >= SLOTS) {
+		err = "スロット番号が範囲外";
+		return false;
+	}
+	eject(slot);
+	std::unique_ptr<impl> filled(new impl);
+	impl *ip = filled.get();
+	ip->fn.get_info = b.get_info;
+	ip->fn.create   = b.create;
+	ip->fn.destroy  = b.destroy;
+	ip->fn.ops      = b.ops;
+	ip->origin      = b.origin ? b.origin : "(built in)";
+	entry &fn = ip->fn;
+	// The same check dlopen's resolve() does, so a built-in card with a missing
+	// entry point is refused the same way and for the same stated reason.
+	struct { const char *name; bool have; } need[] = {
+		{ "plg1500_get_info", fn.get_info != nullptr },
+		{ "plg1500_create",   fn.create   != nullptr },
+		{ "plg1500_destroy",  fn.destroy  != nullptr },
+		{ "plg1500_ops",      fn.ops      != nullptr },
+	};
+	for (const auto &n : need)
+		if (!n.have) {
+			err = std::string("入口が無い: ") + n.name;
+			return false;
+		}
+	return adopt(slot, std::move(filled), err);
 }
 
 void host::eject(int slot)

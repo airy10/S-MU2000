@@ -30,6 +30,16 @@ class dynlib;
 
 namespace plg {
 
+// The four entry points, however they were found: by dlsym for a card out of a
+// library, or by calling them for a card built into the program. Public only
+// because src/plg/host.cpp's resolve() is a file-scope helper.
+struct entry {
+	const plg_card_info *(*get_info)(void) = nullptr;
+	plg_card            *(*create)(const plg_host *, void *, char *, size_t) = nullptr;
+	void                (*destroy)(plg_card *) = nullptr;
+	const plg_card_ops  *(*ops)(const plg_card *) = nullptr;
+};
+
 // One PLG slot holds at most one module. Three of them, because the MU2000 has
 // three connectors (src/mame/ymmu2000.cpp:407-425) and the panel has three
 // lamps (src/ui/panel.cpp:794).
@@ -53,6 +63,26 @@ public:
 	// Inserting reads the descriptor first and refuses on a bad abi, so a card
 	// built against another version cannot get far enough to misbehave.
 	bool insert(int slot, const std::string &path, std::string &err);
+
+	// A card compiled into the program rather than loaded from one. **The four
+	// entry points are the same four**, found by calling them instead of by
+	// dlsym, so a card author writes one implementation and it can be shipped
+	// either way - a dylib for third parties, a static card for this repository's
+	// own, and for the reference cards that is the difference between being
+	// testable in CI and not.
+	//
+	// Everything after the entry points are found is one code path (adopt), so
+	// the two ways in cannot drift: a bad abi, an empty id or a failed selftest is
+	// refused identically whether the card came from a file or from the binary.
+	struct builtin_card {
+		const plg_card_info    *(*get_info)(void);
+		plg_card               *(*create)(const plg_host *, void *, char *, size_t);
+		void                   (*destroy)(plg_card *);
+		const plg_card_ops     *(*ops)(const plg_card *);
+		// Shown in the slot's message, so a screen can say which card it is.
+		const char *origin;
+	};
+	bool insert_builtin(int slot, const builtin_card &b, std::string &err);
 	void eject(int slot);
 
 	// A slot can be occupied by a module that failed to start - the library
@@ -172,6 +202,8 @@ public:
 
 private:
 	struct impl;
+	// Everything after the four entry points are found. See insert_builtin().
+	bool adopt(int slot, std::unique_ptr<impl> filled, std::string &err);
 
 	// The three things a card reaches through its plg_host. impl holds a
 	// back pointer to the host for exactly this, because the service table is
