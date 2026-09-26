@@ -314,6 +314,14 @@ bool host::insert(int slot, const std::string &path, std::string &err)
 	// entry point so the ABI does not have to change when that arrives, and so a
 	// card that raises one now finds it goes nowhere rather than crashing.
 	ip->services.irq = [](void *, int, int) {};
+	// The card's own TX line. Goes straight out to whoever the host pointed the
+	// sink at - the machine, which wires it to SCI4's RX. No buffering here: the
+	// card is driving a line, and a line has no queue.
+	ip->services.tx = [](void *ctx, int level) {
+		host::impl *p = static_cast<host::impl *>(ctx);
+		if (p->owner && p->owner->m_tx_sink)
+			p->owner->m_tx_sink(p->slot, level ? 1 : 0);
+	};
 	ip->services.log = [](void *ctx, const char *msg) {
 		host::impl *p = static_cast<host::impl *>(ctx);
 		if (p->owner && p->owner->m_log && msg)
@@ -479,6 +487,21 @@ void host::run(int slot, const int32_t *in, int32_t *out)
 	} else {
 		s->slow = 0;
 	}
+}
+
+void host::midi_rx(int slot, int level)
+{
+	// No card, or a card the host has given up on: the line goes nowhere, which
+	// is what it did before this existed. Cheap enough to call on every edge.
+	if (slot < 0 || slot >= SLOTS)
+		return;
+	impl *s = m_slot[slot].get();
+	if (!s || !s->card || !s->cut_ok || s->fault)
+		return;
+	// A card with no receive entry point simply does not listen, which is the
+	// normal case: there is no separate flag for it.
+	if (s->cut.midi_rx)
+		s->cut.midi_rx(s->card, level ? 1 : 0);
 }
 
 int host::midi_tx(int slot) const

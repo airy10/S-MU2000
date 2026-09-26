@@ -19,6 +19,7 @@
 #include "mame/cpu/sh7042.h"
 #include "mame/sound/swp30.h"
 #include "mame/machine/sci4.h"
+#include "plg/host.h"
 #include "mame/video/hd44780.h"
 
 #include <cstdio>
@@ -354,6 +355,29 @@ public:
 	// That string is the observable for "the card was recognised", read back out
 	// of lcd(). NULL turns the trace off.
 	void set_sci4_trace(std::FILE *f) { m_sci4_trace = f; }
+
+	// ---- PLG cards (doc/plg-cards.md) ---------------------------------------
+	//
+	// The three slots' loading half. The host outlives the machine, so this is a
+	// pointer and not a member: the plug-in and gui create the card host, hand it
+	// over, and tear it down after the machine is gone. A machine with no host
+	// has no cards, which is the state this project is in by default and the
+	// state every tool but `boot --plg` runs in.
+	//
+	// Wiring it is two lines per direction, transcribed from MAME's
+	// ymmu2000.cpp:409: SCI4's TX line is the card's RX, and the card's TX is
+	// SCI4's RX. Slots are SCI4 ports 30..32, one per connector, so slot n is
+	// port 30+n. Nothing is plugged in unless a card says so.
+	void set_plg_host(plg::host *h);
+	plg::host *plg_host_ptr() const { return m_plg; }
+
+	// Which slot a card claims to be, from its descriptor. The panel lamps and
+	// the PLG mode are the firmware's, so the host only needs this to refuse a
+	// combination the hardware would refuse: PLG_MODEL_ANY means the card is
+	// making no claim, and a card claiming a model is only put in a slot that
+	// model is allowed in. Which are allowed is not known yet, so everything
+	// goes in slot 0 for now and this is where that rule will live.
+	int plg_slot_for(u32 model_id) const;
 	// 0xf00000 への読み書きの回数。**記録 Commodityg なくても数える**:
 	// 「アクセスが無い」ことと「記録ファイルを書けていない」を
 	// 取り違えないため（これは実際に取り違えた）。
@@ -876,6 +900,9 @@ private:
 	bool        m_swp_trace_reads = false;
 	std::FILE  *m_sci4_trace = nullptr;
 	u64         m_sci4_hits = 0;
+	plg::host  *m_plg = nullptr;
+	// カードの TX 線を SCI4 の RX へ入れる脐。/cards で 1 本だけ。
+	std::function<void(int, int)> m_plg_tx_sink;
 
 	// 44.1kHz 1 サンプルあたりの CPU サイクル。端数は繰り越す
 	u64 m_cycle_debt = 0;

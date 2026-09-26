@@ -240,6 +240,17 @@ typedef struct plg_host {
 	// is the wrong shape: the host samples it after the access returns.
 	void  (*irq)(void *ctx, int line, int state);
 
+	// **The card's TX line changed.** The host wires this to SCI4's RX, so a card
+	// drives a real line and the SH-2 sees real edges.
+	//
+	// Both directions are edge-driven on purpose. The host has no bit clock to
+	// offer a card - SCI4 generates the bit timing from its own divisor, and
+	// duplicating that here would be a second, wrong copy of it - so the card
+	// pushes its line and the chip samples it, exactly as the wire works. What
+	// this does **not** give a card is a way to schedule that push in time: see
+	// the note on timing in doc/plg-cards.md, section 4.
+	void  (*tx)(void *ctx, int level);
+
 	void     (*log)(void *ctx, const char *msg);
 	// The host's 44100 Hz sample counter, so a card does not keep its own.
 	uint64_t (*sample_clock)(void *ctx);
@@ -265,9 +276,14 @@ typedef struct plg_card_ops {
 	void   (*reset)(plg_card *c);
 	// One sample, from the audio thread (the promise in doc/plg-cards.md, section 3)
 	void   (*run)(plg_card *c, plg_slot_io *io);
-	// The level of the card's MIDI TX line, 0 or 1. The host calls this at the
-	// SCI4's bit times, so it must return the line as it is *now* and not
-	// consume a queued bit: there is nowhere to put a queue.
+	// The host pushing SCI4's TX line into the card, as an edge. The chip
+	// generates these itself from its divisor, so the card sees real bit timing
+	// and this direction needs nothing from the host but a call. NULL means the
+	// card does not listen.
+	void   (*midi_rx)(plg_card *c, int level);
+	// The card's own TX line, as a level. Polled at the bit times, so it must
+	// return the line as it is *now*. A card that would rather be edge-driven
+	// calls host->tx() and may leave this NULL.
 	int    (*midi_tx)(plg_card *c);
 	// State. save() returns the number of bytes written, or the number it needs
 	// when cap is too small, having written nothing. load() returns 0 on success.

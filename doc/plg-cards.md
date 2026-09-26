@@ -4,10 +4,11 @@ The module ABI for a PLG card (a PLG150-DX and friends) and the host side that
 loads one. Implementation in `src/plg/`, the contract itself in
 `src/plg/plg1500.h`, the checks in `src/plgtest.cpp` and `tests/plg/stub.c`.
 
-**Where it stands: the ABI and the host side (loading, lifetime, state, safety)
-exist. Nothing calls them from the machine yet.** The wiring from
-`mu2000::run_sample()` to `plg::host::run()` is the next step, and it is
-deliberately not in this branch.
+**Where it stands: the ABI, the host side (loading, lifetime, state, safety), and
+the SCI4 line from the firmware to a card are done and checked.** What is not done
+is the audio path - `mu2000::run_sample()` still does not call
+`plg::host::run()` - and a card's own transmit timing. A card in a slot hears the
+firmware; nothing yet hears the card.
 
 ## 1. What the hardware has
 
@@ -132,16 +133,36 @@ handed over. MAME's PLG cards take an external clock on their SCI
 needed; which wire carries it, and what else is on the connector, is a question
 for the schematic.
 
-## 5. What is not here yet
+## 5. What is done, and what is not
 
-- **The wiring from `mu2000::run_sample()`.** The main thing left. `PLG_SRCS` is
-  deliberately not in `SRCS`: nothing calls it, and a tool that links the
-  emulator should not have to drag in dlopen for a feature nothing uses. The
-  wiring patch moves those two lines across.
-- **SCI4 to card MIDI.** `plg::host::midi_tx()` exists and only needs wiring to
-  SCI4's TX. SCI4 is already emulated, so this should be small.
-- **A real card** (`src/plg/plg150dx_device`): connector, SCI4 both ways, the
-  SH7043, the two flashes, a YMP706 stub.
+Done and checked:
+
+- **The firmware to card direction.** `mu2000` wires SCI4's TX line into
+  `plg::host::midi_rx()` and a card's TX line back into SCI4's RX, transcribed
+  from MAME's `ymmu2000.cpp:409`; slot n is SCI4 port 30+n. The card host is in
+  `SRCS` now, because the machine calls into it.
+- **`boot --plg <card>`**, which inserts a card before the machine starts.
+- **`tests/plg/echo.c`**, a card that needs no protocol knowledge at all: it
+  counts the bytes the firmware sends and reports them. It exists to answer one
+  question - does anything the firmware sends actually arrive - and it answers it
+  with 129 bytes and six well-formed sysex frames, including the identity read
+  `F0 43 10 4E 00 10 02 01 F7`.
+- **`tools/run_tests.py` step 2b**, which runs the above and checks the frames.
+  It needs ROMs but no renders, so it costs a fraction of the audio suite.
+
+Not done:
+
+- **The audio path.** `mu2000::run_sample()` does not call `plg::host::run()`
+  yet, so `in[2]`/`out[2]` carry nothing. That is the main thing left on the host
+  side.
+- **A card's transmit timing**, which is why the card above answers nothing.
+  SCI4 samples a bit every few microseconds and an audio sample is 22.7 of them,
+  so a card that emits a byte from `run()` puts all ten edges inside one instant
+  and the chip sees framing errors. A card has to be called at the bit rate, and
+  the honest place to do that is where SCI4 samples rather than in a second copy
+  of its divisor.
+- **A real card** (`src/plg/plg150dx_device`): the SH7043, the two flashes, a
+  YMP706 model. The connector and SCI4 are already there to hang it on.
 - **Discovery** (a `plg.txt` beside the bundle, the way `roms.txt` works) and a
   screen. The panel is the firmware's; a `SELF` card needs a page of its own.
 - **The second load line** for `PLG_F_HEAVY`, added to the existing
@@ -223,11 +244,15 @@ Three repositories were read for this. **No code was taken from any of them.**
 1. **One real card, in the tree.** `src/plg/plg150dx_device`: connector, SCI4 both
    ways, the SH7043, the two flashes, a YMP706 stub. `Checking PLG` lights up by
    itself at the end of it, which is the milestone.
-2. **Wire it to `run_sample()`.** `PLG_SRCS` into `SRCS`; `in[2]` from melo 18,19
-   and `out[2]` to meli 10, 12, 14.
-3. **Reverse the PLG1X0 serial link.** Service manual plus a logic-analyser
-   capture of SCI4. This is the first piece of real research, and by section 4 it
-   happens inside the card.
+2. **Wire it to `run_sample()`.** `in[2]` from melo 18,19 and `out[2]` to meli
+   10, 12, 14. The card host is already in `SRCS`; this is just the call.
+3. **Work out what a card has to answer.** The identity read is known -
+   `F0 43 10 4E 00 10 02 01 F7`, two bytes from 0x0010 - and so is the reply
+   opcode, since the MU2000 answers its own 4E requests with 4C. What the two
+   bytes *mean* is not, and neither is which of the eighteen bracketed categories
+   each value picks. The firmware's side is around `0x000c1d40`, reached through
+   the pointer table at `0x000c1dd0`, and `build/sh2dis` will read it. The other
+   half needs a capture from a real MU2000 with a board in it.
 4. **AN** (VOP3; FSVR's VOP3 material is the raw material) and **VL** (YSS217;
    realistically a project of its own).
 5. **Open it to card authors.** `plg.txt`, a screen, and the stub as the thing to

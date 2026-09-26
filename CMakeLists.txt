@@ -45,8 +45,11 @@ add_library(smu2000_core STATIC
   src/mame/cpu/sh_sci.cpp
   src/mu2000.cpp
   src/smf.cpp
+  src/plg/host.cpp
+  src/compat/dynlib.cpp
 )
 target_include_directories(smu2000_core PUBLIC src src/compat)
+target_link_libraries(smu2000_core PUBLIC ${CMAKE_DL_LIBS})
 target_compile_options(smu2000_core PRIVATE -Wall -Wno-unused-variable -Wno-unused-but-set-variable)
 set_target_properties(smu2000_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
@@ -65,12 +68,8 @@ endforeach()
 # this yet - the slots are not wired into mu2000::run_sample() - so it is a
 # library of its own rather than part of smu2000_core: a tool that links the
 # emulator does not have to drag in dlopen because a feature nothing uses.
-add_library(smu2000_plg STATIC
-  src/plg/host.cpp
-  src/compat/dynlib.cpp)
-target_include_directories(smu2000_plg PUBLIC src src/compat)
-target_link_libraries(smu2000_plg PUBLIC ${CMAKE_DL_LIBS})
-set_target_properties(smu2000_plg PROPERTIES POSITION_INDEPENDENT_CODE ON)
+# The PLG card host is part of smu2000_core now: mu2000's SCI4 lines call into
+# it, so anything that links the machine needs it.
 
 # The reference card, in C. MODULE rather than SHARED: dlopen opens it, so it
 # needs no import library and nothing links against it at build time.
@@ -88,7 +87,7 @@ else()
 endif()
 
 add_executable(plgtest src/plgtest.cpp)
-target_link_libraries(plgtest PRIVATE smu2000_plg)
+target_link_libraries(plgtest PRIVATE smu2000_core)
 # The test finds the stub next to itself, so the two have to be built together.
 add_dependencies(plgtest plg_stub)
 

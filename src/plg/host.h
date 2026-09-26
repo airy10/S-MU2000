@@ -85,9 +85,25 @@ public:
 
 	// ---- MIDI --------------------------------------------------------------
 	//
-	// The card's TX line, or 0 when there is no card. Called at the SCI4's bit
-	// times, so it must be cheap and must not block.
-	int midi_tx(int slot) const;
+	// Two directions, both edge-driven, because that is what the wire is.
+	//
+	// midi_rx() is the host pushing SCI4's TX line into the card. The chip
+	// generates those edges itself from its divisor, so this is exact.
+	// midi_tx() is the card's own line, polled at the bit times; a card that
+	// wants to be edge-driven instead calls host->tx(), which lands in tx_sink.
+	//
+	// **A card cannot yet schedule its own TX in time.** SCI4 samples a bit every
+	// few microseconds and an audio sample is 22.7 of them, so a card that emits
+	// a whole byte from run() has all ten edges inside one instant and the chip
+	// sees framing errors. That is a known gap, not a design: doc/plg-cards.md
+	// section 4. Until it is closed, a v1 card is useful for receiving and for
+	// proving the plumbing, not for being received.
+	void midi_rx(int slot, int level);
+	int  midi_tx(int slot) const;
+
+	// Where a card's own TX line goes. The machine points this at SCI4's RX.
+	using tx_sink = std::function<void(int slot, int level)>;
+	void set_tx_sink(tx_sink f) { m_tx_sink = std::move(f); }
 
 	// ---- state -------------------------------------------------------------
 	//
@@ -171,6 +187,7 @@ private:
 	// numbers stay indices and the three never drift apart.
 	std::unique_ptr<impl> m_slot[SLOTS];
 	rom_fn                 m_rom[SLOTS];
+	tx_sink                m_tx_sink;
 	log_fn                 m_log;
 	load_fn                m_load;
 	param_fn               m_param;

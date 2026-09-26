@@ -8,6 +8,7 @@
 // rom ディレクトリには MU2000 リポジトリの roms/ をそのまま渡せる。
 
 #include "mu2000.h"
+#include "plg/host.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -36,6 +37,7 @@ int main(int argc, char **argv)
 	const char *updtrace = nullptr;
 	const char *sci4trace = nullptr;
 	const char *lcddump = nullptr;
+	const char *plgcard = nullptr;
 	u64 pcskip = 0;
 	u64 pccount = 2000000;
 
@@ -46,6 +48,8 @@ int main(int argc, char **argv)
 			sci4trace = argv[++i];
 		else if (!std::strcmp(argv[i], "--lcd-dump") && i + 1 < argc)
 			lcddump = argv[++i];
+		else if (!std::strcmp(argv[i], "--plg") && i + 1 < argc)
+			plgcard = argv[++i];
 		else if (!std::strcmp(argv[i], "--trace-pc") && i + 1 < argc)
 			pctrace = argv[++i];
 		else if (!std::strcmp(argv[i], "--hash-pc") && i + 1 < argc)
@@ -117,6 +121,21 @@ int main(int argc, char **argv)
 		hf = std::fopen(pchash, "w");
 		smu2000::g_pc_hash = hf;
 	}
+	// PLG カードを入れる（doc/plg-cards.md 5）。**機械を立ち上げる前**に
+	// 入れる。カードの読み込みは機械の錠を取り中の別の糸ですることが約束で、
+	// boot には糸が 1 本しかないので、立ち上がり前にやってしまうのが素直。
+	plg::host cards;
+	if (plgcard) {
+		std::string cerr;
+		mu.set_plg_host(&cards);
+		cards.set_log_sink([](const std::string &m) { std::printf("[card] %s\n", m.c_str()); });
+		const int slot = mu.plg_slot_for(PLG_MODEL_ANY);
+		if (!cards.insert(slot, plgcard, cerr))
+			std::fprintf(stderr, "カードを入れられない: %s\n", cerr.c_str());
+		else
+			std::printf("PLG スロット %d に %s\n", slot + 1, plgcard);
+	}
+
 	std::printf("リセット後  PC=%08x\n", mu.cpu().pc());
 
 	// 少しずつ走らせて、進んでいるか見る

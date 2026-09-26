@@ -1051,6 +1051,42 @@ void mu2000::reset()
 	m_sci4->write_irq<1>().set([this](int s) { m_sci_irq[1] = s; update_sci_irq(); });
 	m_sci4->write_irq<3>().set([this](int s) { m_cpu->execute_set_input(1, s); });
 
+	// PLG カードへの 2 本の線（doc/plg-cards.md 5）。MAME の
+	// ymmu2000.cpp:409 と同じ並びで、書き写しだけ:
+	//   SCI4 の TX 線がカードの RX、カードの TX 線が SCI4 の RX。
+	// スロット n は SCI4 のポート 30+n（コネクタ 1 枚につき 1 ポート）。
+	// 最初は 3 枚とも空なので、この 2 方向は 0 を返すだけ。カードを差し込む
+	// まで何も起きない、というのが差し込む前の正しい状態。
+	for (int n = 0; n < plg::host::SLOTS; n++) {
+		switch (n) {
+		case 0:
+			m_sci4->write_tx<30>().set([this](int s) { if (m_plg) m_plg->midi_rx(0, s); });
+			break;
+		case 1:
+			m_sci4->write_tx<31>().set([this](int s) { if (m_plg) m_plg->midi_rx(1, s); });
+			break;
+		case 2:
+			m_sci4->write_tx<32>().set([this](int s) { if (m_plg) m_plg->midi_rx(2, s); });
+			break;
+		default:
+			break;
+		}
+	}
+	// カードの TX 線は SCI4 の RX に入る。カードは host->tx() を呼ぶので
+	// ここで 1 本つなぐ。ビット時刻は SCI4 側が決めるので、ホストは
+	// 「線が変わった」ことしか受け渡さない（doc/plg-cards.md 4 の時間間隔の
+	// 残課題はここ）。
+	m_plg_tx_sink = [this](int slot, int level) {
+		switch (slot) {
+		case 0: m_sci4->rx_w<30>(level); break;
+		case 1: m_sci4->rx_w<31>(level); break;
+		case 2: m_sci4->rx_w<32>(level); break;
+		default: break;
+		}
+	};
+	if (m_plg)
+		m_plg->set_tx_sink(m_plg_tx_sink);
+
 	// 2 個のチップで乱数の数列を分ける。同じ種だと雑音まで揃ってしまう
 	m_swpm.set_rand_seed(0x9d14abd7);
 	m_swps.set_rand_seed(0x6c1f35e9);
@@ -2926,6 +2962,30 @@ void mu2000::native_fx_update()
 		if (ok)
 			m_nfx.meq().set_raw(gain, freq, q, shape1 < 0 ? 0 : shape1, shape5 < 0 ? 0 : shape5);
 	}
+}
+
+void mu2000::set_plg_host(plg::host *h)
+{
+	// 差し替えるときは古い host の脐を外してから渡す。逆だと、古い host が
+	// 機を消したあとも線を書き込むことになる。
+	if (m_plg && m_plg_tx_sink)
+		m_plg->set_tx_sink({});
+	m_plg = h;
+	if (m_plg && m_plg_tx_sink)
+		m_plg->set_tx_sink(m_plg_tx_sink);
+}
+
+int mu2000::plg_slot_for(u32 model_id) const
+{
+	// Anything goes in slot 0 for now. Which models are allowed in which slot is
+	// not a free choice: the firmware has `PLG-2 Disabled!`, `PLG-3 Disabled!`
+	// and `PLG-2,3 Disabled!` in it (mu2000_flash.bin around 0x1dd0f0), so
+	// somewhere it decides a board may not go. Measuring that means watching
+	// which slot a real board works in, and a restriction invented before the
+	// measurement would be a guess wearing a rule's clothes. One card in slot 0
+	// is enough until then.
+	(void)model_id;
+	return 0;
 }
 
 void mu2000::run_sample(s32 &left, s32 &right)

@@ -316,7 +316,13 @@ int main(int argc, char **argv)
 		const std::vector<uint8_t> blob = host.save();
 		ok(!blob.empty(), "  save が節を書く");
 		ok(blob.size() > 16 + 13, "  ヘッダと本文がある");
-		ok(blob[0] == 'P' && blob[1] == 'L' && blob[2] == 'G', "  印が PLG");
+		// Guarded, because ok() only counts: reading blob[0] after a failed
+		// !blob.empty() is out of bounds, and a test that crashes tells you
+		// less than one that fails.
+		if (blob.size() >= 3)
+			ok(blob[0] == 'P' && blob[1] == 'L' && blob[2] == 'G', "  印が PLG");
+		else
+			ok(false, "  印が PLG（節が短すぎて読めない）");
 
 		// Wreck the card's state, then put it back.
 		host.set_param(0, 1, 3);

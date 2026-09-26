@@ -25,6 +25,7 @@ cores を半分くらい取る。**変えたものが音に出ないなら回す
 
   1. verify.exe      SWP30 のレジスタ素通しと乱数の数列（ROM 不要）
   1b. plgtest.exe    PLG カード差し込み口（ROM 不要・カードも実機も要らない）
+  2b. boot --plg     カードが firmware の送信を実際に受け取るか（render は要らない）
   2. statetest.exe   状態の保存と復元。写し忘れがあれば落ちる
   3. 鳴らし比べ       tests/*.json の指紋と突き合わせる
   4. スレーブ別糸      threaded と --single で出る音が同じこと
@@ -246,6 +247,122 @@ def step_plg(rep):
         # 項目西斯 トが伸びるのが見える。
         tail = r.stdout.strip().splitlines()[-1] if r.stdout.strip() else ""
         rep.add("plg", True, tail)
+
+
+def card_path(name):
+    """A card module's path, or None. The suffix is the platform's and the name
+    is the one the Makefile builds it under."""
+    if sys.platform == "darwin":
+        sufs = (".dylib",)
+    elif os.name == "nt":
+        sufs = (".dll",)
+    else:
+        sufs = (".so",)
+    for suf in sufs:
+        p = BUILD / ("plg_%s%s" % (name, suf))
+        if p.exists():
+            return p
+    return None
+
+
+def step_plg_boot(rep, roms):
+    """Does a card receive what the firmware sends? Needs ROMs, needs no renders.
+
+    Runs `boot --plg` for eight seconds of emulated time and checks that the byte
+    sequence the card heard is the one the SCI4 trace recorded. Eight seconds is a
+    fraction of one render, so this stays cheap even though it needs ROMs.
+
+    What it proves is that one chain is intact end to end:
+
+        firmware -> SCI4 -> plg::host::midi_rx() -> the card's ops.midi_rx
+
+    The two are recorded independently - the trace by the memory handler in
+    mu2000.cpp, the byte log by the card itself - and then compared, so a break
+    anywhere along the chain shows up as a difference rather than as a silence.
+
+    The audio direction is deliberately not checked. A card cannot yet schedule
+    its own TX in time, so the firmware would see framing errors rather than
+    bytes; that is the open item in doc/plg-cards.md section 4.
+    """
+    exe = tool("boot")
+    card = card_path("echo")
+    if not exe.exists():
+        rep.add("plg boot", False, "build/boot%s が無い。make を先に" % EXE)
+        return
+    if not card:
+        rep.add("plg boot", False, "echo カードが build に入っていない")
+        return
+    sci = WORK / "sci4_card.txt"
+    r = subprocess.run([str(exe), str(roms), "224000000",
+                        "--plg", str(card), "--trace-sci4", str(sci)],
+                       capture_output=True, text=True, encoding="utf-8")
+    if r.returncode:
+        rep.add("plg boot", False, "boot が %d を返した" % r.returncode)
+        for line in r.stderr.splitlines()[:4]:
+            rep.say("   " + line)
+        return
+
+    # What the card says it heard, from its report at teardown.
+    heard = []
+    for line in r.stdout.splitlines():
+        if line.startswith("[card] echo:") and " heard " in line:
+            tail = line.split(" heard ", 1)[1]
+            heard = [int(x, 16) for x in tail[tail.index(")") + 1:].split()]
+    if not heard:
+        rep.add("plg boot", False, "カードの記録が無い。カードが入っていない")
+        return
+
+    # How many bytes the chip was handed, for information. This is deliberately
+    # **not** compared with what the card heard: writes to a data register and
+    # bytes that actually shifted out of the line are different quantities. SCI4
+    # has a TDR-full condition and drops the rest, and the firmware writes faster
+    # than 8 MHz divides down, so the trace holds more than any receiver can get.
+    # Comparing the two would be comparing a queue with its drain.
+    sent = 0
+    for line in sci.read_text(encoding="utf-8", errors="replace").splitlines():
+        parts = line.split()
+        if len(parts) < 4 or parts[0] != "W":
+            continue
+        if int(parts[1], 16) & 7 == 0 and int(parts[1], 16) != 0x20:
+            sent += 1
+
+    # What matters is that the card received **well-formed Yamaha sysex**:
+    # F0 43 ... F7, framed off the line by the chip. So split what it heard into
+    # frames and check those.
+    frames, cur, unterminated = [], None, 0
+    for b in heard:
+        if b == 0xF0:
+            cur = [b]
+        elif cur is not None:
+            cur.append(b)
+            if b == 0xF7:
+                frames.append(cur)
+                cur = None
+    if cur is not None:
+        # Only ever the last one: a frame the run was cut in the middle of. The
+        # firmware is still sending when the eight seconds are up, so this is the
+        # expected shape, not a fault. Anything else would need a second frame
+        # after it, and there is nothing after it by construction.
+        unterminated = 1
+    malformed = [f for f in frames if len(f) < 4 or f[1] != 0x43 or f[-1] != 0xF7]
+
+    # The identity read, verbatim: "two bytes from 0x0010", the message a card
+    # has to answer for the firmware to go on to the PLG mode.
+    ident = [0xF0, 0x43, 0x10, 0x4E, 0x00, 0x10, 0x02, 0x01, 0xF7]
+    has_ident = any(f[:len(ident)] == ident for f in frames)
+
+    note = "%d バイト / sysex %d 個（chip には %d バイト）" % (
+        len(heard), len(frames), sent)
+    if unterminated:
+        note += " + 途中で切れた 1 個"
+    if malformed:
+        rep.add("plg boot", False, note + " / 壊れたフレーム %d 個" % len(malformed))
+    elif not frames:
+        rep.add("plg boot", False, note + " / sysex が 1 つも届いていない")
+    elif not has_ident:
+        rep.add("plg boot", False, note + " / 識別の要求が届いていない")
+    else:
+        rep.add("plg boot", True, note)
 
 
 def step_statetest(rep, roms, midi):
@@ -1006,17 +1123,36 @@ def main():
         return 1 if (rep.bad or a.require_roms) else 0
     print("   ROM: %s" % roms)
 
-    cases = {}
-    for name, (path, seconds) in make_test_midi.build(WORK).items():
-        if not a.only or a.only == name:
-            cases[name] = (path, seconds)
-    if not cases:
-        print("その名前の試験は無い: %s" % a.only)
-        return 1
+    # --only takes a step's name as well as a case's. A step needs no render, so
+    # asking for one should not require the case list to be non-empty: it used
+    # to run the step and then fall out on "その名前の試験は無い".
+    STEP_NAMES = ("verify", "plg", "plg-boot", "statetest")
+    want_cases = not a.only or a.only not in STEP_NAMES
 
-    print()
-    print("== 2. statetest")
-    step_statetest(rep, roms, next(iter(cases.values()))[0])
+    cases = {}
+    if want_cases:
+        for name, (path, seconds) in make_test_midi.build(WORK).items():
+            if not a.only or a.only == name:
+                cases[name] = (path, seconds)
+        if not cases:
+            print("その名前の試験は無い: %s" % a.only)
+            return 1
+
+    if want_cases:
+        print()
+        print("== 2. statetest")
+        step_statetest(rep, roms, next(iter(cases.values()))[0])
+
+    if not a.only or a.only == "plg-boot":
+        print()
+        print("== 2b. PLG カード（firmware の送信がカードに届くか）")
+        step_plg_boot(rep, roms)
+
+    if not want_cases:
+        # A step was named, so there are no cases to render. Stop here rather than
+        # building 56 of them.
+        rep.show()
+        return 1 if rep.bad else 0
 
     print()
     print("== 3. 鳴らし比べ（%d 件）" % len(cases))

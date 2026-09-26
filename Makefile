@@ -181,15 +181,14 @@ SRCS := \
 	src/mame/cpu/sh_intc.cpp \
 	src/mame/cpu/sh_mtu.cpp \
 	src/mame/cpu/sh_port.cpp \
-	src/mame/cpu/sh_sci.cpp
-
-# The PLG card host (doc/plg-cards.md). Kept out of SRCS on purpose: nothing in
-# the machine calls it yet, so a tool that links the emulator does not have to
-# drag in dlopen. The first thing that will is mu2000::run_sample(), and that
-# patch moves these two lines into SRCS.
-PLG_SRCS := \
+	src/mame/cpu/sh_sci.cpp \
 	src/plg/host.cpp \
 	src/compat/dynlib.cpp
+
+# The PLG card host (doc/plg-cards.md) is in SRCS now: mu2000's SCI4 lines call
+# into it, so anything that links the machine needs it. PLG_SRCS is kept as a
+# name for it because the build rules below need to name the two files.
+PLG_SRCS := src/plg/host.cpp src/compat/dynlib.cpp
 
 OBJS := $(SRCS:%.cpp=$(BUILD)/%.o)
 
@@ -324,14 +323,17 @@ PLG_OBJS := $(PLG_SRCS:%.cpp=$(BUILD)/%.o)
 # either, and -dynamiclib is what links against other libraries by default.
 ifeq ($(PLATFORM),windows)
 PLG_STUB      := $(BUILD)/plg_stub.dll
+PLG_SUFFIX    := .dll
 PLG_SHARED    := -shared
 PLG_CFLAGS    := -I src
 else ifeq ($(PLATFORM),linux)
 PLG_STUB      := $(BUILD)/plg_stub.so
+PLG_SUFFIX    := .so
 PLG_SHARED    := -shared -fPIC
 PLG_CFLAGS    := -I src -fPIC
 else
 PLG_STUB      := $(BUILD)/plg_stub.dylib
+PLG_SUFFIX    := .dylib
 PLG_SHARED    := -dynamiclib
 PLG_CFLAGS    := -I src
 endif
@@ -344,6 +346,19 @@ $(PLG_STUB): $(BUILD)/tests/plg/stub.o
 	@mkdir -p $(dir $@)
 	$(CC) $(PLG_SHARED) -o $@ $<
 
+# The listening card: it hears the firmware's sysEx and reports it, and needs no
+# protocol knowledge to do that (doc/plg-cards.md 5). C, like the stub.
+PLG_ECHO      := $(BUILD)/plg_echo$(PLG_SUFFIX)
+PLG_SHARED    := $(PLG_SHARED)
+
+$(BUILD)/tests/plg/echo.o: tests/plg/echo.c src/plg/plg1500.h
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(PLG_CFLAGS) -c -o $@ $<
+
+$(PLG_ECHO): $(BUILD)/tests/plg/echo.o
+	@mkdir -p $(dir $@)
+	$(CC) $(PLG_SHARED) -o $@ $<
+
 #   build/plgtest [card path]
 # With no path it loads the stub next to the executable. CI runs `make all` on
 # all three platforms, so dlopen gets exercised on all three.
@@ -351,7 +366,7 @@ $(BUILD)/plgtest$(EXE): $(PLG_OBJS) $(BUILD)/src/plgtest.o
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
 
-plgtest: $(BUILD)/plgtest$(EXE) $(PLG_STUB)
+plgtest: $(BUILD)/plgtest$(EXE) $(PLG_STUB) $(PLG_ECHO)
 	$(BUILD)/plgtest$(EXE)
 
 # PC editor (doc/pc-editor.md). Dear ImGui (MIT), vendored in third_party/imgui.
@@ -1201,7 +1216,8 @@ check: $(BUILD)/verify$(EXE) $(BUILD)/plgtest$(EXE) $(PLG_STUB)
 # The test names are the same on both platforms: run_tests.py is the one that
 # knows whether the binaries carry an .exe suffix (tools/run_tests.py)
 TEST_EXES := $(BUILD)/verify$(EXE) $(BUILD)/statetest$(EXE) $(BUILD)/render$(EXE) $(BUILD)/xgtest$(EXE) \
-             $(BUILD)/samptest$(EXE) $(BUILD)/plgtest$(EXE) $(PLG_STUB)
+             $(BUILD)/samptest$(EXE) $(BUILD)/plgtest$(EXE) $(PLG_STUB) $(PLG_ECHO) \
+             $(BUILD)/boot$(EXE)
 
 test: $(TEST_EXES)
 	SMU_BUILD=$(BUILD) $(PYTHON) tools/run_tests.py $(if $(T),--only $(T),)
