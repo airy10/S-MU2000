@@ -86,7 +86,7 @@ void sci4_device::device_start()
 	// path depends on the order of two things it cannot see.
 	if(m_line_fn && m_line_timer) {
 		const u32 div = m_div[3] ? m_div[3] : 0x100;
-		m_line_timer->adjust(attotime::from_ticks(div * 8, clock()));
+		m_line_timer->adjust(attotime::from_ticks(div * 4, clock()));
 		}
 }
 
@@ -117,7 +117,7 @@ void sci4_device::device_reset()
 	// programmed, which is not known any earlier.
 	if(m_line_fn && m_line_timer) {
 		const u32 div = m_div[3] ? m_div[3] : 0x100;
-		m_line_timer->adjust(attotime::from_ticks(div * 8, clock()));
+		m_line_timer->adjust(attotime::from_ticks(div * 4, clock()));
 	}
 	// S-MU2000: temporary bisect - SMU2000_CARD_NOPOLL kills the poll after arming.
 	// If the panel lives, the poll (not presence) breaks it.
@@ -139,6 +139,10 @@ void sci4_device::do_rx_w(int sci, int state)
 	}
 	u8 rx = ((((m_rx[6] << 3) | (m_rx[5] << 2) | (m_rx[4] << 1) | m_rx[3]) | ~(m_targets >> 4)) & 0xf) == 0xf;
 	if(rx != m_cur_rx[3]) {
+		if(m_rx_trace)
+			std::fprintf(m_rx_trace, "SCI4I composite %d->%d tgt=%02x t=%.6f\n",
+			             (int)m_cur_rx[3], (int)rx, m_targets,
+			             double(machine().time().as_double()));
 		m_cur_rx[3] = rx;
 		rx_changed(3);
 	}
@@ -169,8 +173,14 @@ TIMER_CALLBACK_MEMBER(sci4_device::line_tick)
 	if(m_line_fn)
 		for(int i = 0; i < 7; i++)
 			pull_line(i);
+	/* Quarter-bit, not half: edge detection is quantized to the poll, so a
+	 * half-bit poll leaves up to half a bit of detection delay, which puts rx
+	 * samples anywhere from mid-bit to exactly on a transition - a lottery per
+	 * byte that recognition kept losing. Quarter-bit bounds the delay to a
+	 * quarter bit and the samples stay mid-bit every time. Costs twice the polls,
+	 * which is still nothing next to the audio thread. */
 	const u32 div = m_div[3] ? m_div[3] : 0x100;
-	m_line_timer->adjust(attotime::from_ticks(div * 8, clock()));
+	m_line_timer->adjust(attotime::from_ticks(div * 4, clock()));
 }
 
 // S-MU2000: arm the poll when a source appears, and stop it when one goes away.
@@ -186,8 +196,14 @@ void sci4_device::set_line_source(line_fn fn, void *ctx)
 		m_line_timer->adjust(attotime::never);
 		return;
 	}
+	/* Quarter-bit, not half: edge detection is quantized to the poll, so a
+	 * half-bit poll leaves up to half a bit of detection delay, which puts rx
+	 * samples anywhere from mid-bit to exactly on a transition - a lottery per
+	 * byte that recognition kept losing. Quarter-bit bounds the delay to a
+	 * quarter bit and the samples stay mid-bit every time. Costs twice the polls,
+	 * which is still nothing next to the audio thread. */
 	const u32 div = m_div[3] ? m_div[3] : 0x100;
-	m_line_timer->adjust(attotime::from_ticks(div * 8, clock()));
+	m_line_timer->adjust(attotime::from_ticks(div * 4, clock()));
 }
 
 void sci4_device::default_w(offs_t offset, u8 data)
@@ -239,6 +255,9 @@ void sci4_device::enable_w(offs_t slot, u8 data)
 {
 	slot >>= 3;
 	u8 old = m_enable[slot];
+	if (slot == 3 && m_rx_trace && (data & 1) != (old & 1))
+		std::fprintf(m_rx_trace, "SCI4I rx-enable=%d t=%.6f\n",
+		             (data & 1) ? 1 : 0, double(machine().time().as_double()));
 	m_enable[slot] = data;
 	if((data & 2) && !(old & 2))
 		tx_enabled(slot);
@@ -277,8 +296,15 @@ u8 sci4_device::reset_r(offs_t slot)
 void sci4_device::target_w(u8 data)
 {
 	m_targets = data;
+	if(m_rx_trace)
+		std::fprintf(m_rx_trace, "SCI4I target=%02x t=%.6f\n", data,
+		             double(machine().time().as_double()));
 	u8 rx = ((((m_rx[6] << 3) | (m_rx[5] << 2) | (m_rx[4] << 1) | m_rx[3]) | ~(m_targets >> 4)) & 0xf) == 0xf;
 	if(rx != m_cur_rx[3]) {
+		if(m_rx_trace)
+			std::fprintf(m_rx_trace, "SCI4I composite %d->%d tgt=%02x t=%.6f\n",
+			             (int)m_cur_rx[3], (int)rx, m_targets,
+			             double(machine().time().as_double()));
 		m_cur_rx[3] = rx;
 		rx_changed(3);
 	}
@@ -390,7 +416,7 @@ void sci4_device::tx_start(int chan)
 	// and the divisor is programmed.
 	if(chan == 3 && m_line_fn && m_line_timer && !m_line_timer->scheduled()) {
 		const u32 div = m_div[3] ? m_div[3] : 0x100;
-		m_line_timer->adjust(attotime::from_ticks(div * 8, clock()));
+		m_line_timer->adjust(attotime::from_ticks(div * 4, clock()));
 	}
 }
 

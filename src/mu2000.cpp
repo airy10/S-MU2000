@@ -3055,6 +3055,14 @@ int mu2000::plg_line_source(void *ctx, int sci)
 void mu2000::plg_tx_bit(void *ctx, int slot, int level, int bit)
 {
 	mu2000 *m = static_cast<mu2000 *>(ctx);
+	// Temporary: prove the card's line actually toggles in the gui.
+	static int last_lv[3] = { -1, -1, -1 };
+	static int ntrans = 0;
+	if (slot >= 0 && slot < 3 && level != last_lv[slot] && ntrans < 80) {
+		last_lv[slot] = level;
+		ntrans++;
+		std::fprintf(stderr, "plg tx%d %d->%d (bit %d)\n", slot, 1 - level, level, bit);
+	}
 	if (m->m_plg && slot >= 0 && slot < plg::host::SLOTS)
 		m->m_plg->midi_rx(slot, level, bit);
 }

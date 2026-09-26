@@ -96,6 +96,9 @@ struct answer {
 	unsigned char msg[8]; /* the current message's head, F0..F7 */
 	int           msg_n;
 	int           seen_poll; /* a poll has been seen, so `after` can count down */
+	int           read_seen;  /* the identity read arrived; the next poll releases
+	                             the category reply (it must not go out during the
+	                             deaf targets=07 window the read arrives in) */
 	int           after;      /* polls still to let pass before answering */
 	int           after_polls; /* the knob's value, restored by reset() */
 	int           delay_polls; /* sub-poll delay before starting the reply */
@@ -153,7 +156,7 @@ static void read_knobs(struct answer *a)
 	 * With a single deterministic clock hold=2 is exactly right, in boot and in
 	 * the gui, and the comment that used to be here explaining hold=3 was
 	 * explaining an accident. */
-	a->hold_per_bit = 2;
+	a->hold_per_bit = 4;
 	a->start_delay = 0;
 	const char *e;
 	if ((e = getenv("SMU2000_CARD_HOLD")) != 0) {
@@ -412,20 +415,34 @@ static void answer_rx(plg_card *c, int level, int bit)
 	 * leaves the panel dead, so the firmware does tell the difference. Each reply
 	 * goes out in answer to its own request, and `once` applies per reply: with
 	 * the default the card answers each request the first time it arrives. */
+	/* The category answers a poll, not the read - even though the read is what
+	 * asks for it. The read arrives while targets=07 (upper nibble 0), during
+	 * which channel 3's composite is stuck high and nothing the card sends can
+	 * be received: measured as 300 card-low samples with cur3=1 throughout. The
+	 * first poll arrives with targets=11 (slot 0 selected), which is when the
+	 * real AP's reply lands too. Answering the read immediately puts the reply
+	 * in the deaf window and the host never hears it. */
 	if (a->msg_n == 8 && a->msg[0] == 0xf0 && a->msg[1] == 0x43 &&
 	   a->msg[2] == 0x10 && a->msg[3] == 0x4e && a->msg[4] == 0x00 &&
 	   a->msg[5] == 0x10 && a->msg[6] == 0x02 && a->msg[7] == 0x01) {
-		if (!(a->once && a->sent_cat) && a->tx_byte < 0 && a->tx_next >= a->tx_len) {
-			queue_reply(a, 0);
-			a->sent_cat = 1;
-			a->sent++;
-		}
+		a->read_seen = 1;
 		return;
 	}
 	const int is_poll = a->msg_n >= 4 && a->msg[1] == 0x43 && a->msg[2] == 0x30;
 	if (is_poll) {
 		a->rx_polls++;
 		a->seen_poll = 1;
+	}
+	/* A poll releases the queued category, but only if the read came first: the
+	 * category answers the read, and it must go out while a slot is selected
+	 * (targets=11), not into the deaf targets=07 window the read arrives in. */
+	if (is_poll && a->read_seen && !(a->once && a->sent_cat) &&
+	   a->tx_byte < 0 && a->tx_next >= a->tx_len) {
+		queue_reply(a, 0);
+		a->sent_cat = 1;
+		a->sent++;
+		a->read_seen = 0;
+		return;
 	}
 	/* The name answers the page-00 poll, not the regular one. */
 	const int is_name_poll = a->msg_n == 7 && a->msg[0] == 0xf0 && a->msg[1] == 0x43 &&
