@@ -288,6 +288,14 @@ $(BUILD)/panel$(EXE): $(OBJS) $(BUILD)/src/mu2000.o $(BUILD)/src/smf.o $(BUILD)/
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
 
+# SH-2 disassembler. For reading the firmware's side of the PLG card protocol
+# (doc/plg-cards.md, section 4). The decode is MAME's, unmodified
+# (src/mame/cpu/sh_dasm.cpp).
+#   build/sh2dis roms/mu2000_flash.bin 000c1d40 40
+$(BUILD)/sh2dis$(EXE): $(BUILD)/src/mame/cpu/sh_dasm.o $(BUILD)/src/sh2dis.o
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
+
 # ---- PLG card slots (doc/plg-cards.md) -------------------------------------
 #
 # The loading side of the three PLG slots, plus one card that does nothing. There

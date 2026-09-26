@@ -817,4 +817,73 @@ private:
 	int m_samples = 0, m_inputs = 0, m_outputs = 0;
 };
 
+// ---------------------------------------------------------------------------
+// disasm_interface and data_buffer, for src/mame/cpu/sh_dasm.cpp
+//
+// MAME's disassembler inherits util::disasm_interface and its decode routines
+// take a data_buffer. Those two were the only things sh_dasm.cpp still wanted
+// from emu.h, so they live here. **The decode logic is untouched** - the answer
+// to "what does this instruction mean" should come from MAME, not from us.
+//
+// Why a disassembler at all: the PLG card protocol is a Yamaha sysEx over SCI4
+// (doc/plg-cards.md, section 4), and the firmware's side of it can only be read
+// by following the code that builds and checks those messages.
+// ---------------------------------------------------------------------------
+
+// MAME's data_buffer. A decoder only reads bytes out of it, so r8/r16/r32 is
+// the whole surface. Out of range reads as 0, which is what MAME does too:
+// reading a zero past the end of the instruction stream is a better answer than
+// throwing, because a disassembler pointed at the wrong address should say
+// something rather than stop.
+class data_buffer {
+public:
+	data_buffer() = default;
+	explicit data_buffer(const u8 *p, u32 len) : m_ptr(p), m_len(len) {}
+
+	u8 r8(offs_t pc) const
+	{
+		return pc < m_len ? m_ptr[pc] : u8(0);
+	}
+	u16 r16(offs_t pc) const
+	{
+		return u16(u16(r8(pc)) << 8 | u8(r8(pc + 1)));
+	}
+	u32 r32(offs_t pc) const
+	{
+		return u32(r16(pc)) << 16 | r16(pc + 2);
+	}
+
+private:
+	const u8 *m_ptr = nullptr;
+	u32       m_len = 0;
+};
+
+namespace util {
+
+// MAME's disassembler base. sh_dasm.cpp marks its two methods override, so a
+// base has to exist or it will not compile. Nothing is implemented here: all
+// of it lives in sh_dasm.
+class disasm_interface {
+public:
+	virtual ~disasm_interface() = default;
+	virtual u32 opcode_alignment() const = 0;
+	virtual offs_t disassemble(std::ostream &stream, offs_t pc,
+	                           const data_buffer &opcodes, const data_buffer &params) = 0;
+};
+
+// The step flags sh_dasm.cpp ORs into its return value, and step_over_extra().
+// MAME puts these in its disassembler headers; the values do not matter here
+// because nothing consumes them - the tool prints text and steps by pc - so
+// they only have to exist and be distinct enough to compile.
+enum : u32 {
+	STEP_OVER   = 1u << 0,
+	STEP_OUT    = 1u << 1,
+	STEP_COND   = 1u << 2,
+	STEP_SKIP   = 1u << 3
+};
+
+inline u32 step_over_extra(u32 bytes) { return bytes << 8; }
+
+} // namespace util
+
 #endif // S_MU2000_MAMECOMPAT_H
