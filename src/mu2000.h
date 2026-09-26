@@ -378,6 +378,10 @@ public:
 	// model is allowed in. Which are allowed is not known yet, so everything
 	// goes in slot 0 for now and this is where that rule will live.
 	int plg_slot_for(u32 model_id) const;
+	// What the cards in the slots returned on the last sample, read back off the
+	// slave's inputs. This is how a test checks the audio path without listening:
+	// a card that puts a known value on out[0] has to show up here.
+	s32 plg_out(int slot, int ch) const;
 	// 0xf00000 への読み書きの回数。**記録 Commodityg なくても数える**:
 	// 「アクセスが無い」ことと「記録ファイルを書けていない」を
 	// 取り違えないため（これは実際に取り違えた）。

@@ -207,6 +207,9 @@ private:
 	// slot is running, so a card cannot keep its own idea of the time and drift
 	// from the SWP30 it is sharing a sample with.
 	std::atomic<uint64_t> m_clock{0};
+	// Which sample to time, shared by the three slots. One counter rather than
+	// three: the slots are called in order from the same place.
+	unsigned m_timed = 0;
 };
 
 } // namespace plg

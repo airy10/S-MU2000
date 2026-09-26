@@ -17,6 +17,10 @@ namespace plg {
 
 using smu2000::dynlib;
 
+// How many samples to time once every. A power of two, so the mask below
+// wraps correctly.
+constexpr unsigned TIMED_EVERY = 64;
+
 namespace {
 
 // The entry points, looked up once per insert. A module missing one of them is
@@ -461,25 +465,40 @@ void host::run(int slot, const int32_t *in, int32_t *out)
 	io.reset = 1;
 
 	m_clock.fetch_add(1, std::memory_order_relaxed);
-	const uint64_t t0 = smu2000::perf_ticks();
+
+	// **Timed once every 64 samples, not every sample.** Two perf_ticks() calls
+	// per sample is 88200 counter reads a second per card, six with three cards
+	// in, all on the audio thread, to guard a feature that is not there yet.
+	//
+	// Once every 64 is still enough: if a hundred consecutive measurements are
+	// all over budget, that is 6400 samples - about 145 ms - of being late, and
+	// a card that is 145 ms late on a 22.7 us sample has a real problem rather
+	// than a cache miss.
+	const bool time_it = (m_timed++ & (TIMED_EVERY - 1)) == 0;
+	const uint64_t t0 = time_it ? smu2000::perf_ticks() : 0;
 	s->cut.run(s->card, &io);
-	const uint64_t dt = smu2000::perf_ticks() - t0;
+	const uint64_t dt = time_it ? smu2000::perf_ticks() - t0 : 0;
 
 	if (out) {
 		out[0] = io.out[0];
 		out[1] = io.out[1];
 	}
 
-	// Too slow, often enough, means the card cannot keep up. One slow sample is a
-	// cache miss; a hundred in a row is a card that will make every block after
-	// this one late too, so it is skipped instead of called.
+	if (!time_it)
+		return;
+
+	// Late often enough means the card cannot keep up. One slow measurement is a
+	// cache miss; a hundred are a card that will make every block after this one
+	// late too, so it is skipped rather than called. The measured span covers
+	// TIMED_EVERY samples, so the budget is scaled to match.
 	const double us = double(dt) * 1e6 / double(smu2000::perf_freq());
-	if (us > budget_us()) {
+	if (us > budget_us() * double(TIMED_EVERY)) {
 		if (++s->slow >= SLOW_RUNS_BEFORE_FAULT) {
 			s->fault = true;
 			char buf[160];
 			::snprintf(buf, sizeof(buf),
-			           "1 サンプル %.1f マイクロ秒（予算 %.1f）。カードを外す", us, budget_us());
+			           "1 サンプル %.2f マイクロ秒（予算 %.1f）。カードを外す",
+			           us / double(TIMED_EVERY), budget_us());
 			s->msg = buf;
 			if (m_log)
 				m_log(s->msg);

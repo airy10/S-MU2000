@@ -51,6 +51,15 @@ struct echo {
 	int           count;
 	int           dropped;
 	unsigned char log[ECHO_LOG_BYTES];
+
+	/* What the card puts on its audio out once it has heard something. A real
+	 * card's audio comes back on these two wires, and the point of this card is
+	 * to prove the plumbing, so it puts a known value there and the test reads it
+	 * back off meli 10. A constant rather than a tone: it is inaudible, it costs
+	 * nothing, and it cannot be mistaken for a card making a sound the firmware
+	 * has no way to route. */
+	int32_t out_mark;   /* the type plg_slot_io::out uses */
+	int out_sent;
 };
 
 static const plg_card_info g_info = {
@@ -81,7 +90,8 @@ PLG_EXPORT plg_card *plg1500_create(const plg_host *host, void *ctx, char *err, 
 			snprintf(err, err_len, "no ram");
 		return 0;
 	}
-	e->host = host;
+	e->host     = host;
+	e->out_mark = 1 << 20;   /* the value the test looks for on meli 10 */
 	return (plg_card *)e;
 }
 
@@ -93,6 +103,10 @@ PLG_EXPORT void plg1500_destroy(plg_card *c)
 	if (!e || !e->host || !e->host->log)
 		return;
 	char line[512];
+	/* "heard N byte(s) <bytes...> ; audio mark on". The bytes come straight after
+	 * the bracket so a reader can find them without knowing anything else about
+	 * the line, and the note about the audio mark goes at the end where it cannot
+	 * be mistaken for part of the list. */
 	int n = snprintf(line, sizeof(line), "echo: heard %d byte(s)", e->count);
 	if (n < 0)
 		return;
@@ -105,6 +119,8 @@ PLG_EXPORT void plg1500_destroy(plg_card *c)
 	}
 	if (e->dropped)
 		snprintf(line + n, sizeof(line) - (size_t)n, " ...(%d more)", e->dropped);
+	snprintf(line + n, sizeof(line) - (size_t)n, " ; audio mark %s",
+	         e->out_sent ? "on" : "never sent");
 	e->host->log(e->host->ctx, line);
 }
 
@@ -144,12 +160,21 @@ static void echo_rx(plg_card *c, int level)
 
 static void echo_run(plg_card *c, plg_slot_io *io)
 {
-	/* Silent. A card that made a sound here would be a card making a sound the
-	 * firmware has no way to route, since the audio path is not wired yet. */
-	(void)c;
-	if (io && !io->reset) {
+	struct echo *e = (struct echo *)c;
+	if (!io)
+		return;
+	if (!io->reset) {
 		io->out[0] = io->out[1] = 0;
+		return;
 	}
+	/* A fixed value on the left channel, right channel silent, so a test can tell
+	 * the two channels apart as well as the two slots. Unconditional: the audio
+	 * mark and the byte log prove two different things - the mark that samples
+	 * reach meli 10, the log that the wire works - and gating the mark on having
+	 * heard something would make a short render unable to show the first. */
+	io->out[0] = e->out_mark;
+	io->out[1] = 0;
+	e->out_sent = 1;
 }
 
 static void echo_reset(plg_card *c)

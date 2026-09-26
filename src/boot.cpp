@@ -151,6 +151,15 @@ int main(int argc, char **argv)
 	std::printf("SCI4 0xf00000 への読み書き: %llu 回\n",
 	            (unsigned long long)mu.sci4_hits());
 
+	// カードが音道路上に戻した値。meli 10..15 が差し込み口なので、ここが
+	// 非 0 なら「カードが選んだ値が音道路まで来た」ことになる
+	// （doc/plg-cards.md 5）。聞くため��す���のではなく、値を確か���ため。
+	if (plgcard) {
+		for (int slot = 0; slot < plg::host::SLOTS; slot++)
+			std::printf("PLG%d の戻り L=%d R=%d\n", slot + 1,
+			            mu.plg_out(slot, 0), mu.plg_out(slot, 1));
+	}
+
 	if (hf)
 		std::fclose(hf);
 	if (pf)

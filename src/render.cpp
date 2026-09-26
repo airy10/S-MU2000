@@ -13,6 +13,7 @@
 
 #include "compat/platform.h"
 #include "mu2000.h"
+#include "plg/host.h"
 #include "voicecache.h"
 #include "bootcache.h"
 #include "smf.h"
@@ -175,6 +176,10 @@ int main(int argc, char **argv)
 	bool use_bootcache = false;   // --bootcache。起動後の写しから始める（確かめ用）
 	const char *state_at = nullptr; size_t state_sample = 0;   // --state-at（確かめ用）
 	const char *forced_reset = nullptr;
+	// PLG カードを入れる（doc/plg-cards.md 5）。機械を起動する前に。
+	// カードの読み込みは機械の錠を取る中の別の糸ですることが約束だが、
+	// render には糸が 1 本しかないので reset() 前に済ませてしまう。
+	const char *plgcard = nullptr;
 	const char *swptrace = nullptr;
 	bool single = false;   // スレーブを別スレッドにしない
 	double boot = -1.0;     // 負なら firmware が受信を有効にするまで待つ
@@ -206,6 +211,8 @@ int main(int argc, char **argv)
 		else if (!std::strcmp(argv[i], "--boot") && i + 1 < argc)
 			boot = std::atof(argv[++i]);
 		// **その時刻の液晶の中身**を 16 進で出す（メーターの棒を突き合わせる）
+		else if (!std::strcmp(argv[i], "--plg") && i + 1 < argc)
+			plgcard = argv[++i];
 		else if (!std::strcmp(argv[i], "--lcd-at") && i + 1 < argc)
 			lcd_at = std::atof(argv[++i]);
 		else if (!std::strcmp(argv[i], "--lcd-every") && i + 1 < argc)
@@ -341,6 +348,18 @@ int main(int argc, char **argv)
 		mu.swpm().m_dbg_meg_count = meg_tr_count;
 		mu.swpm().m_dbg_meg_pc0 = u16(meg_tr_pc0);
 		mu.swpm().m_dbg_meg_pc1 = u16(meg_tr_pc1);
+	}
+
+	// Insert the card before the machine starts. Loading a card is meant to
+	// happen on another thread holding the machine lock; render has one thread,
+	// so it is done here, before reset().
+	plg::host cards;
+	if (plgcard) {
+		std::string cerr;
+		mu.set_plg_host(&cards);
+		const int slot = mu.plg_slot_for(PLG_MODEL_ANY);
+		if (!cards.insert(slot, plgcard, cerr))
+			std::fprintf(stderr, "カードを入れられない: %s\n", cerr.c_str());
 	}
 
 	mu.set_threaded(!single);
@@ -664,5 +683,13 @@ int main(int argc, char **argv)
 		            (unsigned long long)st.learn, (unsigned long long)st.other);
 	}
 	std::printf("書き出した: %s（%.1f 秒）\n", wav.c_str(), double(total) / rate);
-	return 0;
+		// With a card in, say what came back on the card inputs. This is how a test
+	// tells "the card was never called" from "the card's value did not reach the
+	// speaker", which are very different problems (doc/plg-cards.md 5).
+	if (plgcard)
+		for (int slot = 0; slot < plg::host::SLOTS; slot++)
+			std::fprintf(stderr, "PLG%d の戻り L=%d R=%d\n", slot + 1,
+			             mu.plg_out(slot, 0), mu.plg_out(slot, 1));
+
+return 0;
 }

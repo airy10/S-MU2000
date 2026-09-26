@@ -128,10 +128,16 @@ So version 1 decides two things and no more:
    `PLG_ABI_VERSION`** — `reserved` is there so it *can* be filled in.
 
 For the same reason MIDI crosses as SCI4's **bit line**, and no baud clock is
-handed over. MAME's PLG cards take an external clock on their SCI
-(`sci_set_external_clock_period` in `plg150-ap.cpp`), so a clock is probably
-needed; which wire carries it, and what else is on the connector, is a question
-for the schematic.
+handed over. MAME's connector has no clock signal at all - `plg1x0.h` carries
+only `midi_tx` and `midi_rx` - while the card side sets its SCI to an **external
+500 kHz** clock (`sci_set_external_clock_period(0|1, 500 kHz)` in
+`plg150-ap.cpp`). So MAME has a card waiting for a clock that the connector does
+not provide, and its PLG cards cannot actually exchange a byte with the host.
+That is worth knowing twice over: it means the 129 bytes crossing the line here
+are ahead of MAME rather than behind it, and it puts a number on the timing gap -
+**4 µs per bit, 2 µs per half-bit, against an audio sample of 22.7 µs.** A card
+has to be called five or six times per sample to hold that clock, which is why the
+host offers a line to push but no timer to push it on.
 
 ## 5. What is done, and what is not
 
@@ -152,9 +158,21 @@ Done and checked:
 
 Not done:
 
-- **The audio path.** `mu2000::run_sample()` does not call `plg::host::run()`
-  yet, so `in[2]`/`out[2]` carry nothing. That is the main thing left on the host
-  side.
+- **The card's audio reaching the speaker.** The wire is done: `run_sample()`
+  hands `melo 14,15` to the card and writes what comes back to `meli 10..15`, and a
+  test proves it by having a card put a known constant on `out[0]` and reading it
+  back off `meli 10`. What does *not* happen is the card becoming audible, and
+  the reason is in the chip rather than in this code. MAME's SWP30 mixer loop
+  (the same code this project vendored) reads its inputs as: taps below `0x40`
+  are AWM2 voices, `0x40`-`0x4f` are MEG registers, and `0x50`-`0x5f` are the
+  serial inputs, so `meli 10` is tap `0x5a`. **A tap contributes only if its route
+  is non-zero** - the loop skips any mixer entry whose three route registers are
+  all zero. Which routes exist is programmed by the firmware, and with no card
+  recognised there is no reason for it to open the PLG tap, so the value arrives
+  and stops.
+  **That is expected to change on its own once a card is recognised**, because the
+  firmware doing the programming is the real one - which is an argument for
+  getting recognition right before building anything else.
 - **A card's transmit timing**, which is why the card above answers nothing.
   SCI4 samples a bit every few microseconds and an audio sample is 22.7 of them,
   so a card that emits a byte from `run()` puts all ten edges inside one instant
@@ -232,6 +250,11 @@ Three repositories were read for this. **No code was taken from any of them.**
   is the only positive information anyone has about the interface. BSD-3-Clause
   (Olivier Galibert), so the same provenance rule as `swp30` and the SH-2 files
   (`doc/design.md:24-38`).
+- The MU1000 has the same connectors: two of them, with `m_ext1` a
+  `required_device` and `m_ext2` optional, both configured with `nullptr` as the
+  default card. So a MAME MU1000 has an empty PLG slot 1 as well, and the SCI4
+  port mapping is the same one this project uses - `write_tx<30/31/32>` to slots
+  1, 2 and 3 - which is what `mu2000.cpp` transcribes.
 - `plg100-vl.cpp` and `plg150-ap.cpp` show what is inside two cards: the
   PLG100-VL is an H83002 plus a YSS217 (DSP-V), the PLG150-AP is an SWX00.
 - `sound/dspv.*` is the YSS217, and it is **almost nothing but a register map**:

@@ -2988,6 +2988,13 @@ int mu2000::plg_slot_for(u32 model_id) const
 	return 0;
 }
 
+s32 mu2000::plg_out(int slot, int ch) const
+{
+	if (slot < 0 || slot >= plg::host::SLOTS || ch < 0 || ch > 1)
+		return 0;
+	return m_swps.meli(10 + slot * 2 + ch);
+}
+
 void mu2000::run_sample(s32 &left, s32 &right)
 {
 	// S-MU2000: 軽量モードでは、XG の設定をときどき読み直す
@@ -3252,6 +3259,34 @@ void mu2000::run_sample(s32 &left, s32 &right)
 	// 目盛りは 16bit を 8bit 上げた 24bit にしている（実機の入力の大きさとはまだ突き合わせていない）
 	m_swps.set_meli(6, m_ad_in[0] * 256);
 	m_swps.set_meli(7, m_ad_in[1] * 256);
+
+	// ---- PLG カード（doc/plg-cards.md 5）
+	//
+	// 上のループが melo 0..13 をマスタへ送るので、**melo 14 と 15 が
+	// カード用の 2 本**。MAME の ymmu2000.cpp:411 が "14+4" と "15+4" と
+	// 書いているのは MAME 側の番号で 4 足しなので、ここでは 14,15。
+	// 配列が 0x10 要素（swp30.h:513）でensions ちょうど 2 個余っている。
+	// 18,19 と書くと**配列の外**になるので、番号は 14,15 に固定。
+	//
+	// 3 枚とも同じ 2 本から受け取るのは MAME も同じ
+	// （ymmu2000.cpp:407-427 が 3 枚を全部 14,15 に繋いでいる）。返す先を
+	// 2 つずつに分けるのはカードごと: 0 番は meli 10,11、1 番は 12,13、
+	// 2 番は 14,15。meli 10..15 はスレーブの入力の空き（0..5 と 8..9 が
+	// マスタから、6,7 が A/D INPUT）なので、他の线上とは被らない。
+	//
+	// **カードの無いときは null を読むだけで終える。** カードの
+	// run() は音声の糸から 1 サンプルずつ呼ばれ、重さは宿主が計る
+	// （plg::host::run、doc/plg-cards.md 3）。
+	if (m_plg) {
+		const s32 slot_in[2] = { m_swps.melo(14), m_swps.melo(15) };
+		for (int slot = 0; slot < plg::host::SLOTS; slot++) {
+			s32 slot_out[2] = { 0, 0 };
+			m_plg->run(slot, slot_in, slot_out);
+			m_swps.set_meli(10 + slot * 2, slot_out[0]);
+			m_swps.set_meli(11 + slot * 2, slot_out[1]);
+		}
+	}
+
 	// レベルメーター用の検波（AN0 / AN2）
 	for (int i = 0; i < 2; i++) {
 		const s32 a = std::min(std::abs(m_ad_in[i]), 32767);

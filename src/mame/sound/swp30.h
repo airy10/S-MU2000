@@ -94,6 +94,10 @@ public:
 	static constexpr s32 SERIAL_FULL_SCALE = 1 << 26;
 	s32  melo(int i) const { return std::clamp(m_melo[i], -SERIAL_FULL_SCALE, SERIAL_FULL_SCALE); }
 	void set_meli(int i, s32 v) { m_meli[i] = v; }
+	// S-MU2000: a reader, for checking what a PLG card returned without
+	// listening to it (meli 10..15 are the card slots' inputs, doc/plg-cards.md
+	// section 5). Same scale and clamp as melo().
+	s32  meli(int i) const { return std::clamp(m_meli[i], -SERIAL_FULL_SCALE, SERIAL_FULL_SCALE); }
 
 	// S-MU2000: 音が出ないときの手掛かり
 	s32 m_dbg_adc_max = 0, m_dbg_meg_max = 0, m_dbg_awm_max = 0;

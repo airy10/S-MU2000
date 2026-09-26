@@ -306,8 +306,11 @@ def step_plg_boot(rep, roms):
     heard = []
     for line in r.stdout.splitlines():
         if line.startswith("[card] echo:") and " heard " in line:
+            # "heard N byte(s) <bytes...> ; audio mark on", so the list is what
+            # sits between the bracket and the semicolon.
             tail = line.split(" heard ", 1)[1]
-            heard = [int(x, 16) for x in tail[tail.index(")") + 1:].split()]
+            tail = tail[tail.index(")") + 1:]
+            heard = [int(x, 16) for x in tail.split(";")[0].split()]
     if not heard:
         rep.add("plg boot", False, "カードの記録が無い。カードが入っていない")
         return
@@ -363,6 +366,33 @@ def step_plg_boot(rep, roms):
         rep.add("plg boot", False, note + " / 識別の要求が届いていない")
     else:
         rep.add("plg boot", True, note)
+
+    # The audio path, checked separately and with a different tool: boot runs the
+    # CPU in batches and never calls run_sample(), so the card's run() - and so
+    # the audio wires - are only exercised by render. The card puts a known
+    # constant on out[0]; it has to come back off meli 10.
+    #
+    # **What this does not check is whether the SWP30 mixes slave input 10 into
+    # anything audible.** It does not: a card's audio reaches the wire and stops
+    # there today. Whether a real MU2000 mixes it is a chip question and needs
+    # hardware, so the assertion stops at the wire.
+    rnd = tool("render")
+    mid = WORK / "chord.mid"
+    if not rnd.exists() or not mid.exists():
+        rep.add("plg 音", False, "render か chord.mid が無い")
+        return
+    r = subprocess.run([str(rnd), str(roms), str(mid), str(WORK / "plg_audio.wav"),
+                        "1", "--fast-midi", "--plg", str(card)],
+                       capture_output=True, text=True, encoding="utf-8")
+    got = [l for l in r.stderr.splitlines() if l.startswith("PLG1 ")]
+    if not got:
+        rep.add("plg 音", False, "カードが値を返していない（render が SCI4 を lupa ？）")
+        return
+    val = int(got[0].split("L=")[1].split()[0])
+    if val == (1 << 20):
+        rep.add("plg 音", True, "カードの戻り L=%d が meli 10 に出た（筐体は 0 のまま）" % val)
+    else:
+        rep.add("plg 音", False, "カードの戻り L=%d（1048576 ではない）" % val)
 
 
 def step_statetest(rep, roms, midi):
