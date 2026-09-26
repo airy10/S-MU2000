@@ -1222,14 +1222,6 @@ ifeq ($(PLATFORM),windows)
 	$(BUILD)/vstiprobe$(EXE) $(VSTI_BIN)
 endif
 
-# ROM を要らない検査だけ。**いちばん安い回しかた**。音源に触っていない変更
-# `check` は verify だけだった。この検査も ROM を要らない。
-# `check` は verify だけだった（この検査限り��� 것도houses 方）。
-#   make check
-check: $(BUILD)/verify$(EXE) $(BUILD)/plgtest$(EXE) $(PLG_STUB)
-	$(BUILD)/verify$(EXE)
-	$(BUILD)/plgtest$(EXE)
-
 # 回帰試験。直したことで音が変わっていないかを見る。
 #
 # **全部は重い。** 56 本の render を同時に回すので数分かかり、cores を
