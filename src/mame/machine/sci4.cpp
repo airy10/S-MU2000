@@ -380,6 +380,7 @@ TIMER_CALLBACK_MEMBER(sci4_device::tx_tick)
 	m_dbg_tx_tick[param & 3]++;
 	u32 step = m_tx_step[param]++;
 	if(step < 9) {
+		m_dbg_tx_loop[param & 3]++;
 		const int level = (step == 8) ? 1 : ((m_tsr[param] >> step) & 1);
 		tx_set(param, level);
 		// S-MU2000: tell a PLG card what bit is going out, and when.
@@ -402,13 +403,21 @@ TIMER_CALLBACK_MEMBER(sci4_device::tx_tick)
 		// one SCI4 channel (3) told apart by the target register, which is why the
 		// firmware broadcasts and cannot tell which board answered. Delivering per
 		// channel would hand the bit to one arbitrary slot.
-		if(m_tx_notify && param == 3) {
-			for(int line = 0; line != 4; line++)
-				if(m_targets & (1 << line)) {
-					m_dbg_notify[line & 3]++;
-					m_tx_notify(m_tx_notify_ctx, line, level, int(step));
-				}
-		}
+		// **Not gated on m_targets.** Gating delivered 1280 of 1424 loop entries -
+		// 8.05 bits of a byte's 9 - because the firmware changes the target
+		// between bytes and the last bits of a byte land in the gap. A card then
+		// never saw a stop bit and never completed a byte: 159 bytes shifted, one
+		// byte decoded.
+		//
+		// On the real hardware every card sits on the same wire and every one of
+		// them sees all of it, so delivering to all of them is the more faithful
+		// behaviour, not the less. Deciding which board is being addressed is the
+		// card's problem, and the firmware broadcasts regardless.
+		if(m_tx_notify && param == 3)
+			for(int line = 0; line != 4; line++) {
+				m_dbg_notify[line & 3]++;
+				m_tx_notify(m_tx_notify_ctx, line, level, int(step));
+			}
 		wait(0, 1, param);
 
 	} else {

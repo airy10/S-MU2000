@@ -43,7 +43,8 @@ int main(int argc, char **argv)
 	const char *sci4intrace = nullptr;
 	const char *lcddump = nullptr;
 	const char *plgcard = nullptr;
-	int plgbuiltin = -1;   // 名前か番号。-builtin で一覧
+	int plgbuiltin = -1;   // built-in カードの番号。--plg-list で一覧
+	bool have_card = false;
 	u64 pcskip = 0;
 	u64 pccount = 2000000;
 
@@ -166,8 +167,10 @@ int main(int argc, char **argv)
 		const int slot = mu.plg_slot_for(PLG_MODEL_ANY);
 		if (!cards.insert(slot, plgcard, cerr))
 			std::fprintf(stderr, "カードを入れられない: %s\n", cerr.c_str());
-		else
+		else {
+			have_card = true;
 			std::printf("PLG スロット %d に %s\n", slot + 1, plgcard);
+		}
 	}
 
 	// 中に組み込まれたカード。共有ライブラリが要らないので、check と CI の
@@ -186,7 +189,7 @@ int main(int argc, char **argv)
 			std::fprintf(stderr, "カードを入れられない: %s\n", cerr.c_str());
 		else
 			std::printf("PLG スロット %d に built-in %d\n", slot + 1, plgbuiltin);
-		plgcard = "built in";
+		have_card = true;
 	}
 
 	std::printf("リセット後  PC=%08x\n", mu.cpu().pc());
@@ -204,13 +207,19 @@ int main(int argc, char **argv)
 	std::printf("SCI4 0xf00000 への読み書き: %llu 回\n",
 	            (unsigned long long)mu.sci4_hits());
 	{
-		u64 d[4][3];
+		u64 d[4][4];
 		mu.sci4_tx_debug(d);
-		std::printf("SCI4 送信: ch start/tick/notify =");
+		// The host side of the card's receive path. 1424 bits leave the chip and
+		// this is how many arrived here, which is what splits "the chip lost them"
+		// from "the host lost them" (doc/plg-cards.md 5).
+		if (mu.plg_host_ptr())
+			std::printf("[card] host midi_rx calls: %llu\n",
+			            (unsigned long long)mu.plg_host_ptr()->midi_rx_calls());
+		std::printf("SCI4 tx: ch start/tick/loop/notify =");
 		for (int i = 0; i < 4; i++)
-			std::printf(" %d:%llu/%llu/%llu", i,
+			std::printf(" %d:%llu/%llu/%llu/%llu", i,
 			            (unsigned long long)d[i][0], (unsigned long long)d[i][1],
-			            (unsigned long long)d[i][2]);
+			            (unsigned long long)d[i][2], (unsigned long long)d[i][3]);
 		std::printf("\n");
 	}
 
@@ -219,7 +228,7 @@ int main(int argc, char **argv)
 	// （doc/plg-cards.md 5）。聞くため��す���のではなく、値を確か���ため。
 	{
 		for (int slot = 0; slot < plg::host::SLOTS; slot++)
-			if (plgcard)
+			if (have_card)
 				std::printf("PLG%d の戻り L=%d R=%d\n", slot + 1,
 				            mu.plg_out(slot, 0), mu.plg_out(slot, 1));
 		// The panel's MU / PLG-1 / PLG-2 / PLG-3 lamps. **This is the

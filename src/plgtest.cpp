@@ -160,10 +160,10 @@ std::string write_junk(const std::string &dir)
 int main(int argc, char **argv)
 {
 	const std::string stub = (argc > 1) ? argv[1] : find_stub(argv[0]);
-	std::printf("カード: %s\n", stub.c_str());
+	std::printf("card: %s\n", stub.c_str());
 
 	// ---- 1. probe -----------------------------------------------------------
-	std::printf("== 1. 記述子在読めるか（差し込む前）\n");
+	std::printf("== 1. reading the descriptor, before inserting\n");
 	{
 		plg_card_info info = {};
 		std::string err;
@@ -171,29 +171,29 @@ int main(int argc, char **argv)
 		// depending on the platform; either way probe() must come back with a
 		// reason and no crash.
 		const bool p = plg::host::probe(write_junk(exe_dir(argv[0])), info, err);
-		ok(!p && !err.empty(), "カードでないファイルを臆せず片付ける");
+		ok(!p && !err.empty(), "a file that is not a card is turned away without complaint");
 		if (!p)
-			std::printf("       （理由: %s）\n", err.c_str());
+			std::printf("         (reason: %s)\n", err.c_str());
 		// A missing file, which is the common case in a file browser.
 		err.clear();
 		ok(!plg::host::probe("./plg_no_such_file.so", info, err) && !err.empty(),
-		    "ファイルが無いとき理由を返す");
+		    "a missing file gives a reason");
 		// The real one.
 		err.clear();
 		const bool good = plg::host::probe(stub, info, err);
-		okf(good, "stub の記述子が読める（%s）", err.empty() ? std::string("abi ") +
+		okf(good, "the stub's descriptor reads (%s)", err.empty() ? std::string("abi ") +
 		     std::to_string(info.abi) : err);
 		if (good) {
-			ok(info.abi == PLG_ABI_VERSION, "  abi が宿主と同じ");
-			ok(info.kind == PLG_KIND_SELF, "  kind が SELF");
-			ok(info.model_id == PLG_MODEL_ANY, "  実機のどれでも良いと宣言している");
-			ok(info.id && std::strcmp(info.id, "smu2000.stub") == 0, "  id が smu2000.stub");
+			ok(info.abi == PLG_ABI_VERSION, "  abi matches the host's");
+			ok(info.kind == PLG_KIND_SELF, "  kind is SELF");
+			ok(info.model_id == PLG_MODEL_ANY, "  it claims to be no real card in particular");
+			ok(info.id && std::strcmp(info.id, "smu2000.stub") == 0, "  id is smu2000.stub");
 			ok(info.name && std::strcmp(info.name, "S-MU2000 stub card") == 0, "  name");
 		}
 	}
 
 	// ---- 2. insert ----------------------------------------------------------
-	std::printf("== 2. 差し込む\n");
+	std::printf("== 2. inserting\n");
 	plg::host host;
 	std::string err;
 	// The stub says it wants a ROM, so this first attempt must be refused for
@@ -204,12 +204,12 @@ int main(int argc, char **argv)
 		std::string e2;
 		const bool has_rom_flag = plg::host::probe(stub, info, e2) &&
 		                          (info.flags & PLG_F_NEEDS_ROM) != 0;
-		ok(has_rom_flag, "stub は ROM を要求すると宣言している");
+		ok(has_rom_flag, "the stub says it wants a ROM");
 		const bool ins = host.insert(0, stub, err);
-		ok(!ins && !err.empty(), "ROM が無いので差し込まない");
-		ok(host.present(0), "  でもスロットは「何か入っている」状態");
-		ok(!host.running(0), "  かつ「動いている」状態ではない");
-		ok(!host.message(0).empty(), "  理由が message に出ている");
+		ok(!ins && !err.empty(), "with no ROM it is not inserted");
+		ok(host.present(0), "  but the slot is still 'something is there'");
+		ok(!host.running(0), "  and not 'running'");
+		ok(!host.message(0).empty(), "  and there is a reason in message()");
 		if (!host.message(0).empty())
 			std::printf("       %s\n", host.message(0).c_str());
 	}
@@ -233,49 +233,49 @@ int main(int argc, char **argv)
 	{
 		err.clear();
 		const bool ins = host.insert(0, stub, err);
-		okf(ins, "差し込めた（%s）", err);
-		ok(host.running(0), "  動いている");
-		ok(host.info(0) != nullptr, "  記述子が取れる");
+		okf(ins, "inserted (%s)", err);
+		ok(host.running(0), "  running");
+		ok(host.info(0) != nullptr, "  the descriptor is available");
 		if (host.info(0))
-			ok(host.info(0)->model_id == PLG_MODEL_ANY, "  model_id が ANY のまま");
+			ok(host.info(0)->model_id == PLG_MODEL_ANY, "  model_id is still ANY");
 		// The other two slots stay empty, and that has to be true without the
 		// caller checking first.
-		ok(!host.present(1) && !host.present(2), "  ほか 2 本は空のまま");
+		ok(!host.present(1) && !host.present(2), "  the other two are still empty");
 		int32_t out[2] = { -1, -1 };
 		host.run(1, nullptr, out);
-		ok(out[0] == 0 && out[1] == 0, "  空のスロットは 0 を返すだけ");
+		ok(out[0] == 0 && out[1] == 0, "  an empty slot just returns zero");
 	}
 
 	// ---- 3. run -------------------------------------------------------------
-	std::printf("== 3. 1 サンプルずつ\n");
+	std::printf("== 3. one sample at a time\n");
 	{
 		// The stub passes in[0] through plus its level, and puts the level alone
 		// on the other channel. The level is the parameter shifted left 14, so
 		// setting the parameter first makes both sides of the comparison known.
-		ok(host.set_param(0, 1, 40) == 0, "  パラメータを 40 にできる");
+		ok(host.set_param(0, 1, 40) == 0, "  the parameter goes to 40");
 		int32_t param = 0;
 		host.get_param(0, 1, &param);
-		okv(param == 40, "  読み返すと %d", (long long)param);
+		okv(param == 40, "  and reads back as %d", (long long)param);
 		const int32_t level = param << 14;
 		const int32_t in[2] = { 1000, 2000 };
 		int32_t out[2] = { 0, 0 };
 		host.run(0, in, out);
-		okv(out[0] == in[0] + level, "  in[0] + level が出る（%d）", (long long)out[0]);
-		okv(out[1] == level, "  もう 1 本は level だけ（%d）", (long long)out[1]);
+		okv(out[0] == in[0] + level, "  out[0] is in[0] + level (%d)", (long long)out[0]);
+		okv(out[1] == level, "  the other channel is level alone (%d)", (long long)out[1]);
 		// Two calls in a row must not give the same answer twice, or the card
 		// is not being called at all.
 		host.run(0, in, out);
 		const int32_t again[2] = { out[0], out[1] };
 		host.run(0, in, out);
-		ok(again[0] == out[0], "  何度呼んでも同じ（状態が変わらない）");
+		ok(again[0] == out[0], "  calling it again gives the same answer");
 		// midi_tx alternates, which is what a line the host samples looks like.
 		const int a = host.midi_tx(0);
 		const int b = host.midi_tx(0);
-		ok(a != b, "  MIDI の TX 線が 1 サンプルごとに変わる");
+		ok(a != b, "  the MIDI TX line changes every sample");
 	}
 
 	// ---- 4. a missing entry point ------------------------------------------
-	std::printf("== 4. 入口が足りないモジュール\n");
+	std::printf("== 4. a module with a missing entry point\n");
 	{
 		// A library that loads but is not a card: the emulator's own compat
 		// object would do, and so would any .so on the machine. The message has
@@ -283,15 +283,15 @@ int main(int argc, char **argv)
 		// a card author makes first.
 		std::string e2;
 		const bool ins = host.insert(1, stub + ".notacard", e2);
-		ok(!ins, "カードでないライブラリは入らない");
-		ok(!e2.empty(), "  理由がある");
+		ok(!ins, "a library that is not a card is not inserted");
+		ok(!e2.empty(), "  and there is a reason");
 		if (!e2.empty())
 			std::printf("       %s\n", e2.c_str());
 		host.eject(1);
 	}
 
 	// ---- 5. the budget ------------------------------------------------------
-	std::printf("== 5. 重さ（予算を超えたら外す）\n");
+	std::printf("== 5. the load budget\n");
 	{
 		// The stub is instant, so it cannot be made slow from outside. What can
 		// be checked is the other half of the rule: a card that is NOT slow keeps
@@ -299,12 +299,12 @@ int main(int argc, char **argv)
 		// that misbehaves on purpose, which is a test fixture nobody should ship;
 		// SMU2000_PLG_BUDGET_US=0.000001 turns this same run into the slow case.
 		if (const char *e = std::getenv("SMU2000_PLG_BUDGET_US"))
-			std::printf("       （予算は環境変数で %s に設定されている）\n", e);
-		ok(!host.faulted(0), "  素直なカードは fault にならない");
+			std::printf("       (the budget is set to %s in the environment)\n", e);
+		ok(!host.faulted(0), "  an honest card is never faulted");
 	}
 
 	// ---- 6. state -----------------------------------------------------------
-	std::printf("== 6. セーブと復元\n");
+	std::printf("== 6. save and restore\n");
 	{
 		// Move the card somewhere recognisable: set a parameter, run a few
 		// samples so its counters move, then save.
@@ -314,15 +314,15 @@ int main(int argc, char **argv)
 		for (int i = 0; i < 32; i++)
 			host.run(0, in, out);
 		const std::vector<uint8_t> blob = host.save();
-		ok(!blob.empty(), "  save が節を書く");
-		ok(blob.size() > 16 + 13, "  ヘッダと本文がある");
+		ok(!blob.empty(), "  save writes a section");
+		ok(blob.size() > 16 + 13, "  there is a header and a body");
 		// Guarded, because ok() only counts: reading blob[0] after a failed
 		// !blob.empty() is out of bounds, and a test that crashes tells you
 		// less than one that fails.
 		if (blob.size() >= 3)
-			ok(blob[0] == 'P' && blob[1] == 'L' && blob[2] == 'G', "  印が PLG");
+			ok(blob[0] == 'P' && blob[1] == 'L' && blob[2] == 'G', "  the tag is PLG");
 		else
-			ok(false, "  印が PLG（節が短すぎて読めない）");
+			ok(false, "  the tag is PLG（節が短すぎて読めない）");
 
 		// Wreck the card's state, then put it back.
 		host.set_param(0, 1, 3);
@@ -330,26 +330,26 @@ int main(int argc, char **argv)
 			host.run(0, in, out);
 		int32_t level = 0;
 		host.get_param(0, 1, &level);
-		okv(level == 3, "  壊れた状態（パラメータ = %d）", (long long)level);
+		okv(level == 3, "  the state is wrecked (parameter = %d)", (long long)level);
 
 		std::string warn;
 		const bool loaded = host.load(blob.data(), blob.size(), warn);
-		ok(loaded, "  load が通る");
+		ok(loaded, "  load succeeds");
 		if (!warn.empty())
 			std::printf("       %s\n", warn.c_str());
 		host.get_param(0, 1, &level);
-		okv(level == 77, "  戻った（パラメータ = %d）", (long long)level);
+		okv(level == 77, "  and it is back (parameter = %d)", (long long)level);
 
 		// A project's bytes that are not ours at all.
 		warn.clear();
 		const std::vector<uint8_t> junk = { 'X', 'Y', 'Z', 0, 1, 2, 3, 4, 5, 6, 7, 8,
 		                                     9, 10, 11, 12, 13, 14, 15, 16 };
-		ok(!host.load(junk.data(), junk.size(), warn), "  他人の状態は load しない");
-		ok(!warn.empty(), "  それでいて理由がある");
+		ok(!host.load(junk.data(), junk.size(), warn), "  somebody else's state is not loaded");
+		ok(!warn.empty(), "  and there is a reason for that");
 	}
 
 	// ---- 7. a project whose card is not installed --------------------------
-	std::printf("== 7. カードが無いプロジェクト\n");
+	std::printf("== 7. a project whose card is not installed\n");
 	{
 		// Save with a card in, then load into a host that has none. This is the
 		// case that decides whether a project still opens after someone
@@ -359,8 +359,8 @@ int main(int argc, char **argv)
 		plg::host empty;
 		std::string warn;
 		const bool okload = empty.load(blob.data(), blob.size(), warn);
-		ok(okload, "  カード無しでも load は通る");
-		ok(!warn.empty(), "  理由が warn に出る");
+		ok(okload, "  load succeeds with no card at all");
+		ok(!warn.empty(), "  and the reason shows up in warn");
 		if (!warn.empty())
 			std::printf("       %s\n", warn.c_str());
 		// And a host that has a card, but a different one, must refuse to feed
@@ -376,65 +376,65 @@ int main(int argc, char **argv)
 		});
 		other.insert(0, stub, e2);
 		warn.clear();
-		ok(other.load(blob.data(), blob.size(), warn), "  別ホストでも load は通る");
+		ok(other.load(blob.data(), blob.size(), warn), "  load succeeds into a different host too");
 		// Same card, so this one should have been restored rather than skipped.
-		ok(warn.empty(), "  同じカードなので warn は出ない");
+		ok(warn.empty(), "  same card, so no warning");
 	}
 
 	// ---- 8. parameters ------------------------------------------------------
-	std::printf("== 8. パラメータ\n");
+	std::printf("== 8. parameters\n");
 	{
 		plg_param_desc page[4] = {};
 		const plg::host::param_page p = host.params(0, page, 4);
-		ok(p.have == 2, "  2 つあるとカードが言う");
-		ok(p.shown == 2, "  2 つ収まる");
+		ok(p.have == 2, "  the card says it has two");
+		ok(p.shown == 2, "  both fit");
 		if (p.shown >= 1)
-			ok(std::strcmp(page[0].name, "level") == 0, "  1 番目は level");
+			ok(std::strcmp(page[0].name, "level") == 0, "  the first is level");
 		if (p.shown >= 2) {
 			// The stub's second name is Japanese, in UTF-8. The ABI says names go
 			// out untranslated, and the host has no table to translate them with,
 			// so this checks the bytes survive the crossing intact.
 			ok(std::strcmp(page[1].name, "\xe5\x88\x9d\xe6\x9c\xac") == 0,
-			    "  2 番目は日本語のまま（\xe5\x88\x9d\xe6\x9c\xac）");
-			ok((page[1].flags & PLG_PARAM_F_BOOL) != 0, "  BOOL の印");
+			    "  the second is untranslated Japanese, as sent");
+			ok((page[1].flags & PLG_PARAM_F_BOOL) != 0, "  it carries the BOOL flag");
 		}
 		// One slot's worth of room, so the card's count is larger than what fit -
 		// which is how a host tells a card author their page is too long.
 		const plg::host::param_page q = host.params(0, page, 1);
-		ok(q.have == 2 && q.shown == 1, "  1 個しかなくて 2 つあると分かる");
-		ok(host.set_param(0, 1, 100) == 0, "  範囲内は受け付ける");
-		ok(host.set_param(0, 1, 101) != 0, "  範囲外はカードが拒否");
-		ok(host.set_param(0, 99, 0) != 0, "  自分のでない id を区別する");
+		ok(q.have == 2 && q.shown == 1, "  room for one, and the card says it has two");
+		ok(host.set_param(0, 1, 100) == 0, "  a value in range is accepted");
+		ok(host.set_param(0, 1, 101) != 0, "  a value out of range the card refuses");
+		ok(host.set_param(0, 99, 0) != 0, "  an id that is not the card's is told apart");
 		// An empty slot has no page, which is what a screen wants: no card, no
 		// page, and no special case.
 		const plg::host::param_page e = host.params(2, page, 4);
-		ok(e.have == 0 && e.shown == 0, "  空のスロットにページはない");
+		ok(e.have == 0 && e.shown == 0, "  an empty slot has no page");
 	}
 
 	// ---- 9. eject -----------------------------------------------------------
-	std::printf("== 9. 抜く\n");
+	std::printf("== 9. ejecting\n");
 	{
 		host.eject(0);
-		ok(!host.present(0), "  抜けた");
+		ok(!host.present(0), "  ejected");
 		int32_t out[2] = { -1, -1 };
 		host.run(0, nullptr, out);
-		ok(out[0] == 0 && out[1] == 0, "  抜いた後 run は無音");
+		ok(out[0] == 0 && out[1] == 0, "  after ejecting, run is silent");
 		// **1, not 0.** An undriven line idles high, and SCI4's multiplexed
 		// receive line is the AND of the selected ones, so an empty slot holding
 		// its line low would mask out a card in another slot. Asserted here
 		// because it is the opposite of what the first version of this test said.
-		ok(host.midi_tx(0) == 1, "  抜いた後 MIDI の TX は 1（空の線は high）");
+		ok(host.midi_tx(0) == 1, "  after ejecting, MIDI TX is 1 (an undriven line idles high)");
 		// Ejecting twice, and ejecting an empty slot, must be harmless: the
 		// screen's "remove" button and a project's missing card both land here.
 		host.eject(0);
 		host.eject(2);
-		ok(true, "  2 抜いても落ちない");
+		ok(true, "  ejecting twice is harmless");
 	}
 
 	// Take the scratch files away again, so a run leaves the tree as it found it.
 	for (const std::string &p : g_scratch)
 		std::remove(p.c_str());
 
-	std::printf("\n%d 項目のうち %d 項が失敗\n", g_checks, g_fail);
+	std::printf("\n%d checks, %d failed\n", g_checks, g_fail);
 	return g_fail ? 1 : 0;
 }

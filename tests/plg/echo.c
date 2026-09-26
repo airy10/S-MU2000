@@ -141,11 +141,11 @@ static void echo_rx(plg_card *c, int level, int bit)
 	 * and so is this, and a framing error is counted rather than swallowed. */
 	if (!level)
 		return;
-	e->shift = 0;
 	if (e->count < ECHO_LOG_BYTES)
-		e->log[e->count] = (unsigned char)e->shift;
+		e->log[e->count] = (unsigned char)e->shift;   /* store, then clear */
 	else
 		e->dropped++;
+	e->shift = 0;
 	e->count++;
 }
 

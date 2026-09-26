@@ -25,7 +25,8 @@ cores を半分くらい取る。**変えたものが音に出ないなら回す
 
   1. verify.exe      SWP30 のレジスタ素通しと乱数の数列（ROM 不要）
   1b. plgtest.exe    PLG カード差し込み口（ROM 不要・カードも実機も要らない）
-  2b. boot --plg     カードが firmware の送信を実際に受け取るか（render は要らない）
+  2b. boot --plg     カードが firmware の送信を受け取るか、firmware がカードを
+                     認めるか（PLG-1 のランプ。render は要らない）
   2. statetest.exe   状態の保存と復元。写し忘れがあれば落ちる
   3. 鳴らし比べ       tests/*.json の指紋と突き合わせる
   4. スレーブ別糸      threaded と --single で出る音が同じこと
@@ -393,6 +394,30 @@ def step_plg_boot(rep, roms):
         rep.add("plg 音", True, "カードの戻り L=%d が meli 10 に出た（筐体は 0 のまま）" % val)
     else:
         rep.add("plg 音", False, "カードの戻り L=%d（1048576 ではない）" % val)
+
+
+    # The recognition observable. **PLG-1 lit is the whole test**: the firmware
+    # lights that lamp itself once it has accepted a card (src/ui/panel.cpp:797,
+    # latch bits 6..9), so a card that takes it from 0 to 1 here has been
+    # recognised by the real firmware, with nobody in this project deciding so.
+    #
+    # It has to be a cold boot, and it is: `boot` never loads NVRAM from disk and
+    # the PLG scan is part of the boot sequence (doc/plg-cards.md 5). `--bootcache`
+    # must never be passed here.
+    card_builtin = BUILD / ("plg_answer" + (".dylib" if sys.platform == "darwin"
+                                           else ".dll" if os.name == "nt" else ".so"))
+    lamps = ""
+    r2 = subprocess.run([str(exe), str(roms), "700000000", "--plg-builtin", "0"],
+                        capture_output=True, text=True, encoding="utf-8",
+                        env=dict(os.environ, SMU2000_CARD_HOLD="3"))
+    for line in r2.stdout.splitlines():
+        if "PLG-1=" in line:
+            lamps = line
+    if "PLG-1=on" in lamps:
+        rep.add("PLG 認識", True, "PLG-1 が点いた（firmware がカードを認めた）")
+    else:
+        rep.add("PLG 認識", False, lamps.strip() or "PLG ランプが出ない")
+    return
 
 
 def step_statetest(rep, roms, midi):

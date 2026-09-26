@@ -1,14 +1,11 @@
-# PLG card slots — design note
+**Where it stands: a card is recognised.** PLG-1 lights, the firmware stops
+polling for a board and starts configuring the one it found, and the whole
+exchange is checked by `tools/run_tests.py` step 2b.
 
-The module ABI for a PLG card (a PLG150-DX and friends) and the host side that
-loads one. Implementation in `src/plg/`, the contract itself in
-`src/plg/plg1500.h`, the checks in `src/plgtest.cpp` and `tests/plg/stub.c`.
-
-**Where it stands: the ABI, the host side, the SCI4 line in both directions, the
-card's transmit timing, the audio path and a card that is built into the program
-rather than loaded — all done and checked. A card can hear the firmware and put a
-value on the audio wire. What is not done is *recognition*: PLG-1 stays dark, and
-the reason is in section 5.
+The card in question is `tests/plg/answer.c`: forty bytes of reply, no sound, no
+data, built into the program so it can be part of `make check`. It exists to
+prove the host, not to be a synthesiser. What is still missing is everything
+below "a card is recognised" - a real card, and audio.
 
 ## 1. What the hardware has
 

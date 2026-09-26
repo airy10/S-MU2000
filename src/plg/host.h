@@ -130,6 +130,11 @@ public:
 	// proving the plumbing, not for being received.
 	// One bit, with its place in the byte. See plg_card_ops::midi_rx.
 	void midi_rx(int slot, int level, int bit);
+	// S-MU2000: how many bits reached the host. The chip counts what it shifted
+	// out and the card counts what it decoded, and this is the number in between,
+	// which is what tells the two apart (doc/plg-cards.md 5).
+	std::uint64_t midi_rx_calls() const { return m_rx_calls; }
+
 	int  midi_tx(int slot) const;
 
 	// Where a card's own TX line goes. The machine points this at SCI4's RX.
@@ -243,6 +248,7 @@ private:
 	// Which sample to time, shared by the three slots. One counter rather than
 	// three: the slots are called in order from the same place.
 	unsigned m_timed = 0;
+	std::atomic<std::uint64_t> m_rx_calls{0};
 };
 
 } // namespace plg

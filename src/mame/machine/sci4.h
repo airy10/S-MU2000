@@ -62,6 +62,9 @@ public:
 	u64 dbg_tx_start(int i) const { return m_dbg_tx_start[i]; }
 	u64 dbg_tx_tick(int i) const { return m_dbg_tx_tick[i]; }
 	u64 dbg_notify(int i) const { return m_dbg_notify[i]; }
+	// Loop entries (step < 9), as opposed to ticks: the difference is the end-of-
+	// byte branch, and without it the arithmetic on the other two is guesswork.
+	u64 dbg_tx_loop(int i) const { return m_dbg_tx_loop[i]; }
 
 	// S-MU2000: address_map の代わりに素の振り分け。中身は sci4.cpp の末尾
 	u8   read8 (offs_t offset);
@@ -81,7 +84,8 @@ protected:
 	std::FILE *m_rx_trace = nullptr;      // S-MU2000
 	u64 m_dbg_tx_start[4] = {};   // S-MU2000
 	u64 m_dbg_tx_tick[4] = {};    // S-MU2000
-	u64 m_dbg_notify[4] = {};     // S-MU2000
+	u64 m_dbg_notify[4] = {};     // S-MU2000, per multiplexed line
+	u64 m_dbg_tx_loop[4] = {};    // S-MU2000
 	tx_notify_fn m_tx_notify = nullptr;  // S-MU2000
 	void *m_tx_notify_ctx = nullptr;     // S-MU2000
 

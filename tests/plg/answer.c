@@ -91,7 +91,8 @@ struct answer {
 	int      rx_frames;      /* complete host messages seen */
 	int      rx_bits;       /* bits handed over, for the report */
 	int      rx_bytes;    /* bytes in the message being received */
-	unsigned char rx[4];  /* its first four, to recognise it */
+	unsigned char msg[8]; /* the current message's head, F0..F7 */
+	int           msg_n;
 	int      rx_total;    /* bytes since reset, for the report */
 	int      rx_polls;    /* messages seen that look like a poll */
 	char     rx_log[8][16];  /* the first messages, as the card saw them */
@@ -296,31 +297,39 @@ static void answer_rx(plg_card *c, int level, int bit)
 	}
 	if (!level)
 		return;                             /* framing error: not a byte */
-	a->shift    = 0;
-	a->rx_bytes++;
+	const int byte = (int)a->shift;
+	a->shift = 0;
 	a->rx_total++;
-	if (a->rx_bytes <= (int)sizeof(a->rx))
-		a->rx[a->rx_bytes - 1] = (unsigned char)a->shift;
-	if (a->rx_bytes < 1 || a->rx[a->rx_bytes - 1] != 0xf7)
+	/* **A message head, reset by F0.**
+	 *
+	 * Keeping "the first four bytes" in one buffer does not work, and the failure
+	 * looks like nothing at all: those slots are only written while the counter
+	 * is small, so after the first message they still hold *that* message's head
+	 * and every later message is compared against it. 158 correct bytes and "0
+	 * polls" is what that looks like. The head is reset by the message's own start
+	 * byte instead. */
+	if (byte == 0xf0)
+		a->msg_n = 0;
+	if (a->msg_n < (int)sizeof(a->msg))
+		a->msg[a->msg_n++] = (unsigned char)byte;
+	if (byte != 0xf7)
 		return;
+	a->rx_bytes++;
 	a->rx_frames++;
 	/* A short log of what arrived, because "the host sent a poll and the card did
 	 * not see one" is only answerable by looking at both. */
 	if (a->rx_log_n < 8) {
 		char *dst = a->rx_log[a->rx_log_n++];
 		int k = 0;
-		for (int i = 0; i < a->rx_bytes && k < 15; i++) {
-			const unsigned b = i < (int)sizeof(a->rx) ? a->rx[i] : 0xff;
-			k += snprintf(dst + k, 16 - k, "%02x", b);
-		}
+		for (int i = 0; i < a->msg_n && k < 15; i++)
+			k += snprintf(dst + k, 16 - k, "%02x", a->msg[i]);
 		dst[k] = 0;
 	}
 	/* **Which message is worth answering is a measured question.** The capture of a
 	 * real AP shows the host sending a read (F0 43 10 4E 00 10 02 01) and then a
 	 * poll (F0 43 30 4E 01 10 00), with the card's two replies arriving after the
 	 * poll. */
-	const int is_poll = a->rx_bytes >= 3 && a->rx[0] == 0xf0 &&
-	                    a->rx[1] == 0x43 && a->rx[2] == 0x30;
+	const int is_poll = a->msg_n >= 4 && a->msg[1] == 0x43 && a->msg[2] == 0x30;
 	if (is_poll)
 		a->rx_polls++;
 	const int want = a->on_poll ? is_poll : 1;
@@ -399,7 +408,10 @@ static int answer_selftest(plg_card *c)
 	for (bit = 0; bit < 8; bit++)
 		answer_rx(c, (int)((want >> bit) & 1), bit);
 	answer_rx(c, 1, 8);
-	if (a->rx_bytes != 1 || a->shift != want)
+	/* The byte is checked in the log, not in `shift`: the receiver clears shift
+	 * once it has stored the byte, so shift is 0 here by design. Checking shift
+	 * is what made this selftest refuse a perfectly good card. */
+	if (a->rx_total != 1 || a->msg[0] != want)
 		return 1;
 	/* A stop bit that comes back low is a framing error and the byte is dropped:
 	 * the chip is a UART and so is this. */
