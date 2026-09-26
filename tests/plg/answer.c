@@ -6,7 +6,7 @@
  * else, and both were read off a real PLG150-AP talking to a real MU2000:
  *
  *   reply to a read of 2 bytes at 0x0010   F0 43 10 4E 01 10 00 00 07 00 F7
- *   reply with its own name, 11 bytes      F0 43 10 4E 01 00 00 "PLG150-AP     " F7
+ *   reply with its own name, 14 bytes      F0 43 10 4E 01 00 00 "PLG150-AP     " F7
  *
  * The AP sent exactly those two messages, 33 bytes in total, and the MU2000 was
  * satisfied: it lit the PLG-1 lamp and went on to the PLG mode. Everything else
@@ -40,6 +40,7 @@
 #include "plg/plg1500.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define PLG_NAME "PLG150-AP"   /* 11 characters, space padded on the wire */
@@ -51,9 +52,14 @@ static const unsigned char CATEGORY[2] = { 0x00, 0x07 };
 static const unsigned char REPLY_CATEGORY[] = {
 	0xf0, 0x43, 0x10, 0x4e, 0x01, 0x10, 0x00, 0x00, 0x07, 0x00, 0xf7
 };
+/* **The name field is 14 bytes, not 11.** Both real cards pad to 14: the capture
+ * has "PLG150-AP" followed by five spaces and "PLG100-VL" followed by five. A
+ * first attempt used 11, the messages arrived at the host byte for byte, and the
+ * card was still not accepted - so the field is a fixed length the firmware
+ * reads, not a string that ends at the first space. */
 static const unsigned char REPLY_NAME[] = {
 	0xf0, 0x43, 0x10, 0x4e, 0x01, 0x00, 0x00,
-	'P', 'L', 'G', '1', '5', '0', '-', 'A', 'P', ' ', ' ',
+	'P', 'L', 'G', '1', '5', '0', '-', 'A', 'P', ' ', ' ', ' ', ' ', ' ',
 	0xf7
 };
 
@@ -68,12 +74,16 @@ struct answer {
 	int      bit;
 	unsigned shift;
 	int      rx_frames;      /* complete host messages seen */
-	int      rx_bytes;
+	int      rx_bytes;    /* bytes in the message being received */
+	int      rx_total;    /* bytes since reset, for the report */
 
 	/* Transmit: a queue of the two replies, one bit handed over per midi_tx(). */
 	int            tx_byte;      /* index into tx_buf, -1 when nothing to send */
 	int            tx_bit;       /* 0..9: start, eight data, stop */
-	int            tx_hold;      /* polls per bit, so the host may look twice */
+	int            tx_hold;      /* polls per bit */
+	int            hold_per_bit; /* the above, as a knob: see read_knobs() */
+	int            start_delay;  /* idle polls before a start bit */
+	int            once;         /* answer only the first host message, like the AP */
 	unsigned char  tx_buf[sizeof(REPLY_CATEGORY) + sizeof(REPLY_NAME)];
 	int            tx_len;
 	int            tx_next;      /* where the next reply starts in tx_buf */
@@ -81,6 +91,40 @@ struct answer {
 	int            sent;         /* replies sent so far, for the report */
 	int            accepted;     /* set once both have gone out */
 };
+
+/* The knobs, read once in create(). They exist because the card is stepped
+ * by the host's poll and the relationship between "one bit" and "one poll" is
+ * exactly what had to be found; guessing it produced framing errors, and a
+ * sweep over it is cheaper than an argument. Both default to the values that
+ * work.
+ *
+ *   SMU2000_CARD_HOLD   polls per bit. The host polls at half a bit, so 2 is one
+ *                       bit per bit period.
+ *   SMU2000_CARD_ONCE   1 (default) answers the first host message only, as the
+ *                       real AP does; 0 answers every one.
+ *   SMU2000_CARD_START  idle polls inserted before a start bit, which moves the
+ *                       card's transitions relative to the chip's sample points
+ *                       without changing the rate.
+ */
+static void read_knobs(struct answer *a)
+{
+	a->hold_per_bit = 2;
+	a->start_delay = 0;
+	const char *e;
+	if ((e = getenv("SMU2000_CARD_HOLD")) != 0) {
+		const int v = atoi(e);
+		if (v >= 1 && v <= 8)
+			a->hold_per_bit = v;
+	}
+	if ((e = getenv("SMU2000_CARD_START")) != 0) {
+		const int v = atoi(e);
+		if (v >= 0 && v <= 8)
+			a->start_delay = v;
+	}
+	a->once = 1;
+	if ((e = getenv("SMU2000_CARD_ONCE")) != 0 && atoi(e) == 0)
+		a->once = 0;
+}
 
 /* Lay the replies out once. Called from create, so it is not on any hot path. */
 static void build_replies(struct answer *a)
@@ -123,6 +167,7 @@ PLG_EXPORT plg_card *plg1500_create(const plg_host *host, void *ctx, char *err, 
 		return 0;
 	}
 	a->host = host;
+	read_knobs(a);
 	build_replies(a);
 	return (plg_card *)a;
 }
@@ -135,7 +180,7 @@ PLG_EXPORT void plg1500_destroy(plg_card *c)
 	char line[256];
 	snprintf(line, sizeof(line),
 	         "answer: heard %d byte(s) in %d message(s), sent %d repl%s",
-	         a->rx_bytes, a->rx_frames, a->sent, a->sent == 1 ? "y" : "ies");
+	         a->rx_total, a->rx_frames, a->sent, a->sent == 1 ? "y" : "ies");
 	a->host->log(a->host->ctx, line);
 }
 
@@ -154,14 +199,18 @@ static int answer_tx(plg_card *c)
 		}
 	}
 
-	/* Hold each bit for two polls. The host looks twice per bit, so an edge is
-	 * never missed, while the bit *rate* stays right: one bit per two looks is
-	 * one bit per bit period. */
+	/* Hold each bit for hold_per_bit polls. The host's poll rate is the bit rate
+	 * divided by this, so a wrong value here is a wrong bit rate - which is why
+	 * it is a knob rather than a constant. See read_knobs(). */
+	if (a->start_delay) {
+		a->start_delay--;
+		return 1;
+	}
 	if (a->tx_hold) {
 		a->tx_hold--;
 		return a->tx_level;
 	}
-	a->tx_hold = 1;
+	a->tx_hold = a->hold_per_bit - 1;
 
 	const unsigned char b = a->tx_buf[a->tx_byte];
 	int level;
@@ -203,15 +252,20 @@ static void answer_rx(plg_card *c, int level)
 	if (a->bit == 9) {
 		if (level) {
 			a->rx_bytes++;
+			a->rx_total++;
 			/* A complete message from the host is the cue to answer, which is
 			 * what the real card does: it is addressed, it replies. Queueing both
 			 * replies here rather than matching the request keeps this card free
 			 * of any protocol knowledge, which is the point of it. */
 			if (a->shift == 0xf7) {
 				a->rx_frames++;
-				if (a->tx_byte < 0 && a->tx_next >= a->tx_len) {
-					a->tx_next = 0;              /* re-arm, and answer again */
-				}
+				/* The real AP answered twice in total and then stayed quiet, so
+				 * `once` is the default here: answering every message is measurably
+				 * worse - the firmware ends up writing voice data at the card
+				 * instead of reading its parameters back, and takes a branch the real
+				 * card never sees. SMU2000_CARD_ONCE=0 answers every message. */
+				if (a->tx_byte < 0 && a->tx_next >= a->tx_len && !(a->once && a->sent))
+					a->tx_next = 0;
 			}
 		}
 		a->bit = 0;
@@ -239,10 +293,11 @@ static void answer_reset(plg_card *c)
 	struct answer *a = (struct answer *)c;
 	a->bit = 0;
 	a->shift = 0;
-	a->rx_frames = a->rx_bytes = 0;
+	a->rx_frames = a->rx_bytes = a->rx_total = 0;
 	a->tx_byte = -1;
 	a->tx_bit  = 0;
 	a->tx_hold = 0;
+	a->start_delay = 0;
 	a->tx_level = 1;
 	a->sent = a->accepted = 0;
 	build_replies(a);
@@ -308,9 +363,14 @@ static int answer_selftest(plg_card *c)
 			expect = (b >> (step - 1)) & 1;
 		else
 			expect = 1;
-		/* Each bit is held for two polls, so the value must appear twice. */
-		if (answer_tx(c) != expect || answer_tx(c) != expect)
-			bad++;
+		/* Each bit is held for hold_per_bit polls, and every one of them must
+		 * report the same level. Stepping by the knob rather than by a literal is
+		 * what lets this test mean anything when the knob is not 2 - and a selftest
+		 * that hard-codes the framing is a selftest that refuses the card whenever
+		 * the framing is being searched for, which is exactly when it is needed. */
+		for (int k = 0; k < a->hold_per_bit; k++)
+			if (answer_tx(c) != expect)
+				bad++;
 	}
 	if (bad)
 		return 2;
