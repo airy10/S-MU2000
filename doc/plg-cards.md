@@ -183,7 +183,29 @@ Not done:
   receive line is the AND of the selected lines, so an empty slot holding its line
   low masks out the card in another slot. `host::midi_tx()` returns 1 for that
   reason, and it is the one thing here that was wrong before it was measured.
-- **Recognition. PLG-1 stays dark**, and the blocker is now in the card's
+- **SCI4's transmit path, which is the real blocker and is host-side.** The
+  firmware writes nine `0xf0` bytes to the card channel, and the card is handed
+  **nine bits in total** instead of 81. So the chip shifts one byte out and then
+  `tx_start()` is never re-entered for the next one, and everything downstream is
+  downstream of that. This is why "the card's framing is a byte out" was the
+  wrong diagnosis: the card was seeing one edge per byte (the start-of-byte edge
+  from `tx_start`) and nothing else, so every "message" it decoded was one byte.
+  A card cannot be recognised while the host is only sending a ninth of a
+  message.
+- **`midi_rx` is per bit now, and that is a real fix but not this one.** The
+  interface hands a card the line and nothing else - no clock, no bit index -
+  and MAME's cards cope only because they are clocked SCI peripherals that sample
+  by phase. The firmware writes the target register often and `target_w()` drives
+  the *disabled* multiplexed lines high, so every one of those writes puts an
+  edge on the card's line that belongs to no byte. A card decoding that line on
+  edges alone is lost before the host has said anything: twelve such edges, then
+  a byte out for the rest of the run. The chip now hands the card one bit at a
+  time with its place in the byte, as `tx_tick` shifts it, once per *selected
+  line* - the three slots are one SCI4 channel told apart by the target
+  register, which is why the firmware broadcasts and cannot tell which board
+  answered.
+- **Recognition. PLG-1 stays dark**, and until the transmit path is fixed it is
+  not even the right question to ask. The blocker was never only in the card's
   *receive* framing rather than in the host. The host's side is finished: the
   card is stepped by SCI4's own bit clock, its two replies reach the chip intact
   (zero framing errors, byte for byte what a real PLG150-AP sends), and the

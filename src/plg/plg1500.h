@@ -276,11 +276,23 @@ typedef struct plg_card_ops {
 	void   (*reset)(plg_card *c);
 	// One sample, from the audio thread (the promise in doc/plg-cards.md, section 3)
 	void   (*run)(plg_card *c, plg_slot_io *io);
-	// The host pushing SCI4's TX line into the card, as an edge. The chip
-	// generates these itself from its divisor, so the card sees real bit timing
-	// and this direction needs nothing from the host but a call. NULL means the
-	// card does not listen.
-	void   (*midi_rx)(plg_card *c, int level);
+	// The host handing the card **one bit at a time**, as SCI4 shifts it out, with
+	// its place in the byte: `bit` is 0..7 for the data bits, LSB first, and 8 is
+	// the stop bit. There is no start bit, because the host knows where the byte
+	// begins.
+	//
+	// **Per bit, not per edge, and that is the point.** SCI4's line carries edges
+	// that belong to no byte at all: the firmware writes the target register
+	// often, and target_w() drives the *disabled* multiplexed lines high, so each
+	// of those writes puts an edge on the card's line. A real PLG card is a
+	// clocked SCI that samples by phase and steps over every one of them, which
+	// is why MAME's cards work on this wire. An edge-driven card with no clock is
+	// lost on the first - measured as a dozen spurious edges before the host had
+	// transmitted anything, after which every message it decoded was a byte out.
+	//
+	// So the timing crosses the boundary and the card frames its own bytes, which
+	// is the card's business. NULL means the card does not listen.
+	void   (*midi_rx)(plg_card *c, int level, int bit);
 	// The card's own TX line, as a level. Polled at the bit times, so it must
 	// return the line as it is *now*. A card that would rather be edge-driven
 	// calls host->tx() and may leave this NULL.

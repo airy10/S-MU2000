@@ -47,6 +47,14 @@ public:
 	// other end: did the card's bytes arrive intact?
 	void set_rx_trace(std::FILE *f) { m_rx_trace = f; }
 
+	// S-MU2000: a PLG card's receive path, called once per bit as the bit is
+	// shifted out, with its place in the byte. See the comment at the call site
+	// in sci4.cpp: the line alone is not enough, because the firmware's target
+	// writes put edges on it that belong to no byte.
+	using tx_notify_fn = void (*)(void *ctx, int sci, int level, int bit);
+	void set_tx_notify(tx_notify_fn fn, void *ctx)
+	{ m_tx_notify = fn; m_tx_notify_ctx = ctx; }
+
 	// S-MU2000: address_map の代わりに素の振り分け。中身は sci4.cpp の末尾
 	u8   read8 (offs_t offset);
 	void write8(offs_t offset, u8 data);
@@ -63,6 +71,8 @@ protected:
 	emu_timer *m_rx_timer[4];
 	emu_timer *m_line_timer = nullptr;   // S-MU2000: the free-running line poll
 	std::FILE *m_rx_trace = nullptr;      // S-MU2000
+	tx_notify_fn m_tx_notify = nullptr;  // S-MU2000
+	void *m_tx_notify_ctx = nullptr;     // S-MU2000
 
 	std::array<u8, 7> m_rx;
 	std::array<u8, 4> m_enable, m_status, m_datamode, m_div, m_cur_rx;

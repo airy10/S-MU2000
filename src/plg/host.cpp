@@ -560,7 +560,7 @@ void host::run(int slot, const int32_t *in, int32_t *out)
 	}
 }
 
-void host::midi_rx(int slot, int level)
+void host::midi_rx(int slot, int level, int bit)
 {
 	// No card, or a card the host has given up on: the line goes nowhere, which
 	// is what it did before this existed. Cheap enough to call on every edge.
@@ -572,7 +572,7 @@ void host::midi_rx(int slot, int level)
 	// A card with no receive entry point simply does not listen, which is the
 	// normal case: there is no separate flag for it.
 	if (s->cut.midi_rx)
-		s->cut.midi_rx(s->card, level ? 1 : 0);
+		s->cut.midi_rx(s->card, level ? 1 : 0, bit);
 }
 
 int host::midi_tx(int slot) const

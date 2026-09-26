@@ -128,7 +128,8 @@ public:
 	// sees framing errors. That is a known gap, not a design: doc/plg-cards.md
 	// section 4. Until it is closed, a v1 card is useful for receiving and for
 	// proving the plumbing, not for being received.
-	void midi_rx(int slot, int level);
+	// One bit, with its place in the byte. See plg_card_ops::midi_rx.
+	void midi_rx(int slot, int level, int bit);
 	int  midi_tx(int slot) const;
 
 	// Where a card's own TX line goes. The machine points this at SCI4's RX.

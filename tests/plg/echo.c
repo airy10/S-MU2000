@@ -124,38 +124,29 @@ PLG_EXPORT void plg1500_destroy(plg_card *c)
 	e->host->log(e->host->ctx, line);
 }
 
-/* The line, as an edge. This is the chip's own framing, so the card only has to
- * find the start bit and shift eight bits in. */
-static void echo_rx(plg_card *c, int level)
+/* The host's bits, one at a time, each with its place in the byte. The same
+ * change as answer.c: per bit, not per edge, so the idle edges on the line -
+ * the ones the firmware's target-register writes put there - cannot be taken for
+ * data. plg1500.h says why the line on its own is not enough. */
+static void echo_rx(plg_card *c, int level, int bit)
 {
 	struct echo *e = (struct echo *)c;
 	level = level ? 1 : 0;
-	if (e->bit == 0) {
-		/* Waiting for the start bit, which is low. */
-		if (level == 0) {
-			e->bit   = 1;
-			e->shift = 0;
-		}
+	if (bit < 8) {
+		if (level)
+			e->shift |= 1u << bit;       /* LSB first */
 		return;
 	}
-	/* Stop bit. The eight data bits are steps 1..8, so the stop bit arrives when
-	 * the counter reads 9 - and the line has to be high again. A low stop bit is
-	 * a framing error, which on a real line means the two ends disagree about
-	 * the clock, so it is counted rather than swallowed. */
-	if (e->bit == 9) {
-		if (level) {
-			if (e->count < ECHO_LOG_BYTES)
-				e->log[e->count] = (unsigned char)e->shift;
-			else
-				e->dropped++;
-			e->count++;
-		}
-		e->bit = 0;
+	/* The stop bit. It has to be high, or this was not a byte: the chip is a UART
+	 * and so is this, and a framing error is counted rather than swallowed. */
+	if (!level)
 		return;
-	}
-	if (level)
-		e->shift |= 1u << (e->bit - 1);
-	e->bit++;
+	e->shift = 0;
+	if (e->count < ECHO_LOG_BYTES)
+		e->log[e->count] = (unsigned char)e->shift;
+	else
+		e->dropped++;
+	e->count++;
 }
 
 static void echo_run(plg_card *c, plg_slot_io *io)
@@ -216,12 +207,10 @@ static int echo_selftest(plg_card *c)
 	struct echo *e = (struct echo *)c;
 	const unsigned want = 0x5a;
 	const int      saved_count = e->count, saved_dropped = e->dropped;
-	e->bit = 0; e->shift = 0;
-	echo_rx(c, 1);                 /* idle */
-	echo_rx(c, 0);                 /* start */
-	for (int i = 0; i < 8; i++)
-		echo_rx(c, (int)((want >> i) & 1));
-	echo_rx(c, 1);                 /* stop */
+	e->shift = 0;
+	for (int i = 0; i < 8; i++)      /* eight data bits, then the stop bit */
+		echo_rx(c, (int)((want >> i) & 1), i);
+	echo_rx(c, 1, 8);
 	const int ok = (e->count == saved_count + 1 && e->log[saved_count] == want);
 	e->count = saved_count;
 	e->dropped = saved_dropped;

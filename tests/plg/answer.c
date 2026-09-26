@@ -89,6 +89,7 @@ struct answer {
 	int      bit;
 	unsigned shift;
 	int      rx_frames;      /* complete host messages seen */
+	int      rx_bits;       /* bits handed over, for the report */
 	int      rx_bytes;    /* bytes in the message being received */
 	unsigned char rx[4];  /* its first four, to recognise it */
 	int      rx_total;    /* bytes since reset, for the report */
@@ -204,8 +205,8 @@ PLG_EXPORT void plg1500_destroy(plg_card *c)
 		return;
 	char line[256];
 	snprintf(line, sizeof(line),
-	         "answer: heard %d byte(s) in %d message(s) (%d poll), sent %d repl%s",
-	         a->rx_total, a->rx_frames, a->rx_polls, a->sent,
+	         "answer: %d bits -> %d byte(s) in %d message(s) (%d poll), sent %d repl%s",
+	         a->rx_bits, a->rx_total, a->rx_frames, a->rx_polls, a->sent,
 	         a->sent == 1 ? "y" : "ies");
 	a->host->log(a->host->ctx, line);
 	for (int i = 0; i < a->rx_log_n; i++) {
@@ -268,66 +269,63 @@ static int answer_tx(plg_card *c)
 	return level;
 }
 
-/* The host's line, as an edge. The chip framed it; we only find the messages. */
-static void answer_rx(plg_card *c, int level)
+/* The host's bits, one at a time, each with its place in the byte.
+ *
+ * There is no start bit to find here and no timing to infer, and that is the
+ * whole point of the change. The line this used to arrive on carries an edge for
+ * every target-register write the firmware makes - `target_w()` in sci4.cpp drives
+ * the *disabled* multiplexed lines high - so an edge-driven receiver was lost
+ * before the host had transmitted anything: a dozen spurious edges, then a byte
+ * out for the rest of the run, with every "message" one byte long. MAME's cards
+ * never noticed, because they are real SCI peripherals that count their own bit
+ * clock and sample by phase, stepping over every gap on the wire.
+ *
+ * Handing over the bit and its index makes that impossible to get wrong, and
+ * leaves the card framing its own bytes, which is the card's business. The chip
+ * is a UART and so is this: a stop bit that comes back low is a framing error and
+ * the byte is thrown away. */
+static void answer_rx(plg_card *c, int level, int bit)
 {
 	struct answer *a = (struct answer *)c;
 	level = level ? 1 : 0;
-	if (a->bit == 0) {
-		if (!level) {
-			a->bit      = 1;
-			a->shift    = 0;
-			a->rx_bytes = 0;      /* per message, not since reset */
-		}
+	a->rx_bits++;
+	if (bit < 8) {
+		if (level)
+			a->shift |= 1u << bit;      /* LSB first */
 		return;
 	}
-	if (a->bit == 9) {
-		if (level) {
-			a->rx_bytes++;
-			a->rx_total++;
-			if (a->rx_bytes <= (int)sizeof(a->rx))
-				a->rx[a->rx_bytes - 1] = (unsigned char)a->shift;
-			/* A complete message from the host is the cue to answer, which is
-			 * what the real card does: it is addressed, it replies. Queueing both
-			 * replies here rather than matching the request keeps this card free
-			 * of any protocol knowledge, which is the point of it. */
-			if (a->shift == 0xf7) {
-				a->rx_frames++;
-				/* A short log of what arrived, because "the host sent a poll and the
-				 * card did not see one" is only answerable by looking at both. */
-				if (a->rx_log_n < 8) {
-					char *dst = a->rx_log[a->rx_log_n++];
-					int k = 0;
-					for (int i = 0; i < a->rx_bytes && k < 15; i++) {
-						const unsigned b = i < (int)sizeof(a->rx) ? a->rx[i]
-						                                : 0xff;
-						k += snprintf(dst + k, 16 - k, "%02x", b);
-					}
-					dst[k] = 0;
-				}
-				/* **Which message is worth answering is a measured question, not a
-				 * guess.** The capture of a real AP shows the host sending a read
-				 * (F0 43 10 4E 00 10 02 01) and then a poll (F0 43 30 4E 01 10 00),
-				 * and the card's two replies arriving **after the poll**. Answering
-				 * the read instead is measurably worse: the firmware stops reading
-				 * the card's parameters and starts writing voice data at it.
-				 * So the poll is the default, and the read is one knob away. */
-				const int is_poll = a->rx_bytes >= 3 && a->rx[0] == 0xf0 &&
-				                    a->rx[1] == 0x43 && a->rx[2] == 0x30;
-				if (is_poll)
-					a->rx_polls++;
-				const int want = a->on_poll ? is_poll : 1;
-				if (want && a->tx_byte < 0 && a->tx_next >= a->tx_len &&
-				    !(a->once && a->sent))
-					a->tx_next = 0;
-			}
-		}
-		a->bit = 0;
+	if (!level)
+		return;                             /* framing error: not a byte */
+	a->shift    = 0;
+	a->rx_bytes++;
+	a->rx_total++;
+	if (a->rx_bytes <= (int)sizeof(a->rx))
+		a->rx[a->rx_bytes - 1] = (unsigned char)a->shift;
+	if (a->rx_bytes < 1 || a->rx[a->rx_bytes - 1] != 0xf7)
 		return;
+	a->rx_frames++;
+	/* A short log of what arrived, because "the host sent a poll and the card did
+	 * not see one" is only answerable by looking at both. */
+	if (a->rx_log_n < 8) {
+		char *dst = a->rx_log[a->rx_log_n++];
+		int k = 0;
+		for (int i = 0; i < a->rx_bytes && k < 15; i++) {
+			const unsigned b = i < (int)sizeof(a->rx) ? a->rx[i] : 0xff;
+			k += snprintf(dst + k, 16 - k, "%02x", b);
+		}
+		dst[k] = 0;
 	}
-	if (level)
-		a->shift |= 1u << (a->bit - 1);
-	a->bit++;
+	/* **Which message is worth answering is a measured question.** The capture of a
+	 * real AP shows the host sending a read (F0 43 10 4E 00 10 02 01) and then a
+	 * poll (F0 43 30 4E 01 10 00), with the card's two replies arriving after the
+	 * poll. */
+	const int is_poll = a->rx_bytes >= 3 && a->rx[0] == 0xf0 &&
+	                    a->rx[1] == 0x43 && a->rx[2] == 0x30;
+	if (is_poll)
+		a->rx_polls++;
+	const int want = a->on_poll ? is_poll : 1;
+	if (want && a->tx_byte < 0 && a->tx_next >= a->tx_len && !(a->once && a->sent))
+		a->tx_next = 0;
 }
 
 static void answer_run(plg_card *c, plg_slot_io *io)
@@ -396,14 +394,23 @@ static int answer_selftest(plg_card *c)
 	const unsigned char want = 0x5a;
 	int bit, got = 0, bad = 0;
 
-	/* 1. receive */
-	answer_rx(c, 1);
-	answer_rx(c, 0);
+	/* 1. receive: eight data bits then a stop bit, each with its place. There is no
+	 * start bit to offer and none to find, which is the whole change. */
 	for (bit = 0; bit < 8; bit++)
-		answer_rx(c, (int)((want >> bit) & 1));
-	answer_rx(c, 1);
+		answer_rx(c, (int)((want >> bit) & 1), bit);
+	answer_rx(c, 1, 8);
 	if (a->rx_bytes != 1 || a->shift != want)
 		return 1;
+	/* A stop bit that comes back low is a framing error and the byte is dropped:
+	 * the chip is a UART and so is this. */
+	{
+		const int before = a->rx_bytes;
+		for (bit = 0; bit < 8; bit++)
+			answer_rx(c, (int)((want >> bit) & 1), bit);
+		answer_rx(c, 0, 8);
+		if (a->rx_bytes != before)
+			return 3;
+	}
 
 	/* 2. transmit: queue one reply and walk its bits */
 	build_replies(a);

@@ -378,7 +378,33 @@ TIMER_CALLBACK_MEMBER(sci4_device::tx_tick)
 {
 	u32 step = m_tx_step[param]++;
 	if(step < 9) {
-		tx_set(param, step == 8 ? 1 : (m_tsr[param] >> step) & 1);
+		const int level = (step == 8) ? 1 : ((m_tsr[param] >> step) & 1);
+		tx_set(param, level);
+		// S-MU2000: tell a PLG card what bit is going out, and when.
+		//
+		// MAME's plg1x0 interface hands a card the line and nothing else - no clock,
+		// no bit index - and its cards cope because they are real SCI peripherals
+		// that count their own bit clock and sample by phase. A card written against
+		// this ABI has no such clock, and an edge-driven receiver on this line is
+		// lost immediately: the firmware writes the target register often, and
+		// target_w() drives the *disabled* multiplexed lines high, so every one of
+		// those writes is an edge on the card's line with no byte attached. A card
+		// measuring a real MU2000 was handed a dozen such edges before the host had
+		// said anything at all, and every message after that was a byte out.
+		//
+		// So the bit goes across as a bit, at the moment it is shifted, with its
+		// place in the byte. A card can then frame the byte itself and ignore
+		// anything between bits - which is what the real cards do, and what the
+		// interface has always implied.
+		// Once per **selected line**, not once per channel: the three PLG slots are
+		// one SCI4 channel (3) told apart by the target register, which is why the
+		// firmware broadcasts and cannot tell which board answered. Delivering per
+		// channel would hand the bit to one arbitrary slot.
+		if(m_tx_notify && param == 3) {
+			for(int line = 0; line != 4; line++)
+				if(m_targets & (1 << line))
+					m_tx_notify(m_tx_notify_ctx, line, level, int(step));
+		}
 		wait(0, 1, param);
 
 	} else {

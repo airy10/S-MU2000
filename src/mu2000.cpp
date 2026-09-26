@@ -1057,21 +1057,31 @@ void mu2000::reset()
 	// スロット n は SCI4 のポート 30+n（コネクタ 1 枚につき 1 ポート）。
 	// 最初は 3 枚とも空なので、この 2 方向は 0 を返すだけ。カードを差し込む
 	// まで何も起きない、というのが差し込む前の正しい状態。
+	//
+	// The edge callbacks are **not** how a card is fed. SCI4's line carries edges
+	// that belong to no byte - the firmware writes the target register often and
+	// target_w() drives the disabled multiplexed lines high - so an edge-driven
+	// card is lost before the host has said anything (doc/plg-cards.md 5). The
+	// chip's own per-bit notify is used instead: one call per bit, as the bit is
+	// shifted out, with its place in the byte. The edge callbacks stay connected
+	// because that is the wire, and because a future card that drives its own
+	// clocked UART may want them.
 	for (int n = 0; n < plg::host::SLOTS; n++) {
 		switch (n) {
 		case 0:
-			m_sci4->write_tx<30>().set([this](int s) { if (m_plg) m_plg->midi_rx(0, s); });
+			m_sci4->write_tx<30>().set([this](int s) { (void)s; });
 			break;
 		case 1:
-			m_sci4->write_tx<31>().set([this](int s) { if (m_plg) m_plg->midi_rx(1, s); });
+			m_sci4->write_tx<31>().set([this](int s) { (void)s; });
 			break;
 		case 2:
-			m_sci4->write_tx<32>().set([this](int s) { if (m_plg) m_plg->midi_rx(2, s); });
+			m_sci4->write_tx<32>().set([this](int s) { (void)s; });
 			break;
 		default:
 			break;
 		}
 	}
+	m_sci4->set_tx_notify(&mu2000::plg_tx_bit, this);
 	// カードの TX 線は SCI4 の RX に入る。カードは host->tx() を呼ぶので
 	// ここで 1 本つなぐ。ビット時刻は SCI4 側が決めるので、ホストは
 	// 「線が変わった」ことしか受け渡さない（doc/plg-cards.md 4 の時間間隔の
@@ -3022,6 +3032,17 @@ int mu2000::plg_slot_for(u32 model_id) const
 	// is enough until then.
 	(void)model_id;
 	return 0;
+}
+
+// SCI4 hands a card one bit per bit, with its place in the byte, once per
+// selected line (the three slots share one channel and the target register says
+// which lines are addressed - which is why the firmware broadcasts). The card
+// frames its own bytes; see plg1500.h.
+void mu2000::plg_tx_bit(void *ctx, int slot, int level, int bit)
+{
+	mu2000 *m = static_cast<mu2000 *>(ctx);
+	if (m->m_plg && slot >= 0 && slot < plg::host::SLOTS)
+		m->m_plg->midi_rx(slot, level, bit);
 }
 
 unsigned mu2000::plg_lamps() const
