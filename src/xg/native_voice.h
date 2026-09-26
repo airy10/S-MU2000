@@ -1910,6 +1910,19 @@ inline const u8 *drum_record(const u8 *rom, int kit, int note)
 	return off == 0xffff ? nullptr : rom + DRUM_RECORDS + off;
 }
 
+// **その記録に波形が埋まっているか**（doc/native-engine.md の 6.234）。
+// ふつうの打は +24/+25 が `FFFF` で、波形の記録（16 バイト）が +26 にそのまま
+// 入っている。**SFX キット**（MSB 126。キット番号 47 など）の打はそこが
+// `FFFF` でない 16bit の索引で、+26 から先は 0 のまま。波形はその索引の先に
+// あるが、**どの表を引くのかはまだ解けていない**（波形の組の番号でも、
+// 間隔の決まった要素の並びでもなかった）。
+// 埋まっていない記録を式で組むと、波形の番地が 0 になって雑音が鳴るので、
+// こういう打は firmware に回す
+inline bool drum_rec_has_wave(const u8 *rec)
+{
+	return rec && rd16(rec, 24) == 0xffff;
+}
+
 // `SMU2000_DRUM_EXACT=1` で、ドラムを写し取りではなく式で組む
 inline bool drum_exact()
 {

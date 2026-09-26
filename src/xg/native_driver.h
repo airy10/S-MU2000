@@ -295,6 +295,14 @@ public:
 		return m_ram[ram::part_base(part) + 0x07] != 0;
 	}
 
+	// そのパート・鍵のドラムの 1 打の記録（42 バイト）。無ければ nullptr
+	const u8 *drum_rec_of(int part, int note) const
+	{
+		if (!m_ram || !m_rom || part < 0 || part >= PARTS)
+			return nullptr;
+		return nv::drum_record(m_rom, int(m_ram[ram::part_base(part) + nv::PART_KIT]), note);
+	}
+
 	// 写し取ったものを取っておく・戻す（voicecache.h）
 	const std::unordered_map<u64, std::vector<nv::voice_cal>> &cal_map() const { return m_cal; }
 	const std::unordered_map<u64, std::vector<nv::voice_cal>> &drum_map() const { return m_drum; }
@@ -2735,8 +2743,8 @@ public:
 		if (is_drum(part)) {
 			if (m_drum.find(drum_key(part, note)) != m_drum.end())
 				return true;
-			return nocal_mode() && m_ram && nv::drum_record(
-			    m_rom, int(m_ram[ram::part_base(part) + nv::PART_KIT]), note) != nullptr;
+			// 波形が埋まっていない記録（SFX キット。6.234）は式で組めない
+			return nocal_mode() && nv::drum_rec_has_wave(drum_rec_of(part, note));
 		}
 		const u32 rec = record_of(part);
 		if (!rec)
@@ -3240,6 +3248,11 @@ public:
 		const auto it = m_drum.find(drum_key(part, note));
 		const bool synth = it == m_drum.end();
 		if ((synth && !nocal_mode()) || !m_rom)
+			return false;
+		// **波形が埋まっていない記録は式で組めない**（SFX キットの打。6.234）。
+		// 組むと波形の番地が 0 になって雑音が鳴るので、firmware に回す。
+		// 写し取りがあるなら、それは実機から取った音なのでそのまま使える
+		if (synth && !nv::drum_rec_has_wave(drum_rec_of(part, note)))
 			return false;
 		// 合成のときは 1 つだけ使う（ドラムは 1 打 1 スロット）
 		const std::vector<nv::voice_cal> &dcals = synth ? synth_cals() : it->second;

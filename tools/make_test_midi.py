@@ -836,6 +836,36 @@ def case_kits():
     return [track(seq(ev))], t + 3.0
 
 
+def case_drumsfx():
+    """**SFX キット**（バンク MSB 126）。6.234。
+
+    SFX の打の記録は、ふつうの打と違って**波形が埋まっていない**（+24/+25 が
+    `FFFF` でなく 16bit の索引で、+26 から先は 0）。native の口はそれを
+    そのまま式に通していたので、波形の番地が 0 になって雑音が鳴っていた。
+    いまは「波形の埋まっていない記録は firmware に回す」ので、実機と同じ音になる。
+
+    SFX Kit1（プログラム 0）と SFX Kit2（プログラム 1）から数鍵ずつと、
+    巻き添えを見るために**ふつうのキット**（MSB 127）も続けて鳴らす。
+    """
+    ev = head()
+    t = 1.0
+    for prog, keys in ((0, (28, 36, 39, 52, 68)), (1, (28, 36, 52))):
+        ev += [(t, b'\xb9\x00\x7e'), (t + 0.02, b'\xb9\x20\x00'),
+               (t + 0.04, bytes([0xc9, prog]))]
+        t += 0.2
+        for k in keys:
+            ev += note(9, k, 110, t, 0.1)
+            t += 0.42
+        t += 0.2
+    # ふつうのキットに戻して、そちらが native のままかを見る
+    ev += [(t, b'\xb9\x00\x7f'), (t + 0.02, b'\xb9\x20\x00'), (t + 0.04, b'\xc9\x00')]
+    t += 0.2
+    for k in (36, 38, 42):
+        ev += note(9, k, 110, t, 0.1)
+        t += 0.42
+    return [track(seq(ev))], t + 1.0
+
+
 def case_drumrev():
     """**逆向きに鳴らすサンプル**（波形の記録の `0x14/0x15` の bit31。6.233）。
 
@@ -1827,6 +1857,7 @@ CASES = {
     "xgvibshort": case_xgvibshort,
     "xgvibdly": case_xgvibdly,
     "drumrev": case_drumrev,
+    "drumsfx": case_drumsfx,
 }
 
 
