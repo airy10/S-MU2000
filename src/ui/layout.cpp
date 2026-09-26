@@ -165,11 +165,13 @@ layout::layout()
 	dial[0] = 893; dial[1] = 268; dial[2] = 58;
 	volume[0] = 141; volume[1] = 154; volume[2] = 30;
 
-	const int lx[11] = { 0, 12, 30, 48, 55, 61, 70, 78, 86, 93, 0 };
-	const int lw[11] = { 10, 15, 15, 2, 2, 8, 7, 7, 7, 8, 3 };
+	// 実機の写真から測った（上の面の点の間隔が単位）
+	const double lx[11] = { 0, 13, 30.5, 48.5, 56.1, 62.2, 70.3, 78.3, 86.1, 92.5, 102.9 };
+	const double lw[11] = { 11, 17, 15, 4, 4, 7.2, 6.8, 6.7, 6.8, 8.1, 1.3 };
 	for (int i = 0; i < 11; i++) { low_x[i] = lx[i]; low_w[i] = lw[i]; }
 
 	columns_y = 186;
+	modes_x = 686;
 	plg[0] = 524; plg[1] = 37; plg[2] = 341;
 
 	const double cd[4] = { 57, 336, 201, 21 };
@@ -227,7 +229,6 @@ layout::layout()
 	add_text(63, 338, 130, 17, 0, "leftmid", "slotink", "3.3V CARD");
 
 	add_text(686, 44, 46, 84, 0, "centerwrap", "ink", "GM2\nXG\nPLG");
-	add_text(686, 132, 50, 48, 0, "leftwrap", "ink", "XG\nTG300B\nPERFORM");
 	add_text(896, 28, 104, 12, 0, "center", "ink", "...... ALL ......");
 }
 
@@ -394,12 +395,13 @@ bool layout::load(const std::string &path, std::string &err)
 		}
 		else if (key == "mode.r") { if (need(3)) { mode_r = num(t[1]); mode_led_r = num(t[2]); } }
 		else if (key == "columns.y") { if (need(2)) columns_y = num(t[1]); }
+		else if (key == "modes.x")   { if (need(2)) modes_x = num(t[1]); }
 		else if (key == "plg")    { if (need(4)) for (int i = 0; i < 3; i++) plg[i] = num(t[1 + i]); }
 		else if (key == "card")   { if (need(5)) for (int i = 0; i < 4; i++) card[i] = num(t[1 + i]); }
 		else if (key == "adin")   { if (need(5)) for (int i = 0; i < 4; i++) adin[i] = num(t[1 + i]); }
 		else if (key == "phones") { if (need(5)) for (int i = 0; i < 4; i++) phones[i] = num(t[1 + i]); }
-		else if (key == "low.x")  { if (need(12)) for (int i = 0; i < 11; i++) low_x[i] = int(num(t[1 + i])); }
-		else if (key == "low.w")  { if (need(12)) for (int i = 0; i < 11; i++) low_w[i] = int(num(t[1 + i])); }
+		else if (key == "low.x")  { if (need(12)) for (int i = 0; i < 11; i++) low_x[i] = num(t[1 + i]); }
+		else if (key == "low.w")  { if (need(12)) for (int i = 0; i < 11; i++) low_w[i] = num(t[1 + i]); }
 		else if (key.rfind("mode.", 0) == 0) {
 			const std::string n = key.substr(5);
 			int at = -1;
@@ -514,16 +516,18 @@ bool layout::save(const std::string &path) const
 	             adin[0], adin[1], adin[2], adin[3]);
 	std::fprintf(f, "phones %g %g %g %g   # PHONES のジャック。押すと音の出口（デジタル / アナログ）の品書き\n",
 	             phones[0], phones[1], phones[2], phones[3]);
-	std::fprintf(f, "columns.y %g        # 窓の下の札（PART VOL EXP …）の高さ\n\n",
+	std::fprintf(f, "columns.y %g        # 窓の下の札（PART VOL EXP …）の高さ\n",
 	             columns_y);
+	std::fprintf(f, "modes.x %g          # 右の札（XG GS PERFORM）の左端。高さは液晶の ▶ に合わせる\n\n",
+	             modes_x);
 
 	std::fprintf(f,
 		"# LCD 下段の並び。単位は上段の点 1 つぶん（doc/lcd-segments.md）。\n"
 		"# 並びは 01 / A01 / 楽器 / VOL / EXP / PAN / REV / CHO / VAR / KEY / モード\n"
 		"low.x ");
-	for (int i = 0; i < 11; i++) std::fprintf(f, "%d ", low_x[i]);
+	for (int i = 0; i < 11; i++) std::fprintf(f, "%g ", low_x[i]);
 	std::fprintf(f, "\nlow.w ");
-	for (int i = 0; i < 11; i++) std::fprintf(f, "%d ", low_w[i]);
+	for (int i = 0; i < 11; i++) std::fprintf(f, "%g ", low_w[i]);
 
 	std::fprintf(f,
 		"\n\n# ---- 飾り。ボタンでも LCD でもない、ただ描くだけのもの。\n"

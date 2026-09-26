@@ -87,8 +87,9 @@ struct layout
 	};
 	art_set mode_art, nav_art, cat_art, round_art, plg_art;
 
-	int    low_x[11], low_w[11];           // LCD 下段の並び（点の単位）
+	double low_x[11], low_w[11];           // LCD 下段の並び（上の面の点の間隔が単位。端数も可）
 	double columns_y;                      // 窓の下の札の高さ
+	double modes_x;                        // 右の札（XG / GS / PERFORM）の左端。負なら描かない
 	double plg[3];                         // MU / PLG-1..3 の表示灯 左端 間隔 y
 
 	// 押すと品書きが出るところ。絵を描き替えたときに合わせられるよう、

@@ -142,6 +142,11 @@ private:
 	void paint_editor(HDC dc, const char *status) const;
 	void paint_effects(HDC dc, const char *status) const;
 
+	// LCD の中の寸法。点の間隔 d（画素）と、上の面の左上 x0 y0、下の面の上端 sy。
+	// 窓の下と右の札も同じ値で置くので、描く側と札の側で分けて計算しない
+	struct lcd_geom { int d, pad, x0, y0, tick_h, line_h, scale_h, sy; };
+	lcd_geom lcd_grid() const;
+
 	void draw_lcd(HDC dc, const snapshot &s) const;
 	void draw_grid(HDC dc) const;
 	void draw_button(HDC dc, const spot &sp, bool down) const;
