@@ -408,8 +408,7 @@ def step_plg_boot(rep, roms):
                                            else ".dll" if os.name == "nt" else ".so"))
     lamps = ""
     r2 = subprocess.run([str(exe), str(roms), "700000000", "--plg-builtin", "0"],
-                        capture_output=True, text=True, encoding="utf-8",
-                        env=dict(os.environ, SMU2000_CARD_HOLD="3"))
+                        capture_output=True, text=True, encoding="utf-8")
     for line in r2.stdout.splitlines():
         if "PLG-1=" in line:
             lamps = line

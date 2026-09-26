@@ -42,8 +42,8 @@ inline void print_usage()
                                     "        [--shapes-window] also open the part voice window (double-click a VIB picture etc. in the list)\n"
                                     "        [--master-window] also open the master window (double-click the master row)\n"
                                     "        [--lang ja|en] language (else lang= in editor.ini, else the locale: Japanese iff it says ja)\n"
-                                    "        [--plg <カード>] / [--plg-builtin <番号>]\n"
-                                    "                        PLG カードを入れる（起動前に差し込む）\n"
+                                    "        [--plg <card>] / [--plg-builtin <n>]\n"
+                                    "                        insert a PLG card (it must be in the slot before boot)\n"
                                     "        [--help]      show this help\n"
                                     "        gui --dump-layout panel.txt   write out the current layout\n"
                                     "        gui --list\n"
@@ -65,6 +65,8 @@ struct tool_args {
 	bool nomidi = false;                   // open and remember no MIDI port
 	std::string lang;                      // --lang ja|en (empty: editor.ini, then locale)
 	std::string plg;                       // --plg <shared library>
+	std::string sci4in;                    // --trace-sci4-in <file>
+	std::string sci4out;                   // --trace-sci4 <file>
 	int  plg_builtin = -1;                // --plg-builtin <n>: a card built into the program
 };
 
@@ -115,6 +117,8 @@ inline int parse_tool_args(int argc, char **argv, tool_args &a,
 		}
 		else if (!std::strcmp(argv[i], "--plg") && i + 1 < argc) a.plg = argv[++i];
 		else if (!std::strcmp(argv[i], "--plg-builtin") && i + 1 < argc) a.plg_builtin = std::atoi(argv[++i]);
+		else if (!std::strcmp(argv[i], "--trace-sci4-in") && i + 1 < argc) a.sci4in = argv[++i];
+		else if (!std::strcmp(argv[i], "--trace-sci4") && i + 1 < argc) a.sci4out = argv[++i];
 		else if (!std::strcmp(argv[i], "--midi") && i + 1 < argc) a.in_dev[0] = std::atoi(argv[++i]);
 		else if (!std::strcmp(argv[i], "--midi-b") && i + 1 < argc) a.in_dev[1] = std::atoi(argv[++i]);
 		else if (!std::strcmp(argv[i], "--midi-c") && i + 1 < argc) a.in_dev[2] = std::atoi(argv[++i]);

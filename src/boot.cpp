@@ -217,30 +217,13 @@ int main(int argc, char **argv)
 		            (unsigned long long)mu.cpu().total_cycles(), mu.cpu().pc());
 	}
 
-	// 記録の有無い unconditionally 无关に数える。0 なら、firmware は
-	// 起動中に SCI4 を 1 回も触っていないということ（doc/plg-cards.md 4）。
+	// With or without a trace file, the accesses are counted: 0 means the firmware
+	// never touched SCI4 during boot (doc/plg-cards.md 4).
 	std::printf("SCI4 0xf00000 への読み書き: %llu 回\n",
 	            (unsigned long long)mu.sci4_hits());
-	{
-		u64 d[4][4];
-		mu.sci4_tx_debug(d);
-		// The host side of the card's receive path. 1424 bits leave the chip and
-		// this is how many arrived here, which is what splits "the chip lost them"
-		// from "the host lost them" (doc/plg-cards.md 5).
-		if (mu.plg_host_ptr())
-			std::printf("[card] host midi_rx calls: %llu\n",
-			            (unsigned long long)mu.plg_host_ptr()->midi_rx_calls());
-		std::printf("SCI4 tx: ch start/tick/loop/notify =");
-		for (int i = 0; i < 4; i++)
-			std::printf(" %d:%llu/%llu/%llu/%llu", i,
-			            (unsigned long long)d[i][0], (unsigned long long)d[i][1],
-			            (unsigned long long)d[i][2], (unsigned long long)d[i][3]);
-		std::printf("\n");
-	}
-
-	// カードが音道路上に戻した値。meli 10..15 が差し込み口なので、ここが
-	// 非 0 なら「カードが選んだ値が音道路まで来た」ことになる
-	// （doc/plg-cards.md 5）。聞くため��す���のではなく、値を確か���ため。
+	// What the card put back on the audio wire. meli 10..15 are the slot inputs,
+	// so non-zero here means the card's value reached the wire (doc/plg-cards.md
+	// 5). For checking the value, not for listening.
 	{
 		for (int slot = 0; slot < plg::host::SLOTS; slot++)
 			if (have_card)

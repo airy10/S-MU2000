@@ -180,6 +180,7 @@ int main(int argc, char **argv)
 	// カードの読み込みは機械の錠を取る中の別の糸ですることが約束だが、
 	// render には糸が 1 本しかないので reset() 前に済ませてしまう。
 	const char *plgcard = nullptr;
+	const char *sci4trace = nullptr;
 	const char *swptrace = nullptr;
 	bool single = false;   // スレーブを別スレッドにしない
 	double boot = -1.0;     // 負なら firmware が受信を有効にするまで待つ
@@ -211,6 +212,8 @@ int main(int argc, char **argv)
 		else if (!std::strcmp(argv[i], "--boot") && i + 1 < argc)
 			boot = std::atof(argv[++i]);
 		// **その時刻の液晶の中身**を 16 進で出す（メーターの棒を突き合わせる）
+		else if (!std::strcmp(argv[i], "--trace-sci4") && i + 1 < argc)
+			sci4trace = argv[++i];
 		else if (!std::strcmp(argv[i], "--plg") && i + 1 < argc)
 			plgcard = argv[++i];
 		else if (!std::strcmp(argv[i], "--lcd-at") && i + 1 < argc)
@@ -360,6 +363,12 @@ int main(int argc, char **argv)
 		const int slot = mu.plg_slot_for(PLG_MODEL_ANY);
 		if (!cards.insert(slot, plgcard, cerr))
 			std::fprintf(stderr, "カードを入れられない: %s\n", cerr.c_str());
+	}
+
+	if (sci4trace) {
+		std::FILE *sf = std::fopen(sci4trace, "w");
+		if (sf)
+			mu.set_sci4_trace(sf);
 	}
 
 	mu.set_threaded(!single);

@@ -393,7 +393,6 @@ public:
 	static void plg_tx_bit(void *ctx, int slot, int level, int bit);
 	// S-MU2000: the chip's transmit counters, for pinning down a card that is
 	// not being sent what the firmware wrote (doc/plg-cards.md 5).
-	void sci4_tx_debug(u64 out[4][4]) const;
 	unsigned plg_lamps() const;
 	// 0xf00000 への読み書きの回数。**記録 Commodityg なくても数える**:
 	// 「アクセスが無い」ことと「記録ファイルを書けていない」を
@@ -922,7 +921,7 @@ private:
 	std::function<void(int, int)> m_plg_tx_sink;
 	// The function SCI4's bit clock pulls a card's TX line with, and the context
 	// to hand it (this). Installed once, in the constructor.
-	int (*m_plg_line)(void *ctx, int sci) = nullptr;
+	static int plg_line_source(void *ctx, int sci);
 
 	// 44.1kHz 1 サンプルあたりの CPU サイクル。端数は繰り越す
 	u64 m_cycle_debt = 0;

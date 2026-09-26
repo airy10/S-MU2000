@@ -79,6 +79,14 @@ void sci4_device::device_start()
 	// S-MU2000: only armed when a line source is set (set_line_source).
 	m_line_timer = timer_alloc(FUNC(sci4_device::line_tick), this);
 	}
+	// S-MU2000: the source may already be set - the gui inserts the card before
+	// the devices start, so set_line_source() found no timer and stored only.
+	// Arm here too, so every path that ends with both existing is armed, and no
+	// path depends on the order of two things it cannot see.
+	if(m_line_fn && m_line_timer) {
+		const u32 div = m_div[3] ? m_div[3] : 0x100;
+		m_line_timer->adjust(attotime::from_ticks(div * 8, clock()));
+		}
 }
 
 void sci4_device::device_reset()
@@ -352,7 +360,6 @@ std::string sci4_device::chan_id(u8 chan, u8 target)
 
 void sci4_device::tx_start(int chan)
 {
-	m_dbg_tx_start[chan & 3]++;
 	m_tx_active[chan] = 1;
 	m_tsr[chan] = m_tdr[chan];
 	m_tdr_full[chan] = 0;
@@ -366,6 +373,20 @@ void sci4_device::tx_start(int chan)
 	tx_set(chan, 0);
 	m_tx_step[chan] = 0;
 	wait(0, 1, chan);
+
+	// S-MU2000: arm the card's line poll here too, not only in set_line_source()
+	// and device_reset/device_start. Those three cover "source set after the
+	// timer exists" and "timer allocated after the source is set", but the gui
+	// hits neither - its devices start after the card is inserted, and its reset
+	// runs before either exists - so the poll was never armed there and the card
+	// was polled 220 times against boot's 218,749. Arming on the first byte the
+	// firmware actually shifts to the card channel depends on no ordering at all:
+	// by the time anything needs the poll, the timer exists, the source is set,
+	// and the divisor is programmed.
+	if(chan == 3 && m_line_fn && m_line_timer && !m_line_timer->scheduled()) {
+		const u32 div = m_div[3] ? m_div[3] : 0x100;
+		m_line_timer->adjust(attotime::from_ticks(div * 8, clock()));
+	}
 }
 
 void sci4_device::wait(int timer, int full, int chan)
@@ -377,11 +398,9 @@ void sci4_device::wait(int timer, int full, int chan)
 
 TIMER_CALLBACK_MEMBER(sci4_device::tx_tick)
 {
-	m_dbg_tx_tick[param & 3]++;
 	u32 step = m_tx_step[param]++;
 	if(step < 9) {
-		m_dbg_tx_loop[param & 3]++;
-		const int level = (step == 8) ? 1 : ((m_tsr[param] >> step) & 1);
+			const int level = (step == 8) ? 1 : ((m_tsr[param] >> step) & 1);
 		tx_set(param, level);
 		// S-MU2000: tell a PLG card what bit is going out, and when.
 		//
@@ -414,10 +433,8 @@ TIMER_CALLBACK_MEMBER(sci4_device::tx_tick)
 		// behaviour, not the less. Deciding which board is being addressed is the
 		// card's problem, and the firmware broadcasts regardless.
 		if(m_tx_notify && param == 3)
-			for(int line = 0; line != 4; line++) {
-				m_dbg_notify[line & 3]++;
+			for(int line = 0; line != 4; line++)
 				m_tx_notify(m_tx_notify_ctx, line, level, int(step));
-			}
 		wait(0, 1, param);
 
 	} else {
@@ -430,10 +447,14 @@ TIMER_CALLBACK_MEMBER(sci4_device::tx_tick)
 
 TIMER_CALLBACK_MEMBER(sci4_device::rx_tick)
 {
-	// S-MU2000: the bit clock is here, so a line that comes from a card is
-	// sampled here too - before the value is read, and before the start-bit
-	// check that the step-0 comment below talks about.
-	pull_line(param);
+	// S-MU2000: NO pull_line() here. An earlier version sampled the card's line
+	// from inside rx_tick as well as from line_tick, and that was wrong twice
+	// over: pull_line() feeds do_rx_w(), which can abort or resync the byte
+	// currently being received, so every sample risked disrupting its own byte -
+	// and it stepped the card's transmit state a second time, at the wrong rate.
+	// The line state that rx_tick samples (m_cur_rx) is kept current by
+	// line_tick's pull, which is the one place edges are detected. MAME's own
+	// rx_tick never pulls either; it only samples.
 	u32 step = m_rx_step[param]++;
 	if(step == 0)
 		wait(1, 1, param); // Value already checked in rx_changed
@@ -447,15 +468,17 @@ TIMER_CALLBACK_MEMBER(sci4_device::rx_tick)
 			logerror("chan %s framing error/break\n", chan_id(param, m_targets >> 4));
 			// S-MU2000: the same event, on a trace the caller opened.
 			if(m_rx_trace)
-				std::fprintf(m_rx_trace, "SCI4I %s framing error\n",
-				             chan_id(param, m_targets >> 4).c_str());
+				std::fprintf(m_rx_trace, "SCI4I %s framing error t=%.6f\n",
+				             chan_id(param, m_targets >> 4).c_str(),
+				             double(machine().time().as_double()));
 		}
 		else {
 			logerror("chan %s recieved %02x\n", chan_id(param, m_targets >> 4), m_rsr[param]);
 			// S-MU2000: and the byte itself, which is the whole point of the trace.
 			if(m_rx_trace)
-				std::fprintf(m_rx_trace, "SCI4I %s rx %02x\n",
-				             chan_id(param, m_targets >> 4).c_str(), m_rsr[param]);
+				std::fprintf(m_rx_trace, "SCI4I %s rx %02x t=%.6f\n",
+				             chan_id(param, m_targets >> 4).c_str(), m_rsr[param],
+				             double(machine().time().as_double()));
 			m_rx_active[param] = 0;
 			m_rdr[param] = m_rsr[param];
 			if(m_rdr_full[param] && (m_enable[param] & 4))

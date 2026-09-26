@@ -562,7 +562,6 @@ void host::run(int slot, const int32_t *in, int32_t *out)
 
 void host::midi_rx(int slot, int level, int bit)
 {
-	m_rx_calls++;
 	// No card, or a card the host has given up on: the line goes nowhere, which
 	// is what it did before this existed. Cheap enough to call on every edge.
 	if (slot < 0 || slot >= SLOTS)

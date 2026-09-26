@@ -16,6 +16,8 @@
 // 24 桁より先には何も書かれないことを起動画面で確かめた。
 
 #include "mu2000.h"
+#include "plg/cards.h"
+#include "plg/host.h"
 #include "smf.h"
 
 #include <cstdio>
@@ -208,6 +210,8 @@ int main(int argc, char **argv)
 	double play = 0.0;
 	bool watch = false;
 	bool trace = false;
+	int plgbuiltin = -1;
+	std::string plgcard;
 	bool lcd_hex_on = false;
 	std::string ramfile;           // 終わったときのワーク RAM（調べ用）
 	double settle = 1.0;
@@ -230,6 +234,8 @@ int main(int argc, char **argv)
 		else if (!std::strcmp(argv[i], "--mid") && i + 2 < argc) { midfile = argv[++i]; play = std::atof(argv[++i]); }
 		else if (!std::strcmp(argv[i], "--watch")) watch = true;
 		else if (!std::strcmp(argv[i], "--trace")) trace = true;
+		else if (!std::strcmp(argv[i], "--plg-builtin") && i + 1 < argc) plgbuiltin = std::atoi(argv[++i]);
+		else if (!std::strcmp(argv[i], "--plg") && i + 1 < argc) plgcard = argv[++i];
 		// **液晶の中身を 16 進でも出す**（字形を起こすときのコードの棚卸し）
 		else if (!std::strcmp(argv[i], "--lcd-hex")) { trace = true; lcd_hex_on = true; }
 		// **終わったときのワーク RAM を書き出す**。ボタンを押す前と
@@ -274,6 +280,17 @@ int main(int argc, char **argv)
 	    !mu.load_lcd_font(dir + "/standin/hd44780u_b04.bin"))
 		std::fprintf(stderr, "警告: %s\n", mu.error().c_str());
 
+	plg::host cards;
+	if (plgbuiltin >= 0 || !plgcard.empty()) {
+		std::string cerr;
+		mu.set_plg_host(&cards);
+		const int slot = mu.plg_slot_for(PLG_MODEL_ANY);
+		const bool ok = (plgbuiltin >= 0 && plgbuiltin < plg::builtin_count())
+			? cards.insert_builtin(slot, plg::builtin_card(plgbuiltin), cerr)
+			: cards.insert(slot, plgcard, cerr);
+		if (!ok)
+			std::fprintf(stderr, "カードを入れられない: %s\n", cerr.c_str());
+	}
 	mu.set_threaded(true);
 	// HOST SELECT を USB にして起動する（gui・plugin の既定と同じ）
 	mu.set_usb_host(usb);

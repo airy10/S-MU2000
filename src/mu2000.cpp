@@ -1107,20 +1107,11 @@ void mu2000::reset()
 	// 500 kHz ��� MAME がカード側の SCI に設定している値
 	// （plg150-ap.cpp の sci_set_external_clock_period）であり、実測でも
 	// フレーミングエラーは 0 だった。
-	m_plg_line = [](void *ctx, int sci) -> int {
-		mu2000 *m = static_cast<mu2000 *>(ctx);
-		// SCI4 のポート 30,31,32 が内部チャンネル 3,4,5 で、スロット 0,1,2 に
-		// なる（LIFO と同じ 4 ポート + 3 独立という並びの���ち、0,1,2 が独立で
-		// 3,4,5,6 が多重化されている）。
-		//
-		// **スロットでない線には 1 を返す。** 0 は「線が低い」で、SCI4 は
-		// 立ち下がりをスタートビットと見る。0 を返すと-Mu ALWAYS スタートビット
-		// 待ち状態の���ま sponges、能源の根��騰aceous った���* には����为之に
-		// �� perceptible である。**画像**。
-		if (sci < 3 || sci > 5)
-			return 1;
-		return m->m_plg ? m->m_plg->midi_tx(sci - 3) : 1;
-	};
+	// m_plg_line used to be assigned here, as a lambda. That was wrong: the gui
+	// calls set_plg_host() before the devices start, so the member was still null
+	// and set_line_source() was handed null - the poll was never armed and the
+	// card was polled 220 times against boot's 218,749. It is a static member now
+	// (plg_line_source), so it exists before anything else does.
 	// Deliberately **not** installed here. A machine with no card must behave
 	// exactly as it did before: the poll touches the chip on every line, and
 	// pulling lines that nothing drives is not a no-op. It goes in when a card
@@ -3015,7 +3006,7 @@ void mu2000::set_plg_host(plg::host *h)
 			m_plg->set_tx_sink(m_plg_tx_sink);
 		// Only now, with a card host actually present, is the line stepped at the
 		// bit clock. See the note where the lambda is defined.
-		m_sci4->set_line_source(m_plg_line, this);
+		m_sci4->set_line_source(&mu2000::plg_line_source, this);
 	} else {
 		m_sci4->set_line_source(nullptr, nullptr);
 	}
@@ -3038,6 +3029,21 @@ int mu2000::plg_slot_for(u32 model_id) const
 // selected line (the three slots share one channel and the target register says
 // which lines are addressed - which is why the firmware broadcasts). The card
 // frames its own bytes; see plg1500.h.
+// SCI4's ports 30,31,32 are internal channels 3,4,5, which are slots 0,1,2.
+// (Four ports plus three independent, of which 0,1,2 are independent and 3-6
+// multiplexed.)
+//
+// **A line that is not a slot reads 1.** 0 is "line low" and SCI4 takes a falling
+// edge for a start bit, so returning 0 would leave it waiting for a start bit
+// that never comes.
+int mu2000::plg_line_source(void *ctx, int sci)
+{
+	mu2000 *m = static_cast<mu2000 *>(ctx);
+	if (sci < 3 || sci > 5)
+		return 1;
+	return m->m_plg ? m->m_plg->midi_tx(sci - 3) : 1;
+}
+
 void mu2000::plg_tx_bit(void *ctx, int slot, int level, int bit)
 {
 	mu2000 *m = static_cast<mu2000 *>(ctx);
@@ -3045,15 +3051,6 @@ void mu2000::plg_tx_bit(void *ctx, int slot, int level, int bit)
 		m->m_plg->midi_rx(slot, level, bit);
 }
 
-void mu2000::sci4_tx_debug(u64 out[4][4]) const
-{
-	for (int i = 0; i < 4; i++) {
-		out[i][0] = m_sci4->dbg_tx_start(i);
-		out[i][1] = m_sci4->dbg_tx_tick(i);
-		out[i][2] = m_sci4->dbg_tx_loop(i);
-		out[i][3] = m_sci4->dbg_notify(i);
-	}
-}
 
 unsigned mu2000::plg_lamps() const
 {

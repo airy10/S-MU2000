@@ -98,9 +98,11 @@ struct answer {
 	int           seen_poll; /* a poll has been seen, so `after` can count down */
 	int           after;      /* polls still to let pass before answering */
 	int           after_polls; /* the knob's value, restored by reset() */
+	int           delay_polls; /* sub-poll delay before starting the reply */
+	int           mute;         /* receive only, for the bisect */
 	int      rx_total;    /* bytes since reset, for the report */
 	int      rx_polls;    /* messages seen that look like a poll */
-	char     rx_log[8][16];  /* the first messages, as the card saw them */
+	char     rx_log[16][24]; /* the first messages, as the card saw them */
 	int      rx_log_n;
 
 	/* Transmit: a queue of the two replies, one bit handed over per midi_tx(). */
@@ -115,6 +117,7 @@ struct answer {
 	int            tx_len;
 	int            tx_next;      /* where the next reply starts in tx_buf */
 	int            tx_level;     /* the level being held */
+	int            tx_calls;     /* midi_tx() calls, for the report */
 	int            sent;         /* replies sent so far, for the report */
 	int            accepted;     /* set once both have gone out */
 };
@@ -135,6 +138,17 @@ struct answer {
  */
 static void read_knobs(struct answer *a)
 {
+	/* Two polls per bit: the host polls at half a bit (line_tick) and samples
+	 * once per bit (rx_tick), so one card bit per two polls is exactly one host
+	 * bit, with rx sampling mid-bit after starting on the card's start edge.
+	 *
+	 * This is only true because transmit is stepped from ONE clock. An earlier
+	 * version also stepped it from rx_tick's pull, which made the effective rate
+	 * the sum of two unrelated clocks - and hold=3 then happened to work by
+	 * aliasing into a stable offset, while hold=2 failed depending on the run.
+	 * With a single deterministic clock hold=2 is exactly right, in boot and in
+	 * the gui, and the comment that used to be here explaining hold=3 was
+	 * explaining an accident. */
 	a->hold_per_bit = 2;
 	a->start_delay = 0;
 	const char *e;
@@ -163,10 +177,27 @@ static void read_knobs(struct answer *a)
 		}
 	}
 	a->after_polls = 0;
+	/* SMU2000_CARD_MUTE=1: receive only, never queue a reply. Bisects "the
+	 * firmware stalls because a card is present" against "it stalls because of
+	 * what the card sends". */
+	a->mute = 0;
+	if ((e = getenv("SMU2000_CARD_MUTE")) != 0 && atoi(e) != 0)
+		a->mute = 1;
 	if ((e = getenv("SMU2000_CARD_AFTER")) != 0) {
 		const int v = atoi(e);
 		if (v >= 0 && v <= 16)
 			a->after_polls = v;
+	}
+	/* SMU2000_CARD_DELAY: midi_tx polls to wait after queueing before shifting
+	 * the first bit. The real PLG150-AP answers ~235 ms after the poll; at a
+	 * 16 us poll that is ~14700. Answering immediately may put bytes on the wire
+	 * before the firmware's receiver is ready, which it then spends the whole
+	 * boot retrying - "Checking PLG" never clears and nothing responds. */
+	a->delay_polls = 0;
+	if ((e = getenv("SMU2000_CARD_DELAY")) != 0) {
+		const long v = atol(e);
+		if (v >= 0 && v <= 100000)
+			a->delay_polls = (int)v;
 	}
 }
 
@@ -223,9 +254,9 @@ PLG_EXPORT void plg1500_destroy(plg_card *c)
 		return;
 	char line[256];
 	snprintf(line, sizeof(line),
-	         "answer: %d bits -> %d byte(s) in %d message(s) (%d poll), sent %d repl%s",
-	         a->rx_bits, a->rx_total, a->rx_frames, a->rx_polls, a->sent,
-	         a->sent == 1 ? "y" : "ies");
+	         "answer: %d bits -> %d byte(s) in %d message(s) (%d poll), tx polled %d, sent %d %s",
+	         a->rx_bits, a->rx_total, a->rx_frames, a->rx_polls, a->tx_calls, a->sent,
+	         a->sent == 1 ? "reply" : "replies");
 	a->host->log(a->host->ctx, line);
 	for (int i = 0; i < a->rx_log_n; i++) {
 		char l2[64];
@@ -238,6 +269,7 @@ PLG_EXPORT void plg1500_destroy(plg_card *c)
 static int answer_tx(plg_card *c)
 {
 	struct answer *a = (struct answer *)c;
+	a->tx_calls++;
 
 	/* Nothing queued: the line idles high. */
 	if (a->tx_byte < 0) {
@@ -254,6 +286,12 @@ static int answer_tx(plg_card *c)
 	 * it is a knob rather than a constant. See read_knobs(). */
 	if (a->start_delay) {
 		a->start_delay--;
+		return 1;
+	}
+	/* The reply is queued (tx_next < tx_len) but its first bit waits out the
+	 * delay. Once shifting, this never triggers again for this reply. */
+	if (a->tx_byte < 0 && a->tx_next < a->tx_len && a->delay_polls > 0) {
+		a->delay_polls--;
 		return 1;
 	}
 	if (a->tx_hold) {
@@ -335,7 +373,7 @@ static void answer_rx(plg_card *c, int level, int bit)
 	a->rx_frames++;
 	/* A short log of what arrived, because "the host sent a poll and the card did
 	 * not see one" is only answerable by looking at both. */
-	if (a->rx_log_n < 8) {
+	if (a->rx_log_n < 16) {
 		char *dst = a->rx_log[a->rx_log_n++];
 		int k = 0;
 		for (int i = 0; i < a->msg_n && k < 15; i++)
@@ -390,6 +428,7 @@ static void answer_reset(plg_card *c)
 	a->tx_level = 1;
 	a->sent = a->accepted = 0;
 	a->after = a->after_polls;
+	a->delay_polls = a->delay_polls;
 	a->seen_poll = 0;
 	build_replies(a);
 }

@@ -87,6 +87,10 @@ int main(int argc, char **argv)
 	// The PLG card goes in before the machine starts (engine::boot() does it),
 	// so all this has to do is say which one.
 	eng.set_plg_card(a.plg, a.plg_builtin);
+	if (!a.sci4in.empty())
+		eng.set_plg_trace(a.sci4in);
+	if (!a.sci4out.empty())
+		eng.set_plg_tx_trace(a.sci4out);
 	if (!gui.load_machine(eng, a))
 		return 1;
 	const int shot = gui.run_boot_shot(eng, br, a, win_opts);

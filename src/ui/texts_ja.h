@@ -83,6 +83,8 @@ inline const ui_texts &ja_texts()
 		              "        [--shapes-window] パートの音色の窓も開く（一覧で VIB などの絵をダブルクリック）\n"
 		              "        [--master-window] マスターの窓も開く（一覧でマスターの行をダブルクリック）\n"
 		              "        [--lang ja|en] 言葉（無ければ editor.ini の lang=、さらに無ければロケール: 日本語なら日本語、ほかは英語）\n"
+		              "        [--plg <カード>] / [--plg-builtin <番号>]\n"
+		              "                        PLG カードを入れる（起動前に差し込む）\n"
 		              "        [--help]      この説明を出す\n"
 		              "        gui --dump-layout panel.txt   いまの配置を書き出す\n"
 		              "        gui --list\n"

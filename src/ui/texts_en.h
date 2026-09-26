@@ -83,6 +83,8 @@ inline const ui_texts &en_texts()
 		              "        [--shapes-window] also open the part voice window (double-click a VIB picture etc. in the list)\n"
 		              "        [--master-window] also open the master window (double-click the master row)\n"
 		              "        [--lang ja|en] language (else lang= in editor.ini, else the locale: Japanese iff it says ja)\n"
+		              "        [--plg <card>] / [--plg-builtin <n>]\n"
+		              "                        insert a PLG card (it must be in the slot before boot)\n"
 		              "        [--help]      show this help\n"
 		              "        gui --dump-layout panel.txt   write out the current layout\n"
 		              "        gui --list\n"

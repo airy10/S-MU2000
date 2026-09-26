@@ -56,11 +56,19 @@ struct engine {
 	std::string m_plg_path;
 	int         m_plg_builtin = -1;
 	std::string m_plg_msg;    // why the card is not in the slot, if it is not
+	std::string m_plg_trace_path;
+	std::FILE *m_plg_trace = nullptr;
+	std::string m_plg_tx_path;
+	std::FILE *m_plg_tx = nullptr;
 
 	// Which card to put in slot 1. `path` is a shared library; `builtin` is an
 	// index into plg::builtin_card(). Empty and -1 means none. Call before boot().
 	void set_plg_card(const std::string &path, int builtin)
 	{ m_plg_path = path; m_plg_builtin = builtin; }
+	// Where to write what arrives on a PLG line (--trace-sci4-in). Same as boot's.
+	// Call before boot(), like set_plg_card.
+	void set_plg_trace(const std::string &path) { m_plg_trace_path = path; }
+	void set_plg_tx_trace(const std::string &path) { m_plg_tx_path = path; }
 	const std::string &plg_message() const { return m_plg_msg; }
 	bridge   &br;
 	midi_in  &midi;        // MIDI IN A（パート 1-16）
@@ -118,28 +126,59 @@ struct engine {
 		if (use_nvram && smu2000::nvram::load(mu))
 			std::printf(UI_TEXT(engine_nvram_fmt, "Settings: %s\n"), smu2000::nvram::path(mu).c_str());
 		// 鍵は起動に使うワーク RAM も混ぜるので、reset() の前に作る
-		const u64 key = smu2000::bootcache::key(mu);
+		u64 key = smu2000::bootcache::key(mu);
 		// **The PLG card goes in before reset().** The scan is part of the boot
 		// sequence, so a card that is not in the slot when the machine starts is
 		// never seen: boot --plg-late inserts one 10 s in and the card is sent
 		// nothing at all. There is no insert-while-running, unlike SmartMedia.
 		mu.set_plg_host(&m_plg);
+		if (!m_plg_tx_path.empty()) {
+			m_plg_tx = std::fopen(m_plg_tx_path.c_str(), "w");
+			if (m_plg_tx)
+				mu.set_sci4_trace(m_plg_tx);
+		}
+		if (!m_plg_trace_path.empty()) {
+			m_plg_trace = std::fopen(m_plg_trace_path.c_str(), "w");
+			if (m_plg_trace)
+				mu.set_sci4_in_trace(m_plg_trace);
+		}
 		if (!m_plg_path.empty() || m_plg_builtin >= 0) {
 			std::string err;
+			// A card's own report at teardown is the only view of what it made of the
+			// exchange, and the front end is where that is easiest to lose.
+			m_plg.set_log_sink([](const std::string &msg) { std::printf("[card] %s\n", msg.c_str()); });
+			// **The range is checked here, not trusted.** `boot` refuses a bad
+			// number, but the gui takes it from a settings file where anything can
+			// be written - and builtin_card() indexes straight into a table, so an
+			// unchecked index is a bus error, which is how this was found.
+			bool ok = false;
 			const int slot = mu.plg_slot_for(PLG_MODEL_ANY);
-			const bool ok = (m_plg_builtin >= 0)
-				? m_plg.insert_builtin(slot, plg::builtin_card(m_plg_builtin), err)
-				: m_plg.insert(slot, m_plg_path, err);
+			if (m_plg_builtin >= 0) {
+				if (m_plg_builtin < plg::builtin_count())
+					ok = m_plg.insert_builtin(slot, plg::builtin_card(m_plg_builtin), err);
+				else
+					err = "built-in card number out of range";
+			} else {
+				ok = m_plg.insert(slot, m_plg_path, err);
+			}
 			m_plg_msg = ok ? std::string() : err;
 			std::printf("PLG slot %d: %s\n", slot + 1,
 			            ok ? (m_plg_builtin >= 0 ? "(built in)" : m_plg_path.c_str())
 			               : err.c_str());
 		}
 		mu.reset();
-		// 前に起動し切った姿を取ってあれば、そこから始める（bootcache.h）。
+		// 前に起動し切った姿を取ってGrossmaidwantedら、そこから始める（bootcache.h）。
 		// 回した結果と 1 ビットも違わないので、音は同じ。
 		// **reset() のあとで読むこと**（タイマが揃っていないと形が合わない）
-		if (smu2000::bootcache::load(mu, key)) {
+		//
+		// **カードが入っているときは使わない。** 写しは「カード 無しの起動の
+		// 最後」の機械の状態なので、そこから再開すると PLG の探索が �わ � たない。
+		// カードを入れ���のにランプが点かないのは��のせい（実測: gui は
+		// 「PLG slot 1: (built in)」を出しながら PLG-1 が消えていた）。
+		const bool have_card = !m_plg_path.empty() || m_plg_builtin >= 0;
+		if (have_card)
+			key = 0;
+		if (key && smu2000::bootcache::load(mu, key)) {
 			std::printf(UI_TEXT(engine_boot_cached_fmt, "Booted from snapshot (%s)\n"), smu2000::bootcache::path(key).c_str());
 			publish();
 			return true;
@@ -149,11 +188,24 @@ struct engine {
 		s32 l, r;
 		for (; i < limit && !mu.midi_ready(); i++)
 			mu.run_sample(l, r);
+		// Whether the host still trusts the card: a faulted card is skipped rather
+		// than called, so its line reads as permanently idle - which is exactly what
+		// "receives everything, sends nothing" looks like.
+		if (!m_plg_path.empty() || m_plg_builtin >= 0)
+			for (int k = 0; k < plg::host::SLOTS; k++)
+				if (m_plg.present(k))
+					std::printf("PLG slot %d: running=%d faulted=%d msg=%s\n", k + 1,
+					            int(m_plg.running(k)), int(m_plg.faulted(k)),
+					            m_plg.message(k).c_str());
 		if (i >= limit) {
 			message = UI_TEXT(engine_boot_failed, "Boot failed");
 			return false;
 		}
-		if (smu2000::bootcache::save(mu, key))
+		// key == 0 means a card is in the slot, and then there is nothing to cache
+		// under: the snapshot would be of a machine that scanned its slots, which
+		// is not the machine a cardless boot produces. Saving under 0 would also
+		// write a file called 0000000000000000.bin into the settings directory.
+		if (key && smu2000::bootcache::save(mu, key))
 			std::printf(UI_TEXT(engine_boot_saved_fmt, "Saved boot snapshot: %s\n"), smu2000::bootcache::path(key).c_str());
 		publish();
 		return true;
