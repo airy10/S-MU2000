@@ -8,7 +8,11 @@
 # Audio Unit). This file covers the portable core everywhere and the full
 # Linux set (live + VST3 + CLAP + probes) where ALSA is available.
 cmake_minimum_required(VERSION 3.16)
-project(S-MU2000 LANGUAGES CXX)
+# C as well as CXX: the PLG card ABI is a C interface, and its reference card
+# (tests/plg/stub.c) is written in C on purpose, so that the struct layout and
+# the unmangled entry points are checked by something that is not the C++
+# compiler this project otherwise uses.
+project(S-MU2000 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -56,9 +60,42 @@ foreach(tool xgtest samptest)
   target_link_libraries(${tool} PRIVATE smu2000_core)
 endforeach()
 
+# ---- PLG card slots (doc/plg-cards.md) ---------------------------------------
+# The three slots and one card that does nothing. Nothing in the machine calls
+# this yet - the slots are not wired into mu2000::run_sample() - so it is a
+# library of its own rather than part of smu2000_core: a tool that links the
+# emulator does not have to drag in dlopen because a feature nothing uses.
+add_library(smu2000_plg STATIC
+  src/plg/host.cpp
+  src/compat/dynlib.cpp)
+target_include_directories(smu2000_plg PUBLIC src src/compat)
+target_link_libraries(smu2000_plg PUBLIC ${CMAKE_DL_LIBS})
+set_target_properties(smu2000_plg PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+# The reference card, in C. MODULE rather than SHARED: dlopen opens it, so it
+# needs no import library and nothing links against it at build time.
+add_library(plg_stub MODULE tests/plg/stub.c)
+target_include_directories(plg_stub PRIVATE src)
+if(APPLE)
+  # MODULE would give a .so on macOS; the Makefile builds a .dylib and the test
+  # looks for the platform's name, so pin it here rather than let the two builds
+  # disagree about what to load.
+  set_target_properties(plg_stub PROPERTIES PREFIX "" SUFFIX ".dylib")
+elseif(WIN32)
+  set_target_properties(plg_stub PROPERTIES PREFIX "" SUFFIX ".dll")
+else()
+  set_target_properties(plg_stub PROPERTIES PREFIX "" SUFFIX ".so")
+endif()
+
+add_executable(plgtest src/plgtest.cpp)
+target_link_libraries(plgtest PRIVATE smu2000_plg)
+# The test finds the stub next to itself, so the two have to be built together.
+add_dependencies(plgtest plg_stub)
+
 # Regression suite entry point: ctest runs what `make test` runs without ROMs.
 enable_testing()
 add_test(NAME verify COMMAND verify)
+add_test(NAME plg COMMAND plgtest)
 
 # ---- Linux: live + VST3 + CLAP (needs ALSA) ----------------------------------
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")

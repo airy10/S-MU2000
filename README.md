@@ -63,6 +63,23 @@ MAME でも MU2000 は鳴る。だが MAME は自分で時計を持って実時�
 くわしくは [doc/design.md](doc/design.md)。残っているものは
 [doc/todo.md](doc/todo.md) に、直す順で並べてある。
 
+### PLG カード（差し込み口）
+
+実機には PLG カード（PLG150-DX のような差し込みボード）が 3 本挿せる。
+S-MU2000 は 3 本とも**空のまま**持つが、そこに**外から差し込めるモジュール**を
+入れる仕組みを用意している（[doc/plg-cards.md](doc/plg-cards.md)、
+ABI は [src/plg/plg1500.h](src/plg/plg1500.h)）。
+
+```make
+make plgtest                検査（ROM 不要・カードも要らない）
+build/plgtest.exe           同じもの。カードのパスを渡せる
+```
+
+いまは **ABI と宿主側（読み込み・状態・安全性）まで**で、機械にはまだ繋がない。
+モジュールは自分のライセンスと自分の ROM の規定ごと持つので、この repository は
+GPL のコードを一切同梱しない。PLG150-DX のカードを 1 枚でも書けば、
+MU2000 の firmware 自身が `Checking PLG` から PLG モードまで使う。
+
 ## ROM について
 
 **ROM は同梱しない。** 利用者が自分の MU2000 から吸い出す必要がある。
@@ -119,6 +136,7 @@ build/render.exe <rom ディレクトリ> <MIDI> <出力 wav> [秒数]  ファ�
 build/panel.exe  <rom ディレクトリ> [--keys "play,edit"] [--list]  パネルを文字だけで動かす
 build/boot.exe   <rom ディレクトリ> [サイクル数]       起動の確認
 build/statetest.exe <rom ディレクトリ> [MIDI]          状態の保存と復元が正しいかを確かめる
+build/plgtest.exe [カードのパス]                      PLG カード差し込み口（ROM 不要）
 build/blocktime.exe <rom> <MIDI> <フレーム数> [秒] [回数]  1 ブロックの所要時間を測る
 build/midisend.exe <MIDI ファイル> [--port 番号]      MIDI 出力へ実時間で流す
 build/rec.exe    --list                              音声入力の一覧

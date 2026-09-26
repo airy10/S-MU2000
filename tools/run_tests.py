@@ -3,10 +3,28 @@
 """回帰試験を一息で回す。`make test` から呼ばれる。
 
   python tools/run_tests.py [--roms <ディレクトリ>] [--only 名前] [--update]
+                            [--roms -] [--require-roms] [-j 数]
+
+**全部は重い。** 音の試験は 56 本の render を同時に回すので数分かかり、
+cores を半分くらい取る。**変えたものが音に出ないなら回す必要が無い**ので、
+段階を踏む:
+
+  make check          ROM 不要の段だけ（verify + カード）。数秒
+  make test T=plg     同じものを試験の側から。1 秒
+  make test T=piano   1 件だけ鳴らす
+  make test           全部。音の出し方が変わりうるもの（run_sample、SWP30、
+                      SH-2 の解釈と JIT、変換表、標本化変換、状態の形式、
+                      パラメータの既定値）を直したとき
+
+`--roms -` は「ROM が無い」扱い。**この repository には MU2000 自身の ROM が
+`roms/` に入っているので**、それを無視して ROM を要らない段だけ回すにはこれが
+必要（`--roms` や SMU2000_ROMS を空のパスに向けると、次の候補の `roms/` が
+当たってしまう）。
 
 見るもの:
 
   1. verify.exe      SWP30 のレジスタ素通しと乱数の数列（ROM 不要）
+  1b. plgtest.exe    PLG カード差し込み口（ROM 不要・カードも実機も要らない）
   2. statetest.exe   状態の保存と復元。写し忘れがあれば落ちる
   3. 鳴らし比べ       tests/*.json の指紋と突き合わせる
   4. スレーブ別糸      threaded と --single で出る音が同じこと
@@ -15,7 +33,7 @@
   7. JIT 入切       同じ曲を JIT あり・なしで鳴らし、wav がバイト単位で同じか
                     （JIT は解釈実行と同じことをするはずなので、ずれたら訳し方の間違い）
 
-**ROM が無い機械では 1 番だけ走る**（ROM は同梱できないので、それが正しい）。
+**ROM が無い機械では 1 番と 1b だけ走る**（ROM は同梱できないので、それが正しい）。
 ROM の置き場は --roms、環境変数 SMU2000_ROMS、roms/、../MU2000/roms の順に探す。
 
 判定は pcm_sha1 の一致。違ったら「どこがどれだけ違うか」を出す。
@@ -46,6 +64,9 @@ RATE = 44100
 
 NEEDED = ("mu2000_flash.bin", "dump/xv364a0.ic49")
 
+# --roms takes this instead of a path, to mean "there are no ROMs for this run"
+NO_ROMS = "-"
+
 # The same tools on both platforms; only the suffix differs (make test builds
 # with the same name on macOS, see the EXE variable in the Makefile)
 EXE = ".exe" if os.name == "nt" else ""
@@ -74,6 +95,17 @@ def pmap(fn, items):
 
 
 def find_roms(given):
+    """Returns the roms directory, or None when there isn't one.
+
+    --no-roms short-circuits this and returns None even when roms/ is sitting
+    right there. The reason it has to be a flag: the candidates fall through to
+    ROOT/roms, so pointing --roms or SMU2000_ROMS at a directory that isn't there
+    just moves on to the next candidate and finds the real one anyway. On a
+    machine that has the ROMs there was otherwise no way to run only the steps
+    that do not need them, which are the cheap ones.
+    """
+    if given == NO_ROMS:
+        return None
     cands = []
     if given:
         cands.append(Path(given))
@@ -187,6 +219,33 @@ def step_verify(rep, update):
             if a != b:
                 print("    前: %s" % a)
                 print("    今: %s" % b)
+
+
+def step_plg(rep):
+    """ROM 不要。PLG カードの差し込み口と、セーブステートの枠（doc/plg-cards.md）
+
+    ここに 3 つの決まりが寄っているので、この 1 歩を見ないと誰も気づかない:
+    差し込み口がまだ機械に繋 がっていないこと、差し込んだカードが ROM 無しでは
+    音にならないこと、カードが無いプロジェクトがそのまま開けること。
+    カードの実体は tests/plg/stub.c。C で書いてあるのは、ABI が C 前提なので
+    C++ からしか作ったことがないと構造体の並びもリンクも確かめられないため。
+    """
+    exe = tool("plgtest")
+    if not exe.exists():
+        rep.add("plg", False, "build/plgtest%s が無い。make を先に" % EXE)
+        return
+    # stub は共有ライブラリで、テストの隣に置く。名前は平台によって違うので、
+    # テストが自分で見つける。ここでは何も渡さない。
+    r = subprocess.run([str(exe)], capture_output=True, text=True, encoding="utf-8")
+    for line in r.stdout.splitlines():
+        rep.say("   " + line)
+    if r.returncode:
+        rep.add("plg", False, "plgtest が %d を返した" % r.returncode)
+    else:
+        # 最後の行は「N 項目のうち 0 項が失敗」。件数を残すので、カード作者は
+        # 項目西斯 トが伸びるのが見える。
+        tail = r.stdout.strip().splitlines()[-1] if r.stdout.strip() else ""
+        rep.add("plg", True, tail)
 
 
 def step_statetest(rep, roms, midi):
@@ -882,8 +941,11 @@ def step_panel(rep, roms):
 def main():
     sys.stdout.reconfigure(encoding="utf-8")
     ap = argparse.ArgumentParser()
-    ap.add_argument("--roms")
-    ap.add_argument("--only", help="この名前の鳴らし比べだけ")
+    ap.add_argument("--roms",
+                    help="ROM の置き場。%s を渡すと「無い」の扱いをして、"
+                         "ROM を要らない段だけ回す" % NO_ROMS)
+    ap.add_argument("--only", help="この名前の試験だけ。鳴らし比べの名前でも、"
+                                   "verify / plg / statetest のような段の名でもよい")
     ap.add_argument("--update", action="store_true", help="指紋を焼き直す")
     ap.add_argument("--require-roms", action="store_true",
                     help="ROM が無ければ失敗にする")
@@ -898,8 +960,32 @@ def main():
     BASE.mkdir(parents=True, exist_ok=True)
     rep = Report()
 
-    print("== 1. verify（ROM 不要）")
-    step_verify(rep, a.update)
+    # --only に拾うのは **この 2 つだけ**。どちらも ROM を要らないので
+    # `make test T=plg` が 1 秒で回る。前はどの段の名も一致しなくて、
+    # 回した段を済ませてから「その名前の試験は無い」で落ちていた。
+    only = a.only
+    def want(name):
+        return not only or only == name
+
+    ran_step = False
+    if want("verify"):
+        print("== 1. verify（ROM 不要）")
+        step_verify(rep, a.update)
+        ran_step = True
+
+    if want("plg"):
+        if ran_step:
+            print()
+        print("== 1b. PLG カード（ROM 不要）")
+        step_plg(rep)
+        ran_step = True
+
+    if only and ran_step:
+        # --only が段の名を指していたのはこの場合。音の試験までは回らない。
+        # 前はここを通らず下へ落ちて「その名前の試験は無い」で落ちていた。
+        print()
+        rep.show()
+        return 1 if rep.bad else 0
 
     print()
     print("== 1b. 画面の言葉（ROM 不要）")
@@ -908,9 +994,14 @@ def main():
     roms = find_roms(a.roms)
     if roms is None:
         print()
-        print("ROM が見つからないので、音の試験は飛ばす。")
-        print("  探した場所: --roms / SMU2000_ROMS / roms / ../MU2000/roms")
-        print("  要るもの: " + " ".join(NEEDED))
+        if a.roms == NO_ROMS:
+            # 選んだのはこの段だけなので、summary は「回した段が全部合っていた」
+            # 意味になる。
+            print("--roms %s なので、ROM を要らない段だけ回した。" % NO_ROMS)
+        else:
+            print("ROM が見つからないので、音の試験は飛ばす。")
+            print("  探した場所: --roms / SMU2000_ROMS / roms / ../MU2000/roms")
+            print("  要るもの: " + " ".join(NEEDED))
         rep.show()
         return 1 if (rep.bad or a.require_roms) else 0
     print("   ROM: %s" % roms)

@@ -183,6 +183,14 @@ SRCS := \
 	src/mame/cpu/sh_port.cpp \
 	src/mame/cpu/sh_sci.cpp
 
+# The PLG card host (doc/plg-cards.md). Kept out of SRCS on purpose: nothing in
+# the machine calls it yet, so a tool that links the emulator does not have to
+# drag in dlopen. The first thing that will is mu2000::run_sample(), and that
+# patch moves these two lines into SRCS.
+PLG_SRCS := \
+	src/plg/host.cpp \
+	src/compat/dynlib.cpp
+
 OBJS := $(SRCS:%.cpp=$(BUILD)/%.o)
 
 ifeq ($(PLATFORM),windows)
@@ -190,6 +198,7 @@ ifeq ($(PLATFORM),windows)
 all: $(BUILD)/verify$(EXE) $(BUILD)/boot$(EXE) $(BUILD)/render$(EXE) \
      $(BUILD)/live$(EXE) $(BUILD)/midisend$(EXE) $(BUILD)/panel$(EXE) $(BUILD)/gui$(EXE) \
      $(BUILD)/statetest$(EXE) $(BUILD)/rec$(EXE) $(BUILD)/blocktime$(EXE) \
+     $(BUILD)/plgtest$(EXE) $(PLG_STUB) \
      vst3 $(BUILD)/vst3probe$(EXE) clap $(BUILD)/clapprobe$(EXE) \
      vsti $(BUILD)/vstiprobe$(EXE)
 else ifeq ($(PLATFORM),linux)
@@ -197,13 +206,14 @@ else ifeq ($(PLATFORM),linux)
 # headless plug-ins build here too (doc/porting-linux-gui.md)
 all: $(BUILD)/verify$(EXE) $(BUILD)/boot$(EXE) $(BUILD)/render$(EXE) \
      $(BUILD)/panel$(EXE) $(BUILD)/statetest$(EXE) $(BUILD)/blocktime$(EXE) \
-     $(BUILD)/live$(EXE) $(BUILD)/gui$(EXE) \
+     $(BUILD)/live$(EXE) $(BUILD)/gui$(EXE) $(BUILD)/plgtest$(EXE) $(PLG_STUB) \
      vst3 $(BUILD)/vst3probe$(EXE) clap $(BUILD)/clapprobe$(EXE)
 else
 # macOS. vst3 and vst3probe are defined below
 all: $(BUILD)/verify$(EXE) $(BUILD)/boot$(EXE) $(BUILD)/render$(EXE) \
      $(BUILD)/panel$(EXE) $(BUILD)/statetest$(EXE) $(BUILD)/live$(EXE) \
-     $(BUILD)/gui$(EXE) $(BUILD)/blocktime$(EXE) vst3 $(BUILD)/vst3probe$(EXE) \
+     $(BUILD)/gui$(EXE) $(BUILD)/blocktime$(EXE) $(BUILD)/plgtest$(EXE) $(PLG_STUB) \
+     vst3 $(BUILD)/vst3probe$(EXE) \
      au $(BUILD)/aubprobe$(EXE)
 endif
 
@@ -277,6 +287,64 @@ $(BUILD)/statetest$(EXE): $(OBJS) $(BUILD)/src/mu2000.o $(BUILD)/src/smf.o $(BUI
 $(BUILD)/panel$(EXE): $(OBJS) $(BUILD)/src/mu2000.o $(BUILD)/src/smf.o $(BUILD)/src/panel.o
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
+
+# ---- PLG card slots (doc/plg-cards.md) -------------------------------------
+#
+# The loading side of the three PLG slots, plus one card that does nothing. There
+# is no real card yet: the PLG150-DX firmware exists as a dump in rgwan's
+# fs1r_firmware_RE, and this repository does not carry dumps, so the test uses a
+# stub instead.
+#
+# The stub is written in **C on purpose**. The ABI is a C interface, and a C
+# interface that has only ever been implemented from C++ has had neither its
+# struct layout nor its linkage checked by anybody. The $(CC) below may be gcc or
+# clang; what matters is that it is not the C++ compiler.
+
+# A cross build needs a cross C compiler too, or CC stays the host's cc. The
+# name has to be the one CXX uses above, without its g++.
+ifeq ($(CROSS_WINDOWS),1)
+ifeq ($(origin CC),default)
+CC := $(patsubst g++$,gcc,$(CXX))
+endif
+endif
+CFLAGS ?= -O2
+
+PLG_OBJS := $(PLG_SRCS:%.cpp=$(BUILD)/%.o)
+
+# The shared library's name and how to link one. Windows differs in both the
+# suffix and the flag. -dynamiclib rather than -bundle on macOS: dlopen opens
+# either, and -dynamiclib is what links against other libraries by default.
+ifeq ($(PLATFORM),windows)
+PLG_STUB      := $(BUILD)/plg_stub.dll
+PLG_SHARED    := -shared
+PLG_CFLAGS    := -I src
+else ifeq ($(PLATFORM),linux)
+PLG_STUB      := $(BUILD)/plg_stub.so
+PLG_SHARED    := -shared -fPIC
+PLG_CFLAGS    := -I src -fPIC
+else
+PLG_STUB      := $(BUILD)/plg_stub.dylib
+PLG_SHARED    := -dynamiclib
+PLG_CFLAGS    := -I src
+endif
+
+$(BUILD)/tests/plg/stub.o: tests/plg/stub.c src/plg/plg1500.h
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(PLG_CFLAGS) -c -o $@ $<
+
+$(PLG_STUB): $(BUILD)/tests/plg/stub.o
+	@mkdir -p $(dir $@)
+	$(CC) $(PLG_SHARED) -o $@ $<
+
+#   build/plgtest [card path]
+# With no path it loads the stub next to the executable. CI runs `make all` on
+# all three platforms, so dlopen gets exercised on all three.
+$(BUILD)/plgtest$(EXE): $(PLG_OBJS) $(BUILD)/src/plgtest.o
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
+
+plgtest: $(BUILD)/plgtest$(EXE) $(PLG_STUB)
+	$(BUILD)/plgtest$(EXE)
 
 # PC editor (doc/pc-editor.md). Dear ImGui (MIT), vendored in third_party/imgui.
 # Only the window and the renderer are the platform's job: Windows uses Win32 +
@@ -1090,7 +1158,27 @@ ifeq ($(PLATFORM),windows)
 	$(BUILD)/vstiprobe$(EXE) $(VSTI_BIN)
 endif
 
+# ROM を要らない検査だけ。**いちばん安い回しかた**。音源に触っていない変更
+# （カード差し込み口、道具、パネル、ビルド）はこれが済む。
+#   make check
+check: $(BUILD)/verify$(EXE) $(BUILD)/plgtest$(EXE) $(PLG_STUB)
+	$(BUILD)/verify$(EXE)
+	$(BUILD)/plgtest$(EXE)
+
 # 回帰試験。直したことで音が変わっていないかを見る。
+#
+# **全部は重い。** 56 本の render を同時に回すので数分かかり、cores を
+# 半分くらい取る。**変えたものが音に出ないなら回す必要が無い**:
+#
+#   make check            ROM 不要の段だけ（verify + カード、数秒）
+#   make test T=plg       同じものを試験の側から（1 秒）
+#   make test T=piano     1 件だけ鳴らす
+#   make test T=nosuch    その名前の段だけ
+#   make test             全部。**音の出し方が変わりうるもの**を直したとき
+#
+# 音の出し方が変わりうるもの: run_sample、SWP30、SH-2 の解釈と JIT、
+# 変換表、標本化周波数の変換、状態の形式、パラメータの既定値。
+# 工具や画面だけなら check で足りる。
 #
 # ROM は同梱できないので、ROM が無い機械では verify だけが走る（それが正しい）。
 # ROM の置き場は SMU2000_ROMS で渡せる。既定は roms/ か ../MU2000/roms。
@@ -1101,7 +1189,7 @@ endif
 # The test names are the same on both platforms: run_tests.py is the one that
 # knows whether the binaries carry an .exe suffix (tools/run_tests.py)
 TEST_EXES := $(BUILD)/verify$(EXE) $(BUILD)/statetest$(EXE) $(BUILD)/render$(EXE) $(BUILD)/xgtest$(EXE) \
-             $(BUILD)/samptest$(EXE)
+             $(BUILD)/samptest$(EXE) $(BUILD)/plgtest$(EXE) $(PLG_STUB)
 
 test: $(TEST_EXES)
 	SMU_BUILD=$(BUILD) $(PYTHON) tools/run_tests.py $(if $(T),--only $(T),)
@@ -1120,4 +1208,4 @@ clean:
 # 別の場所を触りに行っていた）。だから build の下にある .d を全部拾う
 -include $(shell find $(BUILD) -name '*.d' 2>/dev/null)
 
-.PHONY: all clean regen check test test-update vst3 install-vst3 probe clap install-clap vsti install-vsti vsti-probe au install-au au-probe check-au
+.PHONY: all clean regen check test test-update plgtest vst3 install-vst3 probe clap install-clap vsti install-vsti vsti-probe au install-au au-probe check-au
