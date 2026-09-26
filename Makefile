@@ -1147,19 +1147,23 @@ MAME_SH7042 ?= ../MU2000/mame-src/src/devices/cpu/sh/sh7042.cpp
 regen:
 	$(PYTHON) tools/gen_sh7042_map.py $(MAME_SH7042)
 
-# Checks that need no ROMs; this is how the port is shown to hold together
+# Checks that need no ROMs; this is how the port is shown to hold together.
+# The card is here too: plgtest needs no ROM and no data of any kind, so it
+# belongs in the cheapest rung rather than only in the full suite.
 ifeq ($(PLATFORM),windows)
 CHECK_PLUGIN := $(BUILD)/vstiprobe$(EXE) $(VSTI_BIN)
 endif
 
-check: $(BUILD)/verify$(EXE) $(CHECK_PLUGIN)
+check: $(BUILD)/verify$(EXE) $(BUILD)/plgtest$(EXE) $(PLG_STUB) $(CHECK_PLUGIN)
 	$(BUILD)/verify$(EXE)
+	$(BUILD)/plgtest$(EXE)
 ifeq ($(PLATFORM),windows)
 	$(BUILD)/vstiprobe$(EXE) $(VSTI_BIN)
 endif
 
 # ROM を要らない検査だけ。**いちばん安い回しかた**。音源に触っていない変更
-# （カード差し込み口、道具、パネル、ビルド）はこれが済む。
+# （カード差し込み口、道具、パネル、ビルド）はこれが済む。昔日ここにあった
+# `check` は verify だけだった（この検査限り��� 것도houses 方）。
 #   make check
 check: $(BUILD)/verify$(EXE) $(BUILD)/plgtest$(EXE) $(PLG_STUB)
 	$(BUILD)/verify$(EXE)

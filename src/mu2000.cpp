@@ -864,8 +864,31 @@ void mu2000::build_bus()
 	{
 		mem_bus::device d;
 		d.start = 0xf00000; d.end = 0xf0003f;
-		d.r8 = [this](offs_t a) { return m_sci4->read8(a - 0xf00000); };
-		d.w8 = [this](offs_t a, u8 v) { m_sci4->write8(a - 0xf00000, v); };
+		// 記録は memory handler に入れる。sci4_device 側に一切触らないので、
+		// MAME からの取り込みの差分は増えない（doc/design.md 86）。
+		// 読みの値も書くのは、firmware が何を待っているのかが
+		// バイト列だけでは分からないため。
+		d.r8 = [this](offs_t a) {
+			m_sci4_hits++;
+			const u8 v = m_sci4->read8(a - 0xf00000);
+			if (m_sci4_trace)
+				std::fprintf(m_sci4_trace,
+				             "R %02x -> %02x  pc=%08x  t=%.6f s=%llu\n",
+				             unsigned(a - 0xf00000), unsigned(v), m_cpu->pc(),
+				             double(m_cpu->total_cycles()) / 28000000.0,
+				             (unsigned long long)trace_sample());
+			return v;
+		};
+		d.w8 = [this](offs_t a, u8 v) {
+			m_sci4_hits++;
+			if (m_sci4_trace)
+				std::fprintf(m_sci4_trace,
+				             "W %02x <- %02x  pc=%08x  t=%.6f s=%llu\n",
+				             unsigned(a - 0xf00000), unsigned(v), m_cpu->pc(),
+				             double(m_cpu->total_cycles()) / 28000000.0,
+				             (unsigned long long)trace_sample());
+			m_sci4->write8(a - 0xf00000, v);
+		};
 		m_bus.add_device(d);
 	}
 

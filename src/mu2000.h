@@ -340,6 +340,25 @@ public:
 	void set_swp_trace(std::FILE *f, bool with_reads = false)
 	{ m_swp_trace = f; m_swp_trace_reads = with_reads; }
 
+	// **SCI4 (the PLG boards' serial line) tracing** -- doc/plg-cards.md, section 4.
+	//
+	// One line per access to 0xf00000. With no board plugged in the only thing
+	// this can show is what the MU2000's firmware *sends* and how long it waits
+	// before giving up, and that is exactly what the fake card needs: the reply
+	// has to be whatever the firmware is waiting for, so the request has to be
+	// read off the wire first. No PLG1X0 knowledge is assumed anywhere here.
+	//
+	// The screen text matters as much as the bytes, because the firmware names
+	// what it found -- `Checking PLG`, then `NO BOARD` or one of eighteen
+	// bracketed categories such as `[Organ]` (mu2000_flash.bin around 0x1dda63).
+	// That string is the observable for "the card was recognised", read back out
+	// of lcd(). NULL turns the trace off.
+	void set_sci4_trace(std::FILE *f) { m_sci4_trace = f; }
+	// 0xf00000 への読み書きの回数。**記録 Commodityg なくても数える**:
+	// 「アクセスが無い」ことと「記録ファイルを書けていない」を
+	// 取り違えないため（これは実際に取り違えた）。
+	u64 sci4_hits() const { return m_sci4_hits; }
+
 	// **firmware を走らせない口**（doc/native-engine.md の段 2）。
 	// 1: 鍵の上げ下げを native driver でさばき、CPU はその間止める
 	void set_native_engine(int mode);
@@ -855,6 +874,8 @@ private:
 	swp_watch_fn m_swp_watch;
 	std::FILE  *m_swp_trace = nullptr;
 	bool        m_swp_trace_reads = false;
+	std::FILE  *m_sci4_trace = nullptr;
+	u64         m_sci4_hits = 0;
 
 	// 44.1kHz 1 サンプルあたりの CPU サイクル。端数は繰り越す
 	u64 m_cycle_debt = 0;
