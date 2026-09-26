@@ -172,6 +172,28 @@ inline wave_info read_wave(const u8 *e)
 	return w;
 }
 
+// **逆向きに鳴らすサンプル**（`0x14/0x15` の bit31）は、2 つの数を
+// **入れ替えて**書く（doc/native-engine.md の 6.233）。チップは後ろから
+// 読むので、「ループまでの数」と「ループの長さ」の役割が入れ替わる
+// （swp30.cpp の「Sample addressing, pitching and looping」の説明）。
+// 旗（上の 8bit）はそれぞれの側に残る。
+//
+// 記録のまま書くと、逆向きのまま長さ 1 で止まるので、**音程は合っているのに
+// ざらついた音**になる。実機と突き合わせて見つかったのは 2 つ:
+//   StandKit#・StandKit の鍵 47/48/50（Mid Tom L/H・High Tom）
+//     記録 pre=0x5302 loop=0x000001 → 実機 pre=0x000001 loop=0x5302
+//   AnalogKit の鍵 28
+//     記録 pre=0x5125 loop=0x002174 → 実機 pre=0x002174 loop=0x5125
+// 2 つ目は数がどちらも大きいので、「入れ替え」であって「1 を書く」ではない
+inline void wave_backwards_swap(u32 &pre, u32 &loop)
+{
+	if (!(loop & 0x80000000))
+		return;
+	const u32 a = pre & 0xffffff, b = loop & 0xffffff;
+	pre  = (pre  & 0xff000000) | b;
+	loop = (loop & 0xff000000) | a;
+}
+
 // 音程のレジスタ（0x11）。1 オクターブ = 1024、細かい調整はセント（**足す**）。
 // 実測（鍵 0-127・18 区画）と ±0.7 目盛りで合う
 // 鍵の追従率（記録の byte19）。**表は ROM の `0x1E5E58` に 6 個**
@@ -1974,10 +1996,16 @@ inline slot_regs drum_note(const u8 *rom, const u8 *rec, int att,
 	r.set(0x10, 0x0000);
 	r.set(0x11, drum_pitch_reg(rom, rec, drum_cents(rec, coarse, fine)));
 	const wave_info w = read_wave(rec + 26);
-	r.set(0x12, u16(w.pre_loop >> 16));
-	r.set(0x13, u16(w.pre_loop));
-	r.set(0x14, u16(w.loop_len >> 16));
-	r.set(0x15, u16(w.loop_len));
+	{
+		// 逆向きのサンプルは 2 つの数を入れ替える（6.233）。
+		// StandKit# のタム 3 つと AnalogKit の鍵 28 がこれ
+		u32 pre = w.pre_loop, loop = w.loop_len;
+		wave_backwards_swap(pre, loop);
+		r.set(0x12, u16(pre >> 16));
+		r.set(0x13, u16(pre));
+		r.set(0x14, u16(loop >> 16));
+		r.set(0x15, u16(loop));
+	}
 	r.set(0x16, u16(w.format_addr >> 16));
 	r.set(0x17, u16(w.format_addr));
 	for (int i = 0; i < 6; i++)
@@ -2190,13 +2218,21 @@ inline slot_regs build_note(const u8 *rom, const u8 *elem, int note, int att,
 	// 引く。Oboe(7→896)・Clarinet(2→256)・Bagpipe(8→1024) で実機と一致した。
 	// 入れていなかったので、その 3 音色は波形がまるで合っていなかった
 	{
+		u32 pre = w.pre_loop, loop = w.loop_len;
+		// 逆向きなら 2 つの数を入れ替える（6.233）。**下駄を引く前**に入れ替えて、
+		// 下駄は 0x12/0x13 に行くほうから引く。旋律の音色で逆向きのものは
+		// 見つかっていないので、この組み合わせは実機で確かめられていない
+		wave_backwards_swap(pre, loop);
 		const u32 skip = u32(elem[79]) * 128 + elem[80];
-		const u32 pre = w.pre_loop > skip ? w.pre_loop - skip : 0;
+		if (pre > skip)
+			pre -= skip;
+		else
+			pre = 0;
 		r.set(0x12, u16(pre >> 16));
 		r.set(0x13, u16(pre));
+		r.set(0x14, u16(loop >> 16));
+		r.set(0x15, u16(loop));
 	}
-	r.set(0x14, u16(w.loop_len >> 16));
-	r.set(0x15, u16(w.loop_len));
 	r.set(0x16, u16(w.format_addr >> 16));
 	r.set(0x17, u16(w.format_addr));
 

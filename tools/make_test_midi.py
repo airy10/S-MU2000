@@ -836,6 +836,32 @@ def case_kits():
     return [track(seq(ev))], t + 3.0
 
 
+def case_drumrev():
+    """**逆向きに鳴らすサンプル**（波形の記録の `0x14/0x15` の bit31。6.233）。
+
+    チップは後ろから読むので「ループまでの数」と「ループの長さ」の役割が
+    入れ替わる。native の口は記録のまま書いていたので、長さ 1 で止まって
+    **音程は合っているのにざらついた音**になっていた。
+
+    * StandKit#（キット 1）の鍵 47・48・50 … Mid Tom L/H・High Tom
+    * AnalogKit（キット 24）の鍵 28
+    * 同じキットの 41・43・45（ふつうのタム）を対で入れて、巻き添えを見る
+
+    `kits` は 36・38・42 しか打っていなかったので、ここは一度も通っていなかった。
+    """
+    ev = head()
+    t = 1.0
+    for kit, keys in ((1, (41, 43, 45, 47, 48, 50)), (24, (26, 28, 30))):
+        ev += [(t, b'\xb9\x00\x7f'), (t + 0.02, b'\xb9\x20\x00'),
+               (t + 0.04, bytes([0xc9, kit]))]
+        t += 0.2
+        for k in keys:
+            ev += note(9, k, 110, t, 0.1)
+            t += 0.45
+        t += 0.3
+    return [track(seq(ev))], t + 1.0
+
+
 def case_ins2():
     """**インサーションを 2 系統**、別々のパートに掛ける。
     `lofi` は 1 系統だけ。2 つ目（02 01 60-）の番地と、パートごとの
@@ -1800,6 +1826,7 @@ CASES = {
     "xgsys":   case_xgsys,
     "xgvibshort": case_xgvibshort,
     "xgvibdly": case_xgvibdly,
+    "drumrev": case_drumrev,
 }
 
 

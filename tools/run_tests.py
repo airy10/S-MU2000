@@ -406,6 +406,8 @@ SHAPE_MIN = {
     "xgvibshort": 0.95,
     # ビブラートの遅れのつまみ（6.232）
     "xgvibdly": 0.95,
+    # 逆向きに鳴らすサンプル（6.233）
+    "drumrev": 0.95,
     # meter は 15 パートを同時に鳴らすので dense と同じ事情で形が落ちる
     # （狙いは液晶のほうなので、音は緩めに見る）
     "meter": 0.90, "filtcc": 0.95, "keyrange": 0.95, "rcvch": 0.95, "althh": 0.95, "drumrcv": 0.95,
