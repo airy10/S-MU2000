@@ -215,18 +215,16 @@ Not done:
   line* - the three slots are one SCI4 channel told apart by the target
   register, which is why the firmware broadcasts and cannot tell which board
   answered.
-- **Recognition. PLG-1 stays dark**, and until the transmit path is fixed it is
-  not even the right question to ask. The blocker was never only in the card's
-  *receive* framing rather than in the host. The host's side is finished: the
-  card is stepped by SCI4's own bit clock, its two replies reach the chip intact
-  (zero framing errors, byte for byte what a real PLG150-AP sends), and the
-  firmware changes behaviour - it sends 89 messages against a real card's 94 and
-  the same polls in the same order. But the card never sees a whole message:
-  its log shows six "messages" whose entire content is `f7`, and zero polls, so
-  every message it thinks it received is the *last byte* of one the host sent.
-  Its receive framing is a byte out of step and it has no resync, so a single
-  lost bit costs it every message after. That is the thing to fix next, and
-  `answer.c`'s per-message log is the instrument.
+- **Recognition now works, and what is left is the card's own protocol.** This
+  bullet is kept because the path here was long and the shape of it is worth
+  remembering. The card is stepped by SCI4's own bit clock, its replies reach the
+  chip intact (zero framing errors, byte for byte what a real PLG150-AP sends),
+  and **PLG-1 lights**. The 89-against-94 count quoted below was a symptom, not
+  the fault: those extra host messages were the host retrying a scan whose answer
+  never arrived intact. With the card framing its receive stream correctly the
+  host's message count matches a real card's exactly - see 5b, which has the
+  current measurement. What remains is that the card does not answer the host's
+  37 follow-up reads, and until it does the boot stops where it stops.
 - **A correction worth keeping.** "MU came on" was reported for a while as
   evidence that a card had been recognised. It is not: MU lights after about
   25 seconds **with no card at all** (`boot roms 700000000`, no `--plg`). The
@@ -238,6 +236,59 @@ Not done:
   boot never probes the slots. `boot` and `render` are cold by default
   (`--bootcache` is opt-in and must stay unused here), and neither loads NVRAM
   from disk, which is why the scan runs on every run.
+### 5b. The panel does not answer with a card in the slot. That is faithful.
+
+This was read as the last bug in the branch: with `--plg-builtin 0` the boot
+lights PLG-1, then the button task stops scanning and no key does anything, and
+that is also what the gui showed. It is not a bug here.
+
+The button task's scan rate is the panel latch read at `0xc80000`. Counting it
+in **MAME, with a real PLG150-AP in the slot**, over 600 emulated seconds:
+
+| | panel latch reads | last read |
+|---|---|---|
+| MAME, no card | 8209, steady ~240/s | continues past 39 s |
+| MAME, real PLG150-AP | **25** | **9.97 s, never again** |
+| ours, `--plg-builtin 0` | 72 | stalls the same way |
+| ours, no card | 390 | continuous |
+
+The AP in MAME is not a stub that prints canned replies - `plg150_ap_device` runs
+the card's own `x5757b0.ic03` on a `swx00_device`, which delegates execution to
+`h8s2000_device`. So the real card's firmware, on a real emulated CPU, leaves the
+S-MU2000's button task dead after ten seconds, and our card leaves it dead the
+same way.
+
+Everything on the wire is identical to the real card, message for message:
+
+| | ours | real PLG150-AP in MAME |
+|---|---|---|
+| host -> card | 39 messages | 39 messages, **the same 39** |
+| card -> host | 2 messages | 2 messages, **the same 33 bytes** |
+| PLG-1 | lit | lit |
+
+**So the remaining gap is not a divergence left to be found, it is protocol work
+still to be done:** the host's 37 unanswered requests. They are reads of card
+memory - `00 10 08 00 00`, `00 10 18 01`, `00 10 19 00`, `00 10 1a 00`, and the
+page polls `01 00 0e`, `01 00 0f`, `01 00 10`, `01 10 03`, `01 10 04` - and a card
+that answers them is what gets the boot past its stall. Until one does, "the UI
+does not respond with a card in the slot" is what the machine does, and the gui
+is right to look that way.
+
+Two real bugs did come out of chasing this, both in `answer.c`:
+
+- **The name reply was never sent.** The host asks for it with
+  `F0 43 30 4E 01 00 00 F7`, which is eight bytes, and `is_name_poll` tested
+  `msg_n == 7`. `msg_n` counts up to `sizeof(msg)` and `msg` is eight wide, so no
+  message can ever have `msg_n == 7` - the test was unsatisfiable, and the card
+  put one message on the wire per run instead of two. The identity read's test
+  next to it, `msg_n == 8`, passes only by luck: the read is nine bytes, `msg_n`
+  saturates at eight, and the eight bytes being compared happen to be the first
+  eight.
+- **The transmit mailbox was the transmit buffer.** One `tx_buf` served as both, so
+  a reply queued while another was still shifting out overwrote the bytes being
+  sent, and completing a message did `tx_next = tx_len`, discarding whatever was
+  queued behind it. The mailbox and the wire buffer are now separate.
+
 - **A real card** (`src/plg/plg150dx_device`): the SH7043, the two flashes, a
   YMP706 model. The connector and SCI4 are already there to hang it on.
 - **Discovery** (a `plg.txt` beside the bundle, the way `roms.txt` works) and a
