@@ -352,6 +352,7 @@ std::string sci4_device::chan_id(u8 chan, u8 target)
 
 void sci4_device::tx_start(int chan)
 {
+	m_dbg_tx_start[chan & 3]++;
 	m_tx_active[chan] = 1;
 	m_tsr[chan] = m_tdr[chan];
 	m_tdr_full[chan] = 0;
@@ -376,6 +377,7 @@ void sci4_device::wait(int timer, int full, int chan)
 
 TIMER_CALLBACK_MEMBER(sci4_device::tx_tick)
 {
+	m_dbg_tx_tick[param & 3]++;
 	u32 step = m_tx_step[param]++;
 	if(step < 9) {
 		const int level = (step == 8) ? 1 : ((m_tsr[param] >> step) & 1);
@@ -402,8 +404,10 @@ TIMER_CALLBACK_MEMBER(sci4_device::tx_tick)
 		// channel would hand the bit to one arbitrary slot.
 		if(m_tx_notify && param == 3) {
 			for(int line = 0; line != 4; line++)
-				if(m_targets & (1 << line))
+				if(m_targets & (1 << line)) {
+					m_dbg_notify[line & 3]++;
 					m_tx_notify(m_tx_notify_ctx, line, level, int(step));
+				}
 		}
 		wait(0, 1, param);
 

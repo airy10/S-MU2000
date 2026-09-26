@@ -391,6 +391,9 @@ public:
 	// it has accepted a card, so a card that goes from dark to lit here has been
 	// recognised without anybody in this project deciding so.
 	static void plg_tx_bit(void *ctx, int slot, int level, int bit);
+	// S-MU2000: the chip's transmit counters, for pinning down a card that is
+	// not being sent what the firmware wrote (doc/plg-cards.md 5).
+	void sci4_tx_debug(u64 out[4][3]) const;
 	unsigned plg_lamps() const;
 	// 0xf00000 への読み書きの回数。**記録 Commodityg なくても数える**:
 	// 「アクセスが無い」ことと「記録ファイルを書けていない」を

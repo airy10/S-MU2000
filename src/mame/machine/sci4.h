@@ -55,6 +55,14 @@ public:
 	void set_tx_notify(tx_notify_fn fn, void *ctx)
 	{ m_tx_notify = fn; m_tx_notify_ctx = ctx; }
 
+	// S-MU2000: counters for the transmit chain, because "the card is handed nine
+	// bits when nine bytes were written" has to be pinned to one of three places -
+	// tx_start not re-entered, tx_tick not firing, or the notify gated off - and
+	// guessing between them is how the last three rounds went.
+	u64 dbg_tx_start(int i) const { return m_dbg_tx_start[i]; }
+	u64 dbg_tx_tick(int i) const { return m_dbg_tx_tick[i]; }
+	u64 dbg_notify(int i) const { return m_dbg_notify[i]; }
+
 	// S-MU2000: address_map の代わりに素の振り分け。中身は sci4.cpp の末尾
 	u8   read8 (offs_t offset);
 	void write8(offs_t offset, u8 data);
@@ -71,6 +79,9 @@ protected:
 	emu_timer *m_rx_timer[4];
 	emu_timer *m_line_timer = nullptr;   // S-MU2000: the free-running line poll
 	std::FILE *m_rx_trace = nullptr;      // S-MU2000
+	u64 m_dbg_tx_start[4] = {};   // S-MU2000
+	u64 m_dbg_tx_tick[4] = {};    // S-MU2000
+	u64 m_dbg_notify[4] = {};     // S-MU2000
 	tx_notify_fn m_tx_notify = nullptr;  // S-MU2000
 	void *m_tx_notify_ctx = nullptr;     // S-MU2000
 

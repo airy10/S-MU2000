@@ -3045,6 +3045,15 @@ void mu2000::plg_tx_bit(void *ctx, int slot, int level, int bit)
 		m->m_plg->midi_rx(slot, level, bit);
 }
 
+void mu2000::sci4_tx_debug(u64 out[4][3]) const
+{
+	for (int i = 0; i < 4; i++) {
+		out[i][0] = m_sci4->dbg_tx_start(i);
+		out[i][1] = m_sci4->dbg_tx_tick(i);
+		out[i][2] = m_sci4->dbg_notify(i);
+	}
+}
+
 unsigned mu2000::plg_lamps() const
 {
 	return unsigned((m_ledsw1 >> 6) & 0xf);

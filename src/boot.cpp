@@ -203,6 +203,16 @@ int main(int argc, char **argv)
 	// 起動中に SCI4 を 1 回も触っていないということ（doc/plg-cards.md 4）。
 	std::printf("SCI4 0xf00000 への読み書き: %llu 回\n",
 	            (unsigned long long)mu.sci4_hits());
+	{
+		u64 d[4][3];
+		mu.sci4_tx_debug(d);
+		std::printf("SCI4 送信: ch start/tick/notify =");
+		for (int i = 0; i < 4; i++)
+			std::printf(" %d:%llu/%llu/%llu", i,
+			            (unsigned long long)d[i][0], (unsigned long long)d[i][1],
+			            (unsigned long long)d[i][2]);
+		std::printf("\n");
+	}
 
 	// カードが音道路上に戻した値。meli 10..15 が差し込み口なので、ここが
 	// 非 0 なら「カードが選んだ値が音道路まで来た」ことになる

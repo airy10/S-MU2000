@@ -183,7 +183,21 @@ Not done:
   receive line is the AND of the selected lines, so an empty slot holding its line
   low masks out the card in another slot. `host::midi_tx()` returns 1 for that
   reason, and it is the one thing here that was wrong before it was measured.
-- **SCI4's transmit path, which is the real blocker and is host-side.** The
+- **SCI4's transmit path, which is the real blocker and is host-side.** MAME, with
+  a real PLG150-AP in the slot, is the ground truth for what a card should be
+  handed, and it is precise: **nine per-bit events per byte, steps 0..8** (eight
+  data bits LSB first, then the stop bit), with the target steady at 07
+  throughout. It also shows why the edge-driven interface could never work — the
+  card's line carries **7787 transitions for 3060 bit events**, two and a half
+  times as many edges as bits. The per-bit `midi_rx` exists because of that
+  measurement.
+  Against it, our counters read: 159 `tx_start`, 1582 `tx_tick`, and **1280
+  notifies per line — 8.05 per byte where it should be 9.** So we are still
+  short about one bit per byte, and the card, which is handed 1280 of them,
+  counts 9. Where the missing bit goes is the next thing to find; it is in the
+  transmit chain, not in the card.
+  The counters are in the tree for it: `mu2000::sci4_tx_debug()`,
+  `plg::host::midi_rx_calls()`, printed by `boot`.
   firmware writes nine `0xf0` bytes to the card channel, and the card is handed
   **nine bits in total** instead of 81. So the chip shifts one byte out and then
   `tx_start()` is never re-entered for the next one, and everything downstream is
