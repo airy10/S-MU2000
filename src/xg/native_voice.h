@@ -1923,6 +1923,31 @@ inline bool drum_rec_has_wave(const u8 *rec)
 	return rec && rd16(rec, 24) == 0xffff;
 }
 
+// **波形の埋まっていない打は、旋律の音色記録から組む**（6.234）。
+// +24/+25 は `(b24 << 7) | (b25 & 0x7f)` の索引で、`0x283B50` の 4 バイトの表を
+// 引くと音色記録（`VOICES` からの距離の半分。`VOICE_TABLE` と同じ形）が出る。
+// 実機はその記録の要素を押した鍵と強さで選び、**波形も音程も「鍵 64」として**
+// 組む（押した鍵は音程に効かない。SFX は鍵で高さを変えない音だから）。
+//   波形: `wave_entry(組, wave_note(要素, 64))` … キット 47・48 の 57 打すべてで一致
+//   音程: `pitch_reg(波形, 64, 追従, 粗調+微調, 支点)` … 73 スロット中 68 が一致
+//         （鍵 60 だと 2 つしか合わない。余りが「追従率 × 4」の形で出て 64 と分かった）
+// 表は GROUP_XG（0x283950）から 0x80 おきに並ぶ表の続きにある。
+// 実機の 0x134BE6 に仮の見張りを付けて引数を覗き、要素を指していると分かって解けた
+constexpr u32 SFX_VOICE_TABLE = 0x283B50;
+constexpr u32 SFX_VOICES      = 0x200ee0;   // xg::voice_rom::VOICES と同じ
+constexpr u32 SFX_VOICES_END  = 0x23cece;   // xg::voice_rom::VOICES_END と同じ
+constexpr int SFX_NOTE        = 64;         // 波形と音程を決める鍵（固定）
+
+inline u32 sfx_voice_record(const u8 *rom, const u8 *drec)
+{
+	if (!rom || !drec || drec[24] == 0xff)
+		return 0;
+	const u32 idx = (u32(drec[24]) << 7) | (drec[25] & 0x7f);
+	const u32 slot = SFX_VOICE_TABLE + idx * 4;
+	const u32 rec = SFX_VOICES + rd32(rom, slot) * 2;
+	return (rec >= SFX_VOICES && rec + 16 <= SFX_VOICES_END) ? rec : 0;
+}
+
 // `SMU2000_DRUM_EXACT=1` で、ドラムを写し取りではなく式で組む
 inline bool drum_exact()
 {
@@ -2171,7 +2196,10 @@ inline slot_regs build_note(const u8 *rom, const u8 *elem, int note, int att,
 	// **遅れを持つ音色は 0 から始めて、20ms ごとにせり上げる**（6.175）。
 	// byte9 が 2 以上の音色はそもそも揺れない
 	const bool vgate = (elem[12] || elem[13] || elem[9] >= 2);
-	const int plfo0 = vgate ? 0 : (vib_ramp_reg(rom, elem[14]) & 0x7f);
+	// **bit7（8 倍の目盛り）は落とさない**（6.234）。byte14 が 62・63 の要素は表の値が
+	// 0x96 で、実機もそのまま下位に書く（SFX Kit1 の鍵 28・29 で `0a=xx96`）。
+	// `& 0x7f` で 0x16 にしていた。旋律の記録 1353 個のうち変わるのは 9 要素だけ
+	const int plfo0 = vgate ? 0 : vib_ramp_reg(rom, elem[14]);
 	const int lrate = vib_rate(int(elem[11] & 0x3f), cc_vrate);
 	const int plfo  = vgate ? 0 : vib_depth(plfo0, cc_vdep);
 	r.set(0x0a, u16(((((elem[9] ? 0x40 : 0) | (lrate & 0x3f)) << 8))
