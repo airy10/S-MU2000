@@ -60,8 +60,10 @@
 
 #define PLG_NAME "PLG150-AP"   /* 11 characters, space padded on the wire */
 
-/* What the AP answers for the 2-byte read at 0x0010. See the header comment. */
-static const unsigned char CATEGORY[2] = { 0x00, 0x07 };
+/* What the AP answers for the 2-byte read at 0x0010. See the header comment. A
+ * knob, because "00 07" is the AP's value copied out of a capture and there is no
+ * reason to believe the MU2000 numbers its boards the same way. */
+static unsigned char CATEGORY[2] = { 0x00, 0x07 };
 
 /* The two replies, in the order the real card sends them. */
 static const unsigned char REPLY_CATEGORY[] = {
@@ -152,6 +154,14 @@ static void read_knobs(struct answer *a)
 	a->on_poll = 1;
 	if ((e = getenv("SMU2000_CARD_ON_POLL")) != 0 && atoi(e) == 0)
 		a->on_poll = 0;
+	/* SMU2000_CARD_CATEGORY=hi,lo - the two bytes the card claims for itself. */
+	if ((e = getenv("SMU2000_CARD_CATEGORY")) != 0) {
+		unsigned hi = 0, lo = 0;
+		if (sscanf(e, "%x,%x", &hi, &lo) == 2) {
+			CATEGORY[0] = (unsigned char)hi;
+			CATEGORY[1] = (unsigned char)lo;
+		}
+	}
 	a->after_polls = 0;
 	if ((e = getenv("SMU2000_CARD_AFTER")) != 0) {
 		const int v = atoi(e);
