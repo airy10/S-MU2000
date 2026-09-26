@@ -313,7 +313,7 @@ def step_plg_boot(rep, roms):
             tail = tail[tail.index(")") + 1:]
             heard = [int(x, 16) for x in tail.split(";")[0].split()]
     if not heard:
-        rep.add("plg boot", False, "カードの記録が無い。カードが入っていない")
+        rep.add("plg boot", False, "the card reported nothing - it was not inserted")
         return
 
     # How many bytes the chip was handed, for information. This is deliberately
@@ -355,16 +355,16 @@ def step_plg_boot(rep, roms):
     ident = [0xF0, 0x43, 0x10, 0x4E, 0x00, 0x10, 0x02, 0x01, 0xF7]
     has_ident = any(f[:len(ident)] == ident for f in frames)
 
-    note = "%d バイト / sysex %d 個（chip には %d バイト）" % (
+    note = "%d bytes, %d sysex frames (the chip was handed %d)" % (
         len(heard), len(frames), sent)
     if unterminated:
-        note += " + 途中で切れた 1 個"
+        note += " + 1 cut short"
     if malformed:
-        rep.add("plg boot", False, note + " / 壊れたフレーム %d 個" % len(malformed))
+        rep.add("plg boot", False, note + " / %d malformed frame(s)" % len(malformed))
     elif not frames:
-        rep.add("plg boot", False, note + " / sysex が 1 つも届いていない")
+        rep.add("plg boot", False, note + " / not one sysex frame arrived")
     elif not has_ident:
-        rep.add("plg boot", False, note + " / 識別の要求が届いていない")
+        rep.add("plg boot", False, note + " / the identity read never arrived")
     else:
         rep.add("plg boot", True, note)
 
@@ -380,20 +380,20 @@ def step_plg_boot(rep, roms):
     rnd = tool("render")
     mid = WORK / "chord.mid"
     if not rnd.exists() or not mid.exists():
-        rep.add("plg 音", False, "render か chord.mid が無い")
+        rep.add("plg audio", False, "render or chord.mid is missing")
         return
     r = subprocess.run([str(rnd), str(roms), str(mid), str(WORK / "plg_audio.wav"),
                         "1", "--fast-midi", "--plg", str(card)],
                        capture_output=True, text=True, encoding="utf-8")
     got = [l for l in r.stderr.splitlines() if l.startswith("PLG1 ")]
     if not got:
-        rep.add("plg 音", False, "カードが値を返していない（render が SCI4 を lupa ？）")
+        rep.add("plg audio", False, "the card returned no value")
         return
     val = int(got[0].split("L=")[1].split()[0])
     if val == (1 << 20):
-        rep.add("plg 音", True, "カードの戻り L=%d が meli 10 に出た（筐体は 0 のまま）" % val)
+        rep.add("plg audio", True, "the card's L=%d reached meli 10 (the render is still identical)" % val)
     else:
-        rep.add("plg 音", False, "カードの戻り L=%d（1048576 ではない）" % val)
+        rep.add("plg audio", False, "the card returned L=%d, not 1048576" % val)
 
 
     # The recognition observable. **PLG-1 lit is the whole test**: the firmware
@@ -414,9 +414,9 @@ def step_plg_boot(rep, roms):
         if "PLG-1=" in line:
             lamps = line
     if "PLG-1=on" in lamps:
-        rep.add("PLG 認識", True, "PLG-1 が点いた（firmware がカードを認めた）")
+        rep.add("PLG 認識", True, "PLG-1 is lit: the firmware accepted the card")
     else:
-        rep.add("PLG 認識", False, lamps.strip() or "PLG ランプが出ない")
+        rep.add("PLG 認識", False, lamps.strip() or "the lamps were not printed")
     return
 
 
