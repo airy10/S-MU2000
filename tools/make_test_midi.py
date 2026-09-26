@@ -1578,6 +1578,39 @@ def case_xgvibshort():
         t += 3.6
     return [track(seq(ev))], t + 1.0
 
+def case_xgvibdly():
+    """**ビブラートの遅れのつまみ**（08 pp 17 ＝ NRPN 01 0A。6.232）。
+
+    firmware は 20ms の目盛りの表を引いて、**速さ・深さと同じ「大小で選ぶ」**形で
+    音色自身の遅れ（byte12）と混ぜる。つまみ 64 なら音色のまま、下なら小さいほう、
+    上なら大きいほう。native の口は 08 pp 17 を覚えるだけで使っていなかったので、
+    Vib Delay を動かしても音が変わらなかった（絵の「掛かり始め」の線も動かなかった）。
+    さらに、つまみで遅れが付くと **自身はせり上がらない音色でも遅れて掛かる**。
+
+    * Shakuhachi … 自身 33 目盛り（665ms）。つまみ 0/48 は表が勝ち、80 は自身が勝つ
+    * GrandPno（Vib Depth 88）… 自身はせり上がらない。つまみ 80 で 18 目盛りの遅れが付く
+    * Vibes … 音量側の揺れ（レジスタ `0x05`）が遅れる側
+
+    **パートは順に鳴らす**（xghpf と同じ事情）。3 つ同時だと native の形が遅れとは
+    関係なく 85% まで落ちて、遅れが効かなくなっても気づけない試験になる。
+    1 パートずつなら firmware と 99-100% 合う
+    """
+    ev = head()
+    for ch, pg in enumerate((77, 0, 11)):              # Shakuhachi / GrandPno / Vibes
+        ev += [(1.0, bytes([0xc0 | ch, pg]))]
+    ev += [(1.1, xg([0x08, 0x01, 0x16, 88]))]          # GrandPno は深さを足して揺らす
+    t = 1.3
+    for ch in range(3):
+        ev += note(ch, 60, 100, t, 0.4)                # 1 音目。ここで写し取る
+        t += 0.5
+    # （パート, つまみ）を順に。値は 1 音（1.2 秒）で遅れが見える所を選ぶ
+    for ch, val in ((0, 0), (0, 48), (0, 80), (1, 64), (1, 80), (2, 80)):
+        ev += [(t, xg([0x08, ch, 0x17, val]))]
+        ev += note(ch, 62, 100, t + 0.2, 1.2)
+        t += 1.6
+    return [track(seq(ev))], t + 1.0
+
+
 def case_xghpf():
     """**パートの HPF**（`0A pp 20`。パートの塊の番地は 08 ではなく 0A）。
 
@@ -1766,6 +1799,7 @@ CASES = {
     "xgmwvib": case_xgmwvib,
     "xgsys":   case_xgsys,
     "xgvibshort": case_xgvibshort,
+    "xgvibdly": case_xgvibdly,
 }
 
 

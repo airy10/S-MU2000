@@ -70,6 +70,15 @@ public:
 		return on;
 	}
 
+	// SMU2000_VIB_TRACE が立っていれば、**遅れて掛かるビブラート**の
+	// せり上がりを出す（`--trace-swp` は native の口の書き込みを拾わないので、
+	// firmware の道と時刻を突き合わせるのに要る。6.232）
+	static bool vib_trace()
+	{
+		static const bool on = std::getenv("SMU2000_VIB_TRACE") != nullptr;
+		return on;
+	}
+
 	// スロット 1 つの使われ方
 	struct slot_use {
 		bool on = false;
@@ -703,6 +712,9 @@ public:
 					// lfo_reg が取る（6.215）。今の値は s.lfo に置く（つまみが動いたときの元になる）
 					s.lfo = u16(s.vhi | u16(nv::vib_ramp_value(m_rom, s.vdep, s.vcnt, s.vcnt2)));
 					m_poke(u32(i) * 64 + 0x0a, s.cal ? lfo_reg(s.lfo, *s.cal, s.part, s.keynote) : s.lfo);
+					if (vib_trace())
+						std::printf("VIB %.1f ms  スロット %2d  0a = %04x%c",
+						            double(clock - s.tstart) / 44.1, int(i), s.lfo, 10);
 					// 実機はこの刻みでも切る高さを作り直す
 					//（6.189。位相は進めない）
 					if (s.lstep && s.elem && fenv_on()) {
@@ -2923,13 +2935,25 @@ public:
 			su.lrun  = true;             // 遅れが無ければすぐ回り出す
 			su.lfdep = su.lfull;
 			su.lcut  = 0;
-			if (nv::vib_ramps(el)) {
+			// **遅れのつまみ**（08 pp 17。6.232）。速さ・深さと同じ
+			// 「下は小さいほう・上は大きいほう」。つまみで遅れが付くと、
+			// **自身はせり上がらない音色でも遅れて掛かるようになる**
+			// （実機の GrandPno は `0a=5f96` を押鍵で書くが、遅れ 100 を
+			//  与えると `0a=5f00` で始めて 845ms から 20ms ごとにせり上げ、
+			//  1066ms で `5f96` に着く。Vibes の `05` も同じで、押鍵は
+			//  `aa00`、遅れが明けてから `aa04`）
+			const int vdly_t = nv::vib_delay(nv::vib_delay_ticks(el), pc.vdly);
+			if (nv::vib_ramps(el) || vdly_t > 0) {
 				su.vtgt  = nv::vib_ramp_target(el);
 				su.vstep = nv::vib_ramp_step(el);
-				su.vdly  = nv::vib_delay_ticks(el);
+				su.vdly  = vdly_t;
 				if (su.vdly > 0) {
 					su.lfdep = 0;        // 遅れのあいだは掛からない
 					su.lrun  = false;    // 位相も止めておく
+					// せり上がらない音色は押鍵の値に深さが入っている。
+					// 遅れを付けたのだから、そこは 0 から始める
+					sr.set(0x0a, u16(sr.v[0x0a] & 0xff00));
+					sr.set(0x05, u16(sr.v[0x05] & 0xff00));
 				}
 				su.vhi   = u16(sr.v[0x0a] & 0xff00);
 				su.ahi   = u16(sr.v[0x05] & 0xff00);
