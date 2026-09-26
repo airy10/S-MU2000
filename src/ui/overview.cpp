@@ -2782,12 +2782,13 @@ void overview::keys_cell(int part, int slot, const xg_snapshot &ram, bridge &br,
 	ImDrawList *dl = ImGui::GetWindowDrawList();
 	const ImVec2 pos = ImGui::GetCursorScreenPos();
 	ImGui::InvisibleButton("##keys", ImVec2(w, h), ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
-	// 目印を置く窓では、右クリックは試聴の鍵を決めるだけ（鳴らさない）
+	// 目印を置く窓では、右クリックは試聴の鍵の印を**入れたり消したり**するだけ
+	// （鳴らさない）。何鍵でも付けられるので、和音で試聴できる
 	if (marker && ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
 		int dummy = 0;
 		const int note = key_at(pos, w, h, ImGui::GetIO().MousePos, dummy);
 		if (note >= 0)
-			set_audition_note(note);
+			toggle_audition_key(part, note);
 	}
 	const bool down = ImGui::IsItemActive() && slot >= 0 &&
 	                  (ImGui::IsMouseDown(ImGuiMouseButton_Left) || (!marker && ImGui::IsMouseDown(ImGuiMouseButton_Right)));
@@ -2810,7 +2811,8 @@ void overview::keys_cell(int part, int slot, const xg_snapshot &ram, bridge &br,
 	}
 	if (ImGui::IsItemHovered() && !down && slot >= 0) {
 		if (marker)
-			ImGui::SetItemTooltip("%s", UI_TEXT(ov_kb_audition_tip, "Left-click to play (lower is louder). Right-click to set the key used for voice audition\n"
+			ImGui::SetItemTooltip("%s", UI_TEXT(ov_kb_audition_tip, "Left-click to play (lower is louder). Right-click to mark a key for voice audition, right-click again to clear it\n"
+			                                                  "Mark as many keys as you like for a chord; with no mark, changing voice plays nothing. Marks are per part and are not remembered\n"
 			                                                  "PC keyboard plays too: A W S E D F T G Y H U J K O L P ; from C (Z / X for octave)"));
 		else
 			ImGui::SetItemTooltip("%s", UI_TEXT(ov_kb_play_tip, "Press to play (either mouse button). Lower is louder"));
@@ -2827,15 +2829,18 @@ void overview::keys_cell(int part, int slot, const xg_snapshot &ram, bridge &br,
 		const float y = pos.y + h - std::max(2.0f, fs * 0.12f);
 		dl->AddRectFilled(ImVec2(a0, y), ImVec2(b1, pos.y + h), IM_COL32(90, 170, 255, 200));
 	}
-	// 試聴の鍵の目印。鍵の下の方に丸
-	if (marker && audition_note() >= 0) {
-		float x0, x1, bottom;
-		key_span(pos, w, h, audition_note(), x0, x1, bottom);
-		const float r = std::max(2.0f, std::min((x1 - x0) * 0.45f, fs * 0.3f));
-		const ImVec2 c((x0 + x1) * 0.5f, bottom - r - fs * 0.15f);
-		dl->AddCircleFilled(c, r + 1.0f, IM_COL32(20, 20, 20, 255));
-		dl->AddCircleFilled(c, r, IM_COL32(60, 200, 120, 255));
-	}
+	// 試聴の鍵の目印。鍵の下の方に丸。**印の付いた鍵ぜんぶ**に描く
+	if (marker)
+		for (int n = 0; n < 128; n++) {
+			if (!audition_key(part, n))
+				continue;
+			float x0, x1, bottom;
+			key_span(pos, w, h, n, x0, x1, bottom);
+			const float r = std::max(2.0f, std::min((x1 - x0) * 0.45f, fs * 0.3f));
+			const ImVec2 c((x0 + x1) * 0.5f, bottom - r - fs * 0.15f);
+			dl->AddCircleFilled(c, r + 1.0f, IM_COL32(20, 20, 20, 255));
+			dl->AddCircleFilled(c, r, IM_COL32(60, 200, 120, 255));
+		}
 }
 
 int overview::mod_now(int part, int ram_value)
