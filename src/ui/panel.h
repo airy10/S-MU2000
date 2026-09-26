@@ -143,11 +143,30 @@ private:
 	void paint_effects(HDC dc, const char *status) const;
 
 	// LCD の中の寸法。点の間隔 d（画素）と、上の面の左上 x0 y0、下の面の上端 sy。
-	// 窓の下と右の札も同じ値で置くので、描く側と札の側で分けて計算しない
-	struct lcd_geom { int d, pad, x0, y0, tick_h, line_h, scale_h, sy; };
+	// 窓の下と右の札も同じ値で置くので、描く側と札の側で分けて計算しない。
+	// df fx0 fy0 fsy は端数つきの本当の値（点が小さく、拡大して描くときだけ
+	// 整数と違う）。k は拡大して描く倍率
+	struct lcd_geom {
+		int d, pad, x0, y0, tick_h, line_h, scale_h, sy;
+		double df, fx0, fy0, fsy;
+		int k;
+	};
 	lcd_geom lcd_grid() const;
 
 	void draw_lcd(HDC dc, const snapshot &s) const;
+	// 点とセグメント。area を LCD の背景で塗ってから g の寸法で描く。
+	// px は出来上がりの 1 画素がこの座標で何単位か（拡大して描くときは倍率）
+	void draw_lcd_body(HDC dc, const snapshot &s, const lcd_geom &g,
+	                   const RECT &area, double px) const;
+	void draw_lcd_labels(HDC dc, const snapshot &s, const lcd_geom &g) const;
+	// MIC と LINE の箱（上が MIC）。目盛りの番号と下の面のあいだに収める
+	void lcd_tag_boxes(const lcd_geom &g, RECT out[2]) const;
+	// 目盛りの帯の中の高さ。f は帯の上端 0、下端 1 の割合
+	int band_y(const lcd_geom &g, double f) const;
+	void draw_lcd_message(HDC dc, const snapshot &s) const;
+#ifdef _WIN32
+	bool supersample_lcd(HDC dc, const snapshot &s, const lcd_geom &g, int k) const;
+#endif
 	void draw_grid(HDC dc) const;
 	void draw_button(HDC dc, const spot &sp, bool down) const;
 	void draw_wheel(HDC dc, int angle) const;
@@ -208,6 +227,10 @@ private:
 	HFONT m_font_label = nullptr, m_font_small = nullptr;
 	// 目盛りの番号用。バー 1 本ぶんの幅に 2 桁を収める
 	HFONT m_font_tiny  = nullptr;
+	// LCD の MIC / LINE の札用。箱の高さから決めるので LCD の寸法しだい
+	HFONT m_font_tag   = nullptr;
+	HFONT m_font_num   = nullptr;   // LCD のパート番号（A1 A2 1-32）
+	int   m_font_tag_em = 8;        // m_font_tag の大きさ（字を箱の真ん中に置くのに使う）
 	bool   m_grid = false;
 	bool   m_lcd_only = false;
 	layout m_lay;

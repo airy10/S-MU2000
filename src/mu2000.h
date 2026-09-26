@@ -328,6 +328,9 @@ public:
 
 	// パネルの LED 10 個。MAME の mulcd_device::set_leds と同じ並び
 	u16 leds() const;
+	// UTIL > SYS の Contrast（1-8）。firmware が d80000 の下 3bit に
+	// 「値 − 1」を書く。まだ書かれていなければ工場出荷の 2
+	int lcd_contrast() const { return m_d80 ? (m_d80 & 7) + 1 : 2; }
 
 	const std::string &error() const { return m_error; }
 
@@ -834,6 +837,8 @@ private:
 	// ビジーフラグが立つのを確かめており、常に空いていると先へ進まない
 	hd44780_device m_lcd;
 	u8  m_ledsw1 = 0, m_ledsw2 = 0;
+	// d80000: LCD のコントラストほか（MAME の地図では "contrast, levels"）
+	u8  m_d80 = 0;
 	// 押されているボタン。行 6 × 桁 8。押すと 0 になる
 	u8  m_sws[6] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
 	u8   ledsw_r() const;

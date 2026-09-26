@@ -843,6 +843,15 @@ void mu2000::build_bus()
 		d.w8 = [this](offs_t, u8 v) { m_ledsw2 = v; };
 		m_bus.add_device(d);
 	}
+	{
+		mem_bus::device d;
+		d.start = 0xd80000; d.end = 0xd80000;
+		d.r8 = [this](offs_t) { return m_d80; };
+		// 下 3bit が LCD のコントラスト（UTIL > SYS の Contrast − 1）。
+		// 上の bit は起動中に a1 / e1 などと動く別のもの（入力の levels か）
+		d.w8 = [this](offs_t, u8 v) { m_d80 = v; };
+		m_bus.add_device(d);
+	}
 
 	// c00000: SmartMedia のデータ、d00000: 制御の留め金（smartmedia.h）
 	{
@@ -3203,7 +3212,7 @@ namespace {
 
 // 保存の形。中身の並びを変えたら上げる
 constexpr u32 STATE_MAGIC   = 0x554d3253;   // "S2MU"
-constexpr u32 STATE_VERSION = 12;  // 2: MIDI の入口が A/B の 2 口になった / 3: SWP30 のピッチ EG / 4: サンプリングの録音の位置 / 5: SmartMedia の命令の途中 / 6: MEG の印と 2 つ目の idx / 7: USB の口（C・D）の受け取り途中 / 8: 2 つ目の A/D 変換器（AN4 = HOST SELECT） / 9: SWP30 の書き込みの待ち / 10: USB のコマンド（M37640 からの知らせ） / 11: 液晶の「native の持ち物」（6.188） / 12: 外字の「native の持ち物」（6.190）
+constexpr u32 STATE_VERSION = 13;  // 13: d80000（LCD のコントラスト） / 2: MIDI の入口が A/B の 2 口になった / 3: SWP30 のピッチ EG / 4: サンプリングの録音の位置 / 5: SmartMedia の命令の途中 / 6: MEG の印と 2 つ目の idx / 7: USB の口（C・D）の受け取り途中 / 8: 2 つ目の A/D 変換器（AN4 = HOST SELECT） / 9: SWP30 の書き込みの待ち / 10: USB のコマンド（M37640 からの知らせ） / 11: 液晶の「native の持ち物」（6.188） / 12: 外字の「native の持ち物」（6.190）
 constexpr u32 STATE_VERSION_OLDEST = 2;
 
 } // namespace
@@ -3292,6 +3301,12 @@ void mu2000::state(state_io &s)
 			}
 			s.v(m_usb.cur_cmd);
 		}
+	}
+
+	// 版 13 から: d80000 の値（LCD のコントラスト）
+	if (s.version() >= 13) {
+		s.tag("d80");
+		s.v(m_d80);
 	}
 }
 

@@ -276,6 +276,7 @@ public:
 						img[16 * (row * cols + col) + y];
 		s.leds   = mu.leds();
 		s.lcd_on = lcd.display_on();
+		s.contrast = u8(mu.lcd_contrast());
 		s.voices_master = u8(mu.swpm().sounding_voices());
 		s.voices_slave  = u8(mu.swps().sounding_voices());
 		s.ready  = ready;
