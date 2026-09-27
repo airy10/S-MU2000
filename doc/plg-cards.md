@@ -268,34 +268,63 @@ bytes, zero framing errors) and answers two:
 | card -> host | 2 messages | 2 messages, **the same 33 bytes** |
 | PLG-1 | lit | lit |
 
+#### The 39 messages are two devices, and we only speak to one of them
+
+Sorting the host's 39 messages by device id is what makes the remaining gap
+legible:
+
+| device id | messages | what they are |
+|---|---|---|
+| `F0 43 10 4E ...` | 22 | reads and polls - the control channel, the one we answer |
+| `F0 43 10 4C ...` | 17 | **a second device the card cannot even recognise** |
+
+The 17 are a `00 00 7e 00` and a sixteen-slot enumeration, `08 00 35 01` through
+`08 0f 35 01` - one request per slot, which is the voice data phase. The card's
+`is_poll` requires `msg[2] == 0x30` and `msg[3] == 0x4e`; a `0x4C` message is
+`msg[2] == 0x10, msg[3] == 0x4c`, so **not one of the 17 can be answered by the
+current card** and none is even counted as a poll.
+
+That is also the best explanation for the AP's silence, and it fits the driver's
+own comment. `plg150_ap_device` says **"Dual SWX00"** and instantiates **one**.
+The first answers the `0x4E` control channel, which is why the identity exchange
+works; the `0x4C` voice/data channel would be the second, which MAME does not
+model, so those 17 requests go nowhere. `0x4E` and `0x4C` being two ids in the
+same `F0 43 10 ..` envelope, and one of them handled, is what makes "the second
+CPU owns the other channel" the reading rather than a guess.
+
+**What is needed, then, is a CPU and memory map for a chip there is no
+documentation for.** That is not a port; it is a new device, and it cannot be
+inferred from the one CPU we can watch.
+
 #### Porting the card is not the way out, and it is worth saying why
 
-Both MAME cards are incomplete, which is the whole answer:
+**Both MAME cards are incomplete:**
 
-- **`plg150_ap_device`** says "Dual SWX00" in its own comment and instantiates
-  **one**. Worse, `ROM_START` loads a 16 MB region named `swx00`
-  (`x575810.ic09` + `x575910.ic11`) that **is mapped nowhere** - `map()` covers
-  only the 512 KB program and 32 KB of RAM. Sixteen megabytes of the card's tone
-  and voice data are loaded and unreachable, so its firmware answers the two
-  identity queries that need no data and then has nothing to say. It makes no
-  sound in MAME for the same reason.
+- **`plg150_ap_device`** is one SWX00 of the two it documents, and it loads a
+  16 MB region named `swx00` that `map()` never references. The obvious
+  hypothesis - that the firmware faults on unreachable tone data and gives up - is
+  **refuted by measurement**: with catch-all read handlers over everything that
+  is not the program ROM or the RAM, the firmware makes **zero** unmapped reads.
+  Its profile is 97% at `0x446` for the first second and then a flat spread with
+  a six-word table at `0x090a`-`0x0914` the hottest at ~1% each, running at 67% of
+  its 16.9 MHz clock. It is busy, not deadlocked, and it is not reading the flash.
+  So the 16 MB is dead weight in the driver, not the cause - and the cause is the
+  missing second CPU, above.
 - **`plg100_vl_device`** is better formed - an H83002 rather than a SWX00, and its
-  DSP is mapped at `0x400000` - but it **transmits nothing at all**. The host
+  DSP mapped at `0x400000` - but it **transmits nothing at all**. The host
   receives 0 bytes, so the firmware concludes NO BOARD and the panel is alive only
-  because the machine is booting as if the slot were empty. The card's audio
-  routes are commented out in the driver, so it makes no sound either.
+  because the machine is booting as if the slot were empty. Its audio routes are
+  commented out in the driver.
 
-So a port would carry the AP's missing CPU and missing 16 MB with it, and the VL
-is not a working reference in the first place. Both are BSD-3, so licensing is not
-the obstacle; **completeness is**.
+Both are BSD-3, so licensing is not the obstacle; **completeness is**.
 
-One thing the VL did settle: the device id is not the same for both cards. The AP
+One thing the VL did settle: the device id is not the same for every card. The AP
 is opened with `F0 43 10 4E ...` and the VL with `F0 43 08 6E ...`, so the
 firmware picks its first move from the card model it expects to find.
 
 #### What the hang actually is
 
-Not a hardware wait, and not something the card can influence:
+Not a hardware wait, and not something the card's `0x4E` replies can influence:
 
 | | hot PC region, 300k instructions sampled late |
 |---|---|
@@ -321,10 +350,9 @@ Four things were varied and none of them moved it:
   `00 ff` and `ff ff` are *rejected* (PLG-1 off) and then the machine boots
   normally at 390 latch reads - precisely the no-card baseline.
 
-**So the card side is done as far as the wire goes, and the boot is stalled in the
-host's firmware by recognition alone.** Nothing a card can say gets past it, which
-is consistent with MAME's own real-card emulation stopping in the same place. Two
-real bugs did come out of chasing this, both in `answer.c`:
+**So the boot is stalled in the host's firmware by recognition alone, and the card
+cannot get past it on the `0x4E` channel however it answers.** Two real bugs did
+come out of chasing this, both in `answer.c`:
 
 - **The name reply was never sent.** The host asks for it with
   `F0 43 30 4E 01 00 00 F7`, which is eight bytes, and `is_name_poll` tested
