@@ -2,22 +2,48 @@
  *
  * tests/plg/answer.c - a PLG card that answers, and gets recognised.
  *
- * This is the card the whole exercise was for. It knows two things and nothing
- * else, and both were read off a real PLG150-AP talking to a real MU2000:
+ * ## What the wire actually is
  *
- *   reply to a read of 2 bytes at 0x0010   F0 43 10 4E 01 10 00 00 07 00 F7
- *   reply with its own name, 14 bytes      F0 43 10 4E 01 00 00 "PLG150-AP     " F7
+ * The exchange is a memory read, and it is much simpler than it first looks. The
+ * host's two message shapes, both read off a real PLG150-AP talking to a real
+ * MU2000:
  *
- * The AP sent exactly those two messages, 33 bytes in total, and the MU2000 was
- * satisfied: it lit the PLG-1 lamp and went on to the PLG mode. Everything else
- * the MU2000 sends is a 500 ms poll the AP ignored, or voice data. **So a card
- * that can be recognised is about forty bytes of reply.**
+ *   F0 43 10 4E 00 <hi> <lo> <len> F7      "I want to read len bytes at hi:lo"
+ *   F0 43 30 4E 01 <hi> <lo> F7            "now give me the data at hi:lo"
  *
- * The first reply's two data bytes are the card's category. The AP answers
- * 00 07 and the PLG100-VL answers 00 00, which is how the MU2000 tells an
- * acoustic piano from a virtual acoustic one - and it lines up with the
- * eighteen bracketed category names in the MU2000 firmware (mu2000_flash.bin
- * around 0x1dda98, `[Piano]` first).
+ * and the card answers the second one, echoing the address it is answering:
+ *
+ *   F0 43 10 4E 01 <hi> <lo> <data...> F7
+ *
+ * The read only announces; **the poll is the request**. That is why the card sat
+ * silent until it had seen a read: the poll after a read is the thing worth
+ * answering, and answering the read itself puts the reply into a window where the
+ * chip cannot receive it.
+ *
+ * The two replies a real AP gives, and the only two it gives in 600 s:
+ *
+ *   at 0x1000, 3 bytes      00 07 00          the card's category
+ *   at 0x0000, 14 bytes     "PLG150-AP     "   its name, space padded
+ *
+ * So the card is a memory-backed device and the host walks it by address. The
+ * addresses the MU2000 asks for, in order, are 0x1000, 0x0000, 0x000e, 0x000f,
+ * 0x0010, 0x1003, 0x1004, 0x0120, 0x1010 - and the first two are the whole of
+ * what is known. **The rest is card-internal tone and voice data, and answering
+ * it is what the card is for.** `SMU2000_CARD_UNKNOWN` chooses what to do with
+ * an address that has no table entry; `zero` answers with that many zero bytes,
+ * `long` with a page of them, `none` stays silent. See the table in records[].
+ *
+ * ## The category
+ *
+ * The first reply's data is the card's category. The AP answers 00 07 and the
+ * PLG100-VL answers 00 00, which is how the MU2000 tells an acoustic piano from
+ * a virtual acoustic one - and it lines up with the eighteen bracketed category
+ * names in the MU2000 firmware (mu2000_flash.bin around 0x1dda98, `[Piano]`
+ * first).
+ *
+ * The device id in the request is not the same for every card: the AP is asked
+ * with `F0 43 10 4E ...` and the VL with `F0 43 08 6E ...`, so the firmware
+ * picks its opening move from the card model it expects to find.
  *
  * ## The transmit side, and why midi_tx() is a poll
  *
@@ -33,7 +59,7 @@
  *
  * ## Trying a different name
  *
- * PLG_NAME below is what the MU2000 is told this card is called. Change it and
+ * DATA_NAME below is what the MU2000 is told this card is called. Change it and
  * re-run: if the firmware displays the new string, it read what we sent, which is
  * worth knowing separately from whether it accepted the card at all.
  *
@@ -58,29 +84,61 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define PLG_NAME "PLG150-AP"   /* 11 characters, space padded on the wire */
+/* 11 characters, space padded to 14 on the wire; see DATA_NAME. */
 
-/* What the AP answers for the 2-byte read at 0x0010. See the header comment. A
- * knob, because "00 07" is the AP's value copied out of a capture and there is no
- * reason to believe the MU2000 numbers its boards the same way. */
-static unsigned char CATEGORY[2] = { 0x00, 0x07 };
-
-/* The two replies, in the order the real card sends them. */
-static const unsigned char REPLY_CATEGORY[] = {
-	0xf0, 0x43, 0x10, 0x4e, 0x01, 0x10, 0x00, 0x00, 0x07, 0x00, 0xf7
-};
-/* **The name field is 14 bytes, not 11.** Both real cards pad to 14: the capture
- * has "PLG150-AP" followed by five spaces and "PLG100-VL" followed by five. A
- * first attempt used 11, the messages arrived at the host byte for byte, and the
- * card was still not accepted - so the field is a fixed length the firmware
- * reads, not a string that ends at the first space. */
-static const unsigned char REPLY_NAME[] = {
-	0xf0, 0x43, 0x10, 0x4e, 0x01, 0x00, 0x00,
-	'P', 'L', 'G', '1', '5', '0', '-', 'A', 'P', ' ', ' ', ' ', ' ', ' ',
-	0xf7
+/* The card's memory, as far as it is known. The host walks it by address: it
+ * announces a read, then polls the address, and the card answers the poll with the
+ * bytes at that address. Only two addresses are known, from the MAME capture of a
+ * real PLG150-AP - and they are the only two it ever answers, in 600 s.
+ *
+ * `len` is how many bytes go back, which is not the same for both: the category is
+ * three and the name is fourteen. The name's length is the interesting one, since
+ * the string is 11 characters - both real cards pad to 14, "PLG150-AP" plus five
+ * spaces, so the field is a fixed width the firmware reads rather than a string
+ * that ends at the first space. An 11-byte answer arrived at the host byte for
+ * byte and was still not accepted. */
+struct record {
+	unsigned short      addr;
+	int                 len;
+	const unsigned char *data;
 };
 
-#define NREPLY 2
+/* Not const: SMU2000_CARD_CATEGORY overwrites the first two bytes, because
+ * "00 07" is the AP's value copied out of a capture and there is no reason to
+ * believe the MU2000 numbers its boards the same way. */
+static unsigned char DATA_CATEGORY[3] = { 0x00, 0x07, 0x00 };
+static const unsigned char DATA_NAME[] = {
+	'P', 'L', 'G', '1', '5', '0', '-', 'A', 'P', ' ', ' ', ' ', ' ', ' '
+};
+
+/* Only the 1 and 0 device ids are ever asked for: the AP is `10 4E` and the VL
+ * `08 6E`, and the firmware opens with whichever it expects. */
+static const struct record RECORDS[] = {
+	{ 0x1000, (int)sizeof(DATA_CATEGORY), DATA_CATEGORY },
+	{ 0x0000, (int)sizeof(DATA_NAME),      DATA_NAME      },
+};
+#define NRECORD ((int)(sizeof(RECORDS) / sizeof(RECORDS[0])))
+
+/* What to do with an address no record covers. The addresses the host asks for
+ * beyond the two above are 0x000e, 0x000f, 0x0010, 0x1003, 0x1004, 0x0120 and
+ * 0x1010, and what lives at them is the card's tone and voice data - the part of
+ * a real PLG that this project does not have. Stalling there is what stops the
+ * boot, so `zero` exists to find out whether the firmware only needs *something*
+ * at each address or whether it checks the values.
+ *
+ *   none   stay silent, which is the old behaviour and stalls the boot
+ *   zero   answer with `unknown_len` zero bytes
+ *   long   answer with a full page of zero bytes, for when a short one is too few
+ */
+#define UNKNOWN_NONE 0
+#define UNKNOWN_ZERO 1
+#define UNKNOWN_LONG 2
+static int          s_unknown = UNKNOWN_NONE;
+static int          s_unknown_len = 8;
+static unsigned char s_unknown_buf[64];
+
+/* The largest reply is a page of zeros; a sysex header is 7 bytes. */
+#define MAXTX (7 + (int)sizeof(s_unknown_buf) + 1)
 
 struct answer {
 	/* Kept so destroy() can still talk to the host, which outlives the card. */
@@ -110,25 +168,27 @@ struct answer {
 	char     rx_log[16][24]; /* the first messages, as the card saw them */
 	int      rx_log_n;
 
-	/* Transmit: a queue of the two replies, one bit handed over per midi_tx(). */
-	int            tx_byte;      /* index into tx_buf, -1 when nothing to send */
+	/* Transmit: a mailbox holding one reply at a time, one bit handed over per
+	 * midi_tx(). */
+	int            tx_byte;      /* index into tx_out, -1 when nothing to send */
 	int            tx_bit;       /* 0..9: start, eight data, stop */
 	int            tx_hold;      /* polls per bit */
 	int            hold_per_bit; /* the above, as a knob: see read_knobs() */
 	int            start_delay;  /* idle polls before a start bit */
-	int            once;         /* answer one message in total, like the AP */
+	int            once;         /* answer each address once, like the AP */
 	int            on_poll;      /* answer the poll rather than the first message */
-	unsigned char  tx_buf[sizeof(REPLY_NAME)];   /* the mailbox: one reply at a time */
+	unsigned char  tx_buf[MAXTX];   /* the mailbox: one reply at a time */
 	int            tx_len;      /* bytes in the mailbox */
 	int            tx_queued;   /* the mailbox holds a reply waiting to go out */
-	unsigned char  tx_out[sizeof(REPLY_NAME)];   /* the reply actually on the wire */
+	unsigned char  tx_out[MAXTX];   /* the reply actually on the wire */
 	int            tx_out_len;  /* bytes in tx_out */
-	int            sent_cat;     /* the category reply went out */
-	int            sent_name;    /* the name reply went out */
+	/* One flag per record, so each address is answered once and the report can
+	 * say which. `once` turns this off and answers everything every time. */
+	unsigned char  sent_rec[NRECORD];
 	int            tx_level;     /* the level being held */
 	int            tx_calls;     /* midi_tx() calls, for the report */
 	int            sent;         /* replies sent so far, for the report */
-	int            accepted;     /* set once both have gone out */
+	int            accepted;     /* set once the known addresses have all gone out */
 };
 
 /* The knobs, read once in create(). They exist because the card is stepped
@@ -181,8 +241,8 @@ static void read_knobs(struct answer *a)
 	if ((e = getenv("SMU2000_CARD_CATEGORY")) != 0) {
 		unsigned hi = 0, lo = 0;
 		if (sscanf(e, "%x,%x", &hi, &lo) == 2) {
-			CATEGORY[0] = (unsigned char)hi;
-			CATEGORY[1] = (unsigned char)lo;
+			DATA_CATEGORY[0] = (unsigned char)hi;
+			DATA_CATEGORY[1] = (unsigned char)lo;
 		}
 	}
 	a->after_polls = 0;
@@ -200,6 +260,19 @@ static void read_knobs(struct answer *a)
 		if (v >= 0 && v <= 16)
 			a->after_polls = v;
 	}
+	/* SMU2000_CARD_UNKNOWN: what to answer at an address with no record, which is
+	 * every address past the category and the name. Those are the card's tone and
+	 * voice tables and answering them is what unblocks the boot - see records[]. */
+	if ((e = getenv("SMU2000_CARD_UNKNOWN")) != 0) {
+		if (!strcmp(e, "zero"))       s_unknown = UNKNOWN_ZERO;
+		else if (!strcmp(e, "long")) s_unknown = UNKNOWN_LONG;
+		else                                s_unknown = UNKNOWN_NONE;
+	}
+	if ((e = getenv("SMU2000_CARD_UNKNOWN_LEN")) != 0) {
+		const int v = atoi(e);
+		if (v > 0 && v <= (int)sizeof(s_unknown_buf))
+			s_unknown_len = v;
+	}
 	/* SMU2000_CARD_DELAY: midi_tx polls to wait after queueing before shifting
 	 * the first bit. The real PLG150-AP answers ~235 ms after the poll; at a
 	 * 16 us poll that is ~14700. Answering immediately may put bytes on the wire
@@ -213,25 +286,58 @@ static void read_knobs(struct answer *a)
 	}
 }
 
-/* Queue one reply. Called when the matching request arrives, so it is on the
- * receive path but all it does is copy ~22 bytes.
+/* Build the reply for one address into the mailbox. The shape is fixed by the
+ * wire, not by us: F0 43 10 4E 01 <hi> <lo> <data...> F7, echoing the address so
+ * the host can match it to what it asked for.
  *
  * **One reply per request, because that is what the real card does.** The MAME
- * capture with a real PLG150-AP shows it answering the identity read
- * (F0 43 10 4E 00 10 02 01) with the category, and a later `01 00 00` poll with
- * the name - two separate responses to two separate prompts. Sending both
- * back-to-back after the first poll gets PLG-1 lit but leaves the panel dead,
- * so the firmware does tell the difference. */
-static void queue_reply(struct answer *a, int kind)
+ * capture with a real PLG150-AP shows it answering a poll for 0x1000 with the
+ * category, and a later poll for 0x0000 with the name - two separate responses to
+ * two separate prompts, and nothing else in 600 s. Sending both back-to-back
+ * after the first poll gets PLG-1 lit but leaves the panel dead, so the firmware
+ * does tell the difference.
+ *
+ * Returns 0 if there is nothing to say at this address, which is the default:
+ * staying silent is the old behaviour and it is what stalls the boot. */
+static int queue_reply(struct answer *a, unsigned short addr)
 {
-	if (kind == 0) {
-		memcpy(a->tx_buf, REPLY_CATEGORY, sizeof(REPLY_CATEGORY));
-		a->tx_len = (int)sizeof(REPLY_CATEGORY);
-	} else {
-		memcpy(a->tx_buf, REPLY_NAME, sizeof(REPLY_NAME));
-		a->tx_len = (int)sizeof(REPLY_NAME);
+	const unsigned char *data = 0;
+	int len = 0;
+	int i;
+
+	for (i = 0; i < NRECORD; i++) {
+		if (RECORDS[i].addr == addr) {
+			if (a->once && a->sent_rec[i])
+				return 0;    /* already given this one out */
+			data = RECORDS[i].data;
+			len = RECORDS[i].len;
+			if (a->once)
+				a->sent_rec[i] = 1;
+			break;
+		}
 	}
+	if (!data) {
+		if (s_unknown == UNKNOWN_NONE)
+			return 0;
+		if (s_unknown == UNKNOWN_LONG)
+			len = (int)sizeof(s_unknown_buf);
+		else
+			len = s_unknown_len;
+		data = s_unknown_buf;   /* already zero, and stays that way */
+	}
+
+	a->tx_buf[0] = 0xf0;
+	a->tx_buf[1] = 0x43;
+	a->tx_buf[2] = 0x10;
+	a->tx_buf[3] = 0x4e;
+	a->tx_buf[4] = 0x01;
+	a->tx_buf[5] = (unsigned char)(addr >> 8);
+	a->tx_buf[6] = (unsigned char)(addr & 0xff);
+	memcpy(a->tx_buf + 7, data, (size_t)len);
+	a->tx_buf[7 + len] = 0xf7;
+	a->tx_len = len + 8;
 	a->tx_queued = 1;
+	return 1;
 }
 
 static const plg_card_info g_info = {
@@ -266,7 +372,7 @@ PLG_EXPORT plg_card *plg1500_create(const plg_host *host, void *ctx, char *err, 
 	read_knobs(a);
 	a->tx_len = 0;
 	a->tx_queued = 0;      /* nothing in the mailbox yet */
-	a->sent_cat = a->sent_name = 0;
+	memset(a->sent_rec, 0, sizeof(a->sent_rec));
 	return (plg_card *)a;
 }
 
@@ -349,9 +455,7 @@ static int answer_tx(plg_card *c)
 			/* The mailbox is left alone. Whether a reply is waiting is
 			 * tx_queued, not a position - finishing one must not discard
 			 * the next, which is exactly what this used to do. */
-			a->sent++;
-			if (a->sent >= NREPLY)
-				a->accepted = 1;
+			a->accepted = 1;
 		}
 	}
 	return level;
@@ -414,68 +518,53 @@ static void answer_rx(plg_card *c, int level, int bit)
 			k += snprintf(dst + k, 16 - k, "%02x", a->msg[i]);
 		dst[k] = 0;
 	}
-	/* **Which request gets which reply is read off the real card.** The MAME
-	 * capture with a real PLG150-AP shows two separate exchanges:
+	/* **Which request gets which reply is read off the real card**, and it is
+	 * simpler than it looks: the host announces a read and then polls an address,
+	 * and the poll is the request. The MAME capture with a real PLG150-AP:
 	 *
-	 *   host: F0 43 10 4E 00 10 02 01 F7   "two bytes from 0x0010"
+	 *   host: F0 43 10 4E 00 10 02 01 F7   "I want to read at 0x1002"
+	 *   host: F0 43 30 4E 01 10 00 F7     "now give me 0x1000"
 	 *   card: F0 43 10 4E 01 10 00 00 07 00 F7   the category
-	 *   ...
-	 *   host: F0 43 30 4E 01 00 00 F7   a poll with page 00
+	 *   host: F0 43 30 4E 01 00 00 F7     "now give me 0x0000"
 	 *   card: F0 43 10 4E 01 00 00 "PLG150-AP     " F7   the name
 	 *
-	 * Sending both replies back-to-back after the first poll gets PLG-1 lit but
-	 * leaves the panel dead, so the firmware does tell the difference. Each reply
-	 * goes out in answer to its own request, and `once` applies per reply: with
-	 * the default the card answers each request the first time it arrives. */
-	/* The category answers a poll, not the read - even though the read is what
-	 * asks for it. The read arrives while targets=07 (upper nibble 0), during
-	 * which channel 3's composite is stuck high and nothing the card sends can
-	 * be received: measured as 300 card-low samples with cur3=1 throughout. The
-	 * first poll arrives with targets=11 (slot 0 selected), which is when the
-	 * real AP's reply lands too. Answering the read immediately puts the reply
-	 * in the deaf window and the host never hears it. */
-	if (a->msg_n == 8 && a->msg[0] == 0xf0 && a->msg[1] == 0x43 &&
-	   a->msg[2] == 0x10 && a->msg[3] == 0x4e && a->msg[4] == 0x00 &&
-	   a->msg[5] == 0x10 && a->msg[6] == 0x02 && a->msg[7] == 0x01) {
+	 * So the card answers the poll, not the read, and it answers with the address
+	 * it was asked for. Answering the read itself puts the reply in a window where
+	 * the chip cannot receive it: the read arrives while targets=07 (upper nibble
+	 * 0), during which channel 3's composite is stuck high, measured as 300
+	 * card-low samples with the composite pinned high throughout. The first poll
+	 * arrives with targets=11, a slot selected, which is when the real AP's reply
+	 * lands too.
+	 *
+	 * `once` is per address, as it is on the real card: with the default each
+	 * address is answered the first time it is asked for and never again. */
+	const int is_read = a->msg_n == 8 && a->msg[0] == 0xf0 && a->msg[1] == 0x43 &&
+	                    a->msg[2] == 0x10 && a->msg[3] == 0x4e && a->msg[4] == 0x00;
+	if (is_read) {
 		a->read_seen = 1;
 		return;
 	}
-	const int is_poll = a->msg_n >= 4 && a->msg[1] == 0x43 && a->msg[2] == 0x30;
-	if (is_poll) {
-		a->rx_polls++;
-		a->seen_poll = 1;
-	}
-	/* A poll releases the queued category, but only if the read came first: the
-	 * category answers the read, and it must go out while a slot is selected
-	 * (targets=11), not into the deaf targets=07 window the read arrives in. */
-	if (is_poll && a->read_seen && !(a->once && a->sent_cat) &&
-	   a->tx_byte < 0 && !a->tx_queued) {
-		queue_reply(a, 0);
-		a->sent_cat = 1;
-		a->sent++;
-		a->read_seen = 0;
+	/* A poll is F0 43 30 4E 01 <hi> <lo> F7 - eight bytes, and msg_n saturates at
+	 * sizeof(msg), which is also eight, so the test is == 8. It was == 7 once, which
+	 * nothing can ever satisfy, and the name was never sent at all. */
+	const int is_poll = a->msg_n == 8 && a->msg[0] == 0xf0 && a->msg[1] == 0x43 &&
+	                    a->msg[2] == 0x30 && a->msg[3] == 0x4e && a->msg[4] == 0x01;
+	if (!is_poll)
+		return;
+	a->rx_polls++;
+	a->seen_poll = 1;
+	/* The first poll after a read is the one worth answering, so `after` can hold
+	 * off if asked to. Kept from the earlier version: answering the very first
+	 * matching poll is what is measured to work. */
+	if (a->read_seen && a->after > 0) {
+		a->after--;
 		return;
 	}
-	/* The name answers the page-00 poll, not the regular one. The poll is eight
-	 * bytes - f0 43 30 4e 01 00 00 f7 - and msg_n saturates at sizeof(msg),
-	 * which is also eight, so the test is == 8. It was == 7, which nothing can
-	 * ever satisfy once a message reaches the buffer's width, and the name was
-	 * therefore never sent at all. */
-	const int is_name_poll = a->msg_n == 8 && a->msg[0] == 0xf0 && a->msg[1] == 0x43 &&
-	                         a->msg[2] == 0x30 && a->msg[3] == 0x4e && a->msg[4] == 0x01 &&
-	                         a->msg[5] == 0x00 && a->msg[6] == 0x00;
-	if (is_name_poll && !(a->once && a->sent_name) &&
-	   a->tx_byte < 0 && !a->tx_queued) {
-		/* **When to answer, counted in polls.** Kept from the earlier version:
-		 * answering the very first matching poll is what is measured to work. */
-		if (a->seen_poll && a->after > 0) {
-			a->after--;
-			return;
-		}
-		queue_reply(a, 1);
-		a->sent_name = 1;
+	if (a->tx_byte >= 0 || a->tx_queued)
+		return;             /* still sending the last one; drop this, as a real card does */
+	const unsigned short addr = (unsigned short)((a->msg[5] << 8) | a->msg[6]);
+	if (queue_reply(a, addr))
 		a->sent++;
-	}
 }
 
 static void answer_run(plg_card *c, plg_slot_io *io)
@@ -499,12 +588,11 @@ static void answer_reset(plg_card *c)
 	a->tx_byte = -1;
 	a->tx_bit  = 0;
 	a->tx_hold = 0;
-	a->sent_cat = a->sent_name = 0;
+	memset(a->sent_rec, 0, sizeof(a->sent_rec));
 	a->start_delay = 0;
 	a->tx_level = 1;
 	a->sent = a->accepted = 0;
 	a->after = a->after_polls;
-	a->delay_polls = a->delay_polls;
 	a->seen_poll = 0;
 	a->tx_len = 0;
 	a->tx_queued = 0;      /* nothing in the mailbox yet */
@@ -570,25 +658,29 @@ static int answer_selftest(plg_card *c)
 	}
 
 	/* 2. transmit: queue the category reply and walk its bits */
-	queue_reply(a, 0);
-	for (got = 0; got < (int)sizeof(REPLY_CATEGORY) * 10; got++) {
-		const int byte = got / 10, step = got % 10;
-		const unsigned char b = REPLY_CATEGORY[byte];
-		int expect;
-		if (step == 0)
-			expect = 0;
-		else if (step <= 8)
-			expect = (b >> (step - 1)) & 1;
-		else
-			expect = 1;
-		/* Each bit is held for hold_per_bit polls, and every one of them must
-		 * report the same level. Stepping by the knob rather than by a literal is
-		 * what lets this test mean anything when the knob is not 2 - and a selftest
-		 * that hard-codes the framing is a selftest that refuses the card whenever
-		 * the framing is being searched for, which is exactly when it is needed. */
-		for (int k = 0; k < a->hold_per_bit; k++)
-			if (answer_tx(c) != expect)
-				bad++;
+	{
+		const int expect_len = 7 + (int)sizeof(DATA_CATEGORY) + 1;
+		if (!queue_reply(a, 0x1000))
+			return 4;
+		for (got = 0; got < expect_len * 10; got++) {
+			const int byte = got / 10, step = got % 10;
+			const unsigned char b = a->tx_buf[byte];
+			int expect;
+			if (step == 0)
+				expect = 0;
+			else if (step <= 8)
+				expect = (b >> (step - 1)) & 1;
+			else
+				expect = 1;
+			/* Each bit is held for hold_per_bit polls, and every one of them must
+			 * report the same level. Stepping by the knob rather than by a literal is
+			 * what lets this test mean anything when the knob is not 2 - and a selftest
+			 * that hard-codes the framing is a selftest that refuses the card whenever
+			 * the framing is being searched for, which is exactly when it is needed. */
+			for (int k = 0; k < a->hold_per_bit; k++)
+				if (answer_tx(c) != expect)
+					bad++;
+		}
 	}
 	if (bad)
 		return 2;

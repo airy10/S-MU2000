@@ -250,7 +250,7 @@ in **MAME, with a real PLG150-AP in the slot**, over 600 emulated seconds:
 | MAME, no card | 8209, steady ~240/s | continues past 39 s |
 | MAME, real PLG150-AP | **25** | **9.97 s, never again** |
 | ours, `--plg-builtin 0` | 72 | stalls the same way |
-| ours, no card | 390 | continuous |
+| ours, no card | 48150 over 200 s, 240/s | continuous |
 
 The AP in MAME is not a stub that prints canned replies - `plg150_ap_device` runs
 the card's own `x5757b0.ic03` on a `swx00_device`, which delegates execution to
@@ -258,7 +258,9 @@ the card's own `x5757b0.ic03` on a `swx00_device`, which delegates execution to
 S-MU2000's button task dead after ten seconds, and our card leaves it dead the
 same way.
 
-Everything on the wire is identical to the real card, message for message:
+Everything on the wire is identical to the real card, message for message. The
+card hears all 39 (decoded offline from the card's own line at 32 us a bit, 340
+bytes, zero framing errors) and answers two:
 
 | | ours | real PLG150-AP in MAME |
 |---|---|---|
@@ -266,15 +268,63 @@ Everything on the wire is identical to the real card, message for message:
 | card -> host | 2 messages | 2 messages, **the same 33 bytes** |
 | PLG-1 | lit | lit |
 
-**So the remaining gap is not a divergence left to be found, it is protocol work
-still to be done:** the host's 37 unanswered requests. They are reads of card
-memory - `00 10 08 00 00`, `00 10 18 01`, `00 10 19 00`, `00 10 1a 00`, and the
-page polls `01 00 0e`, `01 00 0f`, `01 00 10`, `01 10 03`, `01 10 04` - and a card
-that answers them is what gets the boot past its stall. Until one does, "the UI
-does not respond with a card in the slot" is what the machine does, and the gui
-is right to look that way.
+#### Porting the card is not the way out, and it is worth saying why
 
-Two real bugs did come out of chasing this, both in `answer.c`:
+Both MAME cards are incomplete, which is the whole answer:
+
+- **`plg150_ap_device`** says "Dual SWX00" in its own comment and instantiates
+  **one**. Worse, `ROM_START` loads a 16 MB region named `swx00`
+  (`x575810.ic09` + `x575910.ic11`) that **is mapped nowhere** - `map()` covers
+  only the 512 KB program and 32 KB of RAM. Sixteen megabytes of the card's tone
+  and voice data are loaded and unreachable, so its firmware answers the two
+  identity queries that need no data and then has nothing to say. It makes no
+  sound in MAME for the same reason.
+- **`plg100_vl_device`** is better formed - an H83002 rather than a SWX00, and its
+  DSP is mapped at `0x400000` - but it **transmits nothing at all**. The host
+  receives 0 bytes, so the firmware concludes NO BOARD and the panel is alive only
+  because the machine is booting as if the slot were empty. The card's audio
+  routes are commented out in the driver, so it makes no sound either.
+
+So a port would carry the AP's missing CPU and missing 16 MB with it, and the VL
+is not a working reference in the first place. Both are BSD-3, so licensing is not
+the obstacle; **completeness is**.
+
+One thing the VL did settle: the device id is not the same for both cards. The AP
+is opened with `F0 43 10 4E ...` and the VL with `F0 43 08 6E ...`, so the
+firmware picks its first move from the card model it expects to find.
+
+#### What the hang actually is
+
+Not a hardware wait, and not something the card can influence:
+
+| | hot PC region, 300k instructions sampled late |
+|---|---|
+| ours, no card | spread over `00127xxx` 58%, `00129xxx` 16%, `0011Dxxx` 10% |
+| ours, with card | **`000BDxxx` 96.6%**, main loop never reached |
+
+`000BD6xx` is MAC arithmetic (`MULS.W`, `STS MACL`, `CLRMAC`, `MOV.L R14,@R5`) -
+a fixed-point interpolation routine in the host's own sound path. With a card
+recognised the firmware ends up there and never comes back, so the main loop and
+with it the button task never run. `SR=1` throughout, so interrupts are enabled
+and the CPU is simply not returning.
+
+Four things were varied and none of them moved it:
+
+- **the card's replies** - answering every unrecorded address with 8 or 64 zero
+  bytes (`SMU2000_CARD_UNKNOWN=zero|long`) makes the host receive 11 clean
+  messages and ask for two more addresses (0x1011, 0x1013), and the host's own
+  message stream still converges at exactly 39 over 100 s in every mode;
+- **the card's audio** - `SMU2000_CARD_MUTE=1` changes nothing;
+- **the category** - `00 07`, `00 00`, `00 01` and `00 0f` are all accepted and all
+  hang identically, so it is not a data-dependent loop;
+- **recognition itself** is the only thing that matters. There is a threshold:
+  `00 ff` and `ff ff` are *rejected* (PLG-1 off) and then the machine boots
+  normally at 390 latch reads - precisely the no-card baseline.
+
+**So the card side is done as far as the wire goes, and the boot is stalled in the
+host's firmware by recognition alone.** Nothing a card can say gets past it, which
+is consistent with MAME's own real-card emulation stopping in the same place. Two
+real bugs did come out of chasing this, both in `answer.c`:
 
 - **The name reply was never sent.** The host asks for it with
   `F0 43 30 4E 01 00 00 F7`, which is eight bytes, and `is_name_poll` tested
