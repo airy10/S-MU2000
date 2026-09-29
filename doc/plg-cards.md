@@ -236,123 +236,94 @@ Not done:
   boot never probes the slots. `boot` and `render` are cold by default
   (`--bootcache` is opt-in and must stay unused here), and neither loads NVRAM
   from disk, which is why the scan runs on every run.
-### 5b. The panel does not answer with a card in the slot. That is faithful.
+### 5b. The panel does not answer with a card in the slot. One channel of four.
 
-This was read as the last bug in the branch: with `--plg-builtin 0` the boot
-lights PLG-1, then the button task stops scanning and no key does anything, and
-that is also what the gui showed. It is not a bug here.
+**The card answers one of the four channels the firmware uses.** That is the whole
+of it, and the firmware says so itself: with an incomplete card in the slot it
+puts **`PB Com Error!`** on the LCD and then waits. The wait is what looks like a
+freeze, and it is the firmware blocking on replies that never come.
 
-The button task's scan rate is the panel latch read at `0xc80000`. Counting it
-in **MAME, with a real PLG150-AP in the slot**, over 600 emulated seconds:
+A real **PLG100-VL** in MAME, over 120 emulated seconds, keeps 680 messages in
+flight and answers 650. The full capture is `tests/plg/plg100vl-capture.txt`.
+Sorting it by the two bytes after `F0 43 10`:
 
-| | panel latch reads | last read |
+| host -> card | count | channel | what it is |
+|---|---|---|---|
+| `43 30 4e` | 13 | `4e` control | polls; the card answers with the address asked for |
+| `43 10 4e` | 9 | `4e` control | read announces |
+| `43 10 4c` | 17 | `4c` | sixteen voice slots, `08 00 35 01` .. `08 0f 35 01` |
+| `43 30 4f` | 46 | `4f` | polls answered with 13- and 42-byte payloads |
+| `43 40 03` | 595 | `40` | the bulk channel, 12 bytes each, answered `43 40 43` |
+
+`answer.c` speaks only `4e`. So the firmware polls `4c`, `4f` and `40`, gets
+silence, and blocks. **That is the comm error, and answering the other three
+channels is the whole of the remaining work.**
+
+The two cards also differ in identity, and the one that works is the one a
+reference card should present:
+
+| | category at 0x1000 | name | outcome |
+|---|---|---|---|
+| PLG100-VL | `00 00 00` | `PLG100-VL` | `PLUGIN SELECT` lists it, voice editor opens |
+| PLG150-AP | `00 07 00` | `PLG150-AP` | `PB Com Error!`, then waits |
+
+`answer.c` used to present the AP, because the AP is the one that gets
+*recognised* - PLG-1 lights either way. It presents the VL now. **Recognition is
+not the goal; a card the firmware can actually talk to is.**
+
+#### What the panel measurements actually showed, including the ones that were wrong
+
+The button task's scan rate is the panel latch read at `0xc80000`.
+
+| | panel latch reads | outcome |
 |---|---|---|
-| MAME, no card | 8209, steady ~240/s | continues past 39 s |
-| MAME, real PLG150-AP | **25** | **9.97 s, never again** |
-| ours, `--plg-builtin 0` | 72 | stalls the same way |
-| ours, no card | 48150 over 200 s, 240/s | continuous |
+| ours, no card | 48150 over 200 s, ~240/s, row walking | alive |
+| ours, card | 24-72, then nothing | `PB Com Error!`, blocked |
+| MAME, **VL** | 27253 at 120 s, row walking `c2`/`e0`/`c1` | alive, menus work |
+| MAME, **AP** | 1-25, then nothing | `PB Com Error!` |
 
-The AP in MAME is not a stub that prints canned replies - `plg150_ap_device` runs
-the card's own `x5757b0.ic03` on a `swx00_device`, which delegates execution to
-`h8s2000_device`. So the real card's firmware, on a real emulated CPU, leaves the
-S-MU2000's button task dead after ten seconds, and our card leaves it dead the
-same way.
+Two conclusions that were drawn from these numbers and **should not have been**:
 
-Everything on the wire is identical to the real card, message for message. The
-card hears all 39 (decoded offline from the card's own line at 32 us a bit, 340
-bytes, zero framing errors) and answers two:
+- **"The boot stalls in an infinite loop at `000BD6xx`."** The instruction profile
+  is real - 96.6% of late samples in a fixed-point routine while the main loop is
+  never reached - but *infinite* was never established. It was inferred from the
+  panel count not moving, and a long busy-wait for a timeout is indistinguishable
+  from outside. A wait for a reply fits every observation, including the 500 ms
+  poll cadence and the error appearing eventually rather than at once.
+- **"The PLG100-VL transmits nothing at all."** Measured on a run whose NVRAM
+  state was wrong. MAME reads `nvram/mu2000/ram` at start and writes it at exit, so
+  identical commands alternate between two stable states - 25 reads and 39 target
+  writes one run, 1 read and 94 the next. **Every number in this section was taken
+  without controlling that**, and the same caution applies to the no-card figures.
 
-| | ours | real PLG150-AP in MAME |
+The NVRAM asymmetry is real but is *not* the cause. `boot` and `panel` never load
+NVRAM, so they only ever cold-boot; the gui does (`ui/engine.h`). But with
+`panel --nvram` (added while testing this) a warm boot changes which screen appears
+and still leaves the panel dead:
+
+| | LCD | latch reads |
 |---|---|---|
-| host -> card | 39 messages | 39 messages, **the same 39** |
-| card -> host | 2 messages | 2 messages, **the same 33 bytes** |
-| PLG-1 | lit | lit |
+| card, cold | `GrandP #01` | 60 |
+| card, warm | `Welcome MU2000 EX` | 24 |
+| no card | part list | 6144 |
 
-#### The 39 messages are two devices, and we only speak to one of them
+So the missing channels explain it and NVRAM does not.
 
-Sorting the host's 39 messages by device id is what makes the remaining gap
-legible:
+#### The AP is incomplete in MAME, which is why it is the broken one
 
-| device id | messages | what they are |
-|---|---|---|
-| `F0 43 10 4E ...` | 22 | reads and polls - the control channel, the one we answer |
-| `F0 43 10 4C ...` | 17 | **a second device the card cannot even recognise** |
+- **`plg150_ap_device`** is documented "Dual SWX00" and instantiates one; the
+  "dual" is a mode bit inside the chip, not a second CPU. In that mode the
+  chip's header puts *wave rom* on its S bus, and the driver registers only
+  `AS_C`, so its 16 MB `ROM_REGION("swx00")` is loaded and reachable from
+  nothing. The region is also declared 8-bit for a 16-bit bus. Both are fixable
+  and both are in `/tmp/ap-changes.patch`; they are **not** committed here,
+  because the behaviour they change could not be measured reliably (see the
+  NVRAM note above) and a plausible fix with no demonstrable benefit is not worth
+  claiming.
+- **`plg100_vl_device`** is an H83002 with its DSP mapped at `0x400000`, and it
+  **completes the protocol** - which is what makes it the reference.
 
-The 17 are a `00 00 7e 00` and a sixteen-slot enumeration, `08 00 35 01` through
-`08 0f 35 01` - one request per slot, which is the voice data phase. The card's
-`is_poll` requires `msg[2] == 0x30` and `msg[3] == 0x4e`; a `0x4C` message is
-`msg[2] == 0x10, msg[3] == 0x4c`, so **not one of the 17 can be answered by the
-current card** and none is even counted as a poll.
-
-That is also the best explanation for the AP's silence, and it fits the driver's
-own comment. `plg150_ap_device` says **"Dual SWX00"** and instantiates **one**.
-The first answers the `0x4E` control channel, which is why the identity exchange
-works; the `0x4C` voice/data channel would be the second, which MAME does not
-model, so those 17 requests go nowhere. `0x4E` and `0x4C` being two ids in the
-same `F0 43 10 ..` envelope, and one of them handled, is what makes "the second
-CPU owns the other channel" the reading rather than a guess.
-
-**What is needed, then, is a CPU and memory map for a chip there is no
-documentation for.** That is not a port; it is a new device, and it cannot be
-inferred from the one CPU we can watch.
-
-#### Porting the card is not the way out, and it is worth saying why
-
-**Both MAME cards are incomplete:**
-
-- **`plg150_ap_device`** is one SWX00 of the two it documents, and it loads a
-  16 MB region named `swx00` that `map()` never references. The obvious
-  hypothesis - that the firmware faults on unreachable tone data and gives up - is
-  **refuted by measurement**: with catch-all read handlers over everything that
-  is not the program ROM or the RAM, the firmware makes **zero** unmapped reads.
-  Its profile is 97% at `0x446` for the first second and then a flat spread with
-  a six-word table at `0x090a`-`0x0914` the hottest at ~1% each, running at 67% of
-  its 16.9 MHz clock. It is busy, not deadlocked, and it is not reading the flash.
-  So the 16 MB is dead weight in the driver, not the cause - and the cause is the
-  missing second CPU, above.
-- **`plg100_vl_device`** is better formed - an H83002 rather than a SWX00, and its
-  DSP mapped at `0x400000` - but it **transmits nothing at all**. The host
-  receives 0 bytes, so the firmware concludes NO BOARD and the panel is alive only
-  because the machine is booting as if the slot were empty. Its audio routes are
-  commented out in the driver.
-
-Both are BSD-3, so licensing is not the obstacle; **completeness is**.
-
-One thing the VL did settle: the device id is not the same for every card. The AP
-is opened with `F0 43 10 4E ...` and the VL with `F0 43 08 6E ...`, so the
-firmware picks its first move from the card model it expects to find.
-
-#### What the hang actually is
-
-Not a hardware wait, and not something the card's `0x4E` replies can influence:
-
-| | hot PC region, 300k instructions sampled late |
-|---|---|
-| ours, no card | spread over `00127xxx` 58%, `00129xxx` 16%, `0011Dxxx` 10% |
-| ours, with card | **`000BDxxx` 96.6%**, main loop never reached |
-
-`000BD6xx` is MAC arithmetic (`MULS.W`, `STS MACL`, `CLRMAC`, `MOV.L R14,@R5`) -
-a fixed-point interpolation routine in the host's own sound path. With a card
-recognised the firmware ends up there and never comes back, so the main loop and
-with it the button task never run. `SR=1` throughout, so interrupts are enabled
-and the CPU is simply not returning.
-
-Four things were varied and none of them moved it:
-
-- **the card's replies** - answering every unrecorded address with 8 or 64 zero
-  bytes (`SMU2000_CARD_UNKNOWN=zero|long`) makes the host receive 11 clean
-  messages and ask for two more addresses (0x1011, 0x1013), and the host's own
-  message stream still converges at exactly 39 over 100 s in every mode;
-- **the card's audio** - `SMU2000_CARD_MUTE=1` changes nothing;
-- **the category** - `00 07`, `00 00`, `00 01` and `00 0f` are all accepted and all
-  hang identically, so it is not a data-dependent loop;
-- **recognition itself** is the only thing that matters. There is a threshold:
-  `00 ff` and `ff ff` are *rejected* (PLG-1 off) and then the machine boots
-  normally at 390 latch reads - precisely the no-card baseline.
-
-**So the boot is stalled in the host's firmware by recognition alone, and the card
-cannot get past it on the `0x4E` channel however it answers.** Two real bugs did
-come out of chasing this, both in `answer.c`:
+#### Two real bugs came out of all this, both in `answer.c`
 
 - **The name reply was never sent.** The host asks for it with
   `F0 43 30 4E 01 00 00 F7`, which is eight bytes, and `is_name_poll` tested

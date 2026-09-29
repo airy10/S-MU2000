@@ -16,6 +16,7 @@
 // 24 桁より先には何も書かれないことを起動画面で確かめた。
 
 #include "mu2000.h"
+#include "nvram.h"
 #include "plg/cards.h"
 #include "plg/host.h"
 #include "smf.h"
@@ -217,6 +218,7 @@ int main(int argc, char **argv)
 	double settle = 1.0;
 	bool usb = false;
 	int native = 0;
+	bool use_nvram = false;
 
 	for (int i = 1; i < argc; i++) {
 		if (!std::strcmp(argv[i], "--keys") && i + 1 < argc) keys = argv[++i];
@@ -234,6 +236,7 @@ int main(int argc, char **argv)
 		else if (!std::strcmp(argv[i], "--mid") && i + 2 < argc) { midfile = argv[++i]; play = std::atof(argv[++i]); }
 		else if (!std::strcmp(argv[i], "--watch")) watch = true;
 		else if (!std::strcmp(argv[i], "--trace")) trace = true;
+		else if (!std::strcmp(argv[i], "--nvram")) use_nvram = true;
 		else if (!std::strcmp(argv[i], "--plg-builtin") && i + 1 < argc) plgbuiltin = std::atoi(argv[++i]);
 		else if (!std::strcmp(argv[i], "--plg") && i + 1 < argc) plgcard = argv[++i];
 		// **液晶の中身を 16 進でも出す**（字形を起こすときのコードの棚卸し）
@@ -294,6 +297,13 @@ int main(int argc, char **argv)
 	mu.set_threaded(true);
 	// HOST SELECT を USB にして起動する（gui・plugin の既定と同じ）
 	mu.set_usb_host(usb);
+	// **NVRAM は reset() の前に読む。** gui はそうしている（ui/engine.h）が
+	// boot と panel はしないので、この二つはずcold boot でしか試せない。
+	// カードは 1 回目の起動ではChecking PLG で止まるが、NVRAM があると
+	// 入廠状態でないので PLUGIN SELECT まで進む、というのが MAME での挙動。
+	// --nvram で同じことを試せるようにする。
+	if (use_nvram)
+		smu2000::nvram::load(mu);
 	mu.reset();
 
 	std::printf("起動中...");
@@ -474,5 +484,7 @@ int main(int argc, char **argv)
 	}
 
 	plg_report();
+	if (use_nvram)
+		smu2000::nvram::save(mu);
 	return 0;
 }

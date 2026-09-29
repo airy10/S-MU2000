@@ -103,16 +103,28 @@ struct record {
 	const unsigned char *data;
 };
 
-/* Not const: SMU2000_CARD_CATEGORY overwrites the first two bytes, because
- * "00 07" is the AP's value copied out of a capture and there is no reason to
- * believe the MU2000 numbers its boards the same way. */
-static unsigned char DATA_CATEGORY[3] = { 0x00, 0x07, 0x00 };
+/* Not const: SMU2000_CARD_CATEGORY overwrites the first two bytes.
+ *
+ * **These are the PLG100-VL's, not the AP's, and that is deliberate.** Both were
+ * captured from MAME and the two cards differ where it counts:
+ *
+ *              category at 0x1000        name
+ *   VL         00 00 00                   PLG100-VL
+ *   AP         00 07 00                   PLG150-AP
+ *
+ * This card used to present the AP, because the AP is the one that gets
+ * *recognised* - PLG-1 lights. But with the AP in the slot the firmware puts
+ * "PB Com Error!" on the LCD and then waits, and the wait is the hang; with the
+ * VL in the slot the same firmware reaches PLUGIN SELECT, lists both cards, and
+ * opens a voice editor. The AP is the card that does not complete the protocol,
+ * so a reference card should present the one that does.
+ *
+ * The capture this is transcribed from is tests/plg/plg100vl-capture.txt. */
+static unsigned char DATA_CATEGORY[3] = { 0x00, 0x00, 0x00 };
 static const unsigned char DATA_NAME[] = {
-	'P', 'L', 'G', '1', '5', '0', '-', 'A', 'P', ' ', ' ', ' ', ' ', ' '
+	'P', 'L', 'G', '1', '0', '0', '-', 'V', 'L', ' ', ' ', ' ', ' ', ' '
 };
 
-/* Only the 1 and 0 device ids are ever asked for: the AP is `10 4E` and the VL
- * `08 6E`, and the firmware opens with whichever it expects. */
 static const struct record RECORDS[] = {
 	{ 0x1000, (int)sizeof(DATA_CATEGORY), DATA_CATEGORY },
 	{ 0x0000, (int)sizeof(DATA_NAME),      DATA_NAME      },
