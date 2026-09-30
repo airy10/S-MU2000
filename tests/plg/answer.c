@@ -215,6 +215,11 @@ static unsigned char s_unknown_buf[64];
  * only the control channel, which is what gets it recognised and nothing more. */
 static int s_replay = 1;
 
+/* SMU2000_CARD_DEFAULT: answer 4f/40 requests the capture has no entry for, with
+ * a structurally correct reply carrying zeroes. Silence is what produced
+ * "PB Com Error!" in the deep menus, so this defaults on; 0 restores it. */
+static int s_default_reply = 1;
+
 /* The largest reply is a page of zeros; a sysex header is 7 bytes. */
 #define MAXTX (7 + (int)sizeof(s_unknown_buf) + 1)
 
@@ -244,6 +249,7 @@ struct answer {
 	int      rx_total;    /* bytes since reset, for the report */
 	int      rx_polls;    /* messages seen that look like a poll */
 	int      rx_replays;  /* 4f/bulk requests answered from the replay table */
+	int      rx_defaults; /* answered with a zeroed fallback instead */
 	char     rx_log[16][24]; /* the first messages, as the card saw them */
 	int      rx_log_n;
 
@@ -349,6 +355,8 @@ static void read_knobs(struct answer *a)
 	}
 	if ((e = getenv("SMU2000_CARD_REPLAY")) != 0 && atoi(e) == 0)
 		s_replay = 0;
+	if ((e = getenv("SMU2000_CARD_DEFAULT")) != 0 && atoi(e) == 0)
+		s_default_reply = 0;
 	if ((e = getenv("SMU2000_CARD_UNKNOWN_LEN")) != 0) {
 		const int v = atoi(e);
 		if (v > 0 && v <= (int)sizeof(s_unknown_buf))
@@ -468,6 +476,15 @@ PLG_EXPORT void plg1500_destroy(plg_card *c)
 	         a->rx_bits, a->rx_total, a->rx_frames, a->rx_polls, a->tx_calls, a->sent,
 	         a->sent == 1 ? "reply" : "replies");
 	a->host->log(a->host->ctx, line);
+	/* How much of it was replayed and how much was the zeroed fallback, because
+	 * "the table covers boot but not the menus" is the difference between a card
+	 * that is a fixture and one that has run out of data. */
+	if (a->host && a->host->log) {
+		char l3[128];
+		snprintf(l3, sizeof(l3), "  of %d sent: %d from the VL capture, %d zeroed fallback",
+		         a->sent, a->rx_replays, a->rx_defaults);
+		a->host->log(a->host->ctx, l3);
+	}
 	for (int i = 0; i < a->rx_log_n; i++) {
 		char l2[64];
 		snprintf(l2, sizeof(l2), "  msg%d: %s", i, a->rx_log[i]);
@@ -647,11 +664,13 @@ static void answer_rx(plg_card *c, int level, int bit)
 		const unsigned char *payload = a->msg + 4;
 		const int paylen = a->msg_n - 5;   /* drop the 4-byte head and the F7 */
 		if (paylen > 0) {
+			int found = 0;
 			for (int i = 0; i < VLNREPLIES; i++) {
 				if (VLREPLIES[i].reqlen != paylen)
 					continue;
 				if (memcmp(VLREPLIES[i].req, payload, (size_t)paylen) != 0)
 					continue;
+				found = 1;
 				if (a->tx_byte >= 0 || a->tx_queued)
 					break;              /* still sending; drop, as a real card does */
 				memcpy(a->tx_buf, VLREPLIES[i].rep, (size_t)VLREPLIES[i].replen);
@@ -660,6 +679,60 @@ static void answer_rx(plg_card *c, int level, int bit)
 				a->sent++;
 				a->rx_replays++;
 				break;
+			}
+			/* **An address the capture does not have still gets an answer.**
+			 * The table covers the boot conversation, so the deep menus -
+			 * Util, Edit, Sysex - ask for addresses it has never seen and used
+			 * to get silence, which is the one thing that cannot be tolerated:
+			 * the firmware waits, then puts "PB Com Error!" up. A structurally
+			 * correct reply with zero data keeps the conversation going; whether
+			 * the firmware checks the values is a separate question and this is
+			 * how to find out.
+			 *
+			 * The shapes, from the capture:
+			 *   4f  F0 43 30 4F <b1 b2 b3 b4> F7
+			 *     -> F0 43 10 4F <b1 b2 b3> <d1..d4> 01 F7   three echoed, not four
+			 *   40  F0 43 40 03 <a b c d e f g> F7
+			 *     -> F0 43 40 43 <a b c d> 01 00 00 F7
+			 *
+			 * SMU2000_CARD_DEFAULT=0 goes back to silence, which is the honest
+			 * "I have nothing here" and the state that produces PB Com Error. */
+			if (!found && s_default_reply) {
+				int len = 0;
+				if (a->msg[2] == 0x30 && paylen == 4) {
+					a->tx_buf[len++] = 0xf0;
+					a->tx_buf[len++] = 0x43;
+					a->tx_buf[len++] = 0x10;
+					a->tx_buf[len++] = 0x4f;
+					a->tx_buf[len++] = payload[0];
+					a->tx_buf[len++] = payload[1];
+					a->tx_buf[len++] = payload[2];
+					for (int k = 0; k < 4; k++)
+						a->tx_buf[len++] = 0x00;    /* no tone data to give */
+					a->tx_buf[len++] = 0x01;
+					a->tx_buf[len++] = 0xf7;
+				} else if (a->msg[2] == 0x40 && paylen == 7) {
+					a->tx_buf[len++] = 0xf0;
+					a->tx_buf[len++] = 0x43;
+					a->tx_buf[len++] = 0x40;
+					a->tx_buf[len++] = 0x43;
+					a->tx_buf[len++] = payload[0];
+					a->tx_buf[len++] = payload[1];
+					a->tx_buf[len++] = payload[2];
+					a->tx_buf[len++] = payload[3];
+					a->tx_buf[len++] = 0x01;
+					a->tx_buf[len++] = 0x00;
+					a->tx_buf[len++] = 0x00;
+					a->tx_buf[len++] = 0xf7;
+				} else {
+					len = 0;
+				}
+				if (len > 0 && a->tx_byte < 0 && !a->tx_queued) {
+					a->tx_len = len;
+					a->tx_queued = 1;
+					a->sent++;
+					a->rx_defaults++;
+				}
 			}
 		}
 		return;
