@@ -2,10 +2,19 @@
 #
 # This is the reference the answer card is built from, and it is here because the
 # firmware's own "PB Com Error!" told us the stub was answering too little: the VL
-# keeps 680 messages in flight over 120 s across FOUR device channels, and
-# answer.c implements one of them.
+# keeps 680 messages in flight over 120 s and answers 650, where the stub answered
+# 2 of 13 control polls and nothing else.
 #
-# MAME, 40 s... no: 120 emulated seconds, warm NVRAM:
+# The envelope is F0 43 <dev> and the byte after it is a sub-command - reading the
+# sub-command as a device id gives a tidy but wrong "four channels", and an earlier
+# version of this file said that. What the card answers, counted by sub-command:
+#
+#   4e   host 22, card 10    the control channel, a memory model in answer.c
+#   4f   host 46, card 46    polls, replayed from vlreply.h
+#   40   host 595, card 594  bulk reads, replayed from vlreply.h
+#   4c   host 17, card 0     voice slots - deliberately unanswered, as the VL does
+#
+# 120 emulated seconds, warm NVRAM (see the note at the end about that):
 #   ./mame mu2000 -rompath ./roms/dump -plg1 plg100vl -video none -sound none \
 #       -seconds_to_run 120
 # Timestamps are emulated seconds. This is the byte stream, not the line: the
@@ -14,16 +23,10 @@
 #   host -> card  680 messages, 7894 bytes
 #   card -> host  650 messages, 8458 bytes
 #
-# Channels, by the two bytes after F0 43 10:
-#   4e  control. read announces and polls; the card answers a poll with the
-#       address it was asked for. This is the only channel answer.c speaks.
-#   4c  sixteen voice slots, 08 00 35 01 .. 08 0f 35 01, one per slot.
-#   4f  polls answered with 13- and 42-byte payloads - tone and parameter blobs.
-#   40 03 -> 43 40 43, 12 bytes each, 595 of them. The bulk of the traffic.
-#
-# The category is the second thing that differs from the AP: the VL answers
-# 00 00 00 where the AP answers 00 07 00, and its name is PLG100-VL. answer.c
-# presents the AP's, which is the card that does not work.
+# The 4e control channel is a memory model rather than a replay: the host polls
+# thirteen addresses and the VL answers ten (0x0120 gets nothing, as does 4c).
+# answer.c holds all ten as records.
+
 #
 # --- host -> card ---
     3.8139  f0 43 10 4e 00 10 02 01 f7

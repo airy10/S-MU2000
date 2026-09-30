@@ -79,6 +79,7 @@
  * checked; this is the card's half. See doc/plg-cards.md section 5.
  */
 #include "plg/plg1500.h"
+#include "vlreply.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -120,14 +121,74 @@ struct record {
  * so a reference card should present the one that does.
  *
  * The capture this is transcribed from is tests/plg/plg100vl-capture.txt. */
-static unsigned char DATA_CATEGORY[3] = { 0x00, 0x00, 0x00 };
-static const unsigned char DATA_NAME[] = {
-	'P', 'L', 'G', '1', '0', '0', '-', 'V', 'L', ' ', ' ', ' ', ' ', ' '
+/* DATA_1000 is the category, and SMU2000_CARD_CATEGORY overwrites its first
+ * two bytes, so it is the one non-const array here. */
+#define DATA_CATEGORY DATA_1000
+
+/* The card's whole addressable memory, as a real PLG100-VL answered it. Every
+ * one of these ten is a poll the host makes and the VL replies to, transcribed
+ * from tests/plg/plg100vl-capture.txt; 0x0120 and 0x4c are absent because the VL
+ * does not answer those either.
+ *
+ * **Answering 0x1000 and 0x0000 is not enough, which is what this table was
+ * missing.** The card used to hold two records and the firmware polls thirteen
+ * addresses; it got two replies, put "PB Com Error!" on the LCD and waited. The
+ * other eight are here now - among them 0x0010, 48 bytes of tone data and the
+ * largest single thing the host asks for during boot. */
+static unsigned char DATA_1000[] = {
+	0x00, 0x00, 0x00,
+};
+
+static const unsigned char DATA_0000[] = {
+	0x50, 0x4c, 0x47, 0x31, 0x30, 0x30, 0x2d, 0x56, 0x4c, 0x20, 0x20, 0x20, 0x20, 0x20,
+};
+
+static const unsigned char DATA_000E[] = {
+	0x7e,
+};
+
+static const unsigned char DATA_000F[] = {
+	0x02,
+};
+
+static const unsigned char DATA_0010[] = {
+	0x7f, 0x7f, 0x7f, 0x67, 0x00, 0x18, 0x67, 0x7f, 0x7f, 0x7f, 0x00, 0x74, 0x04, 0x75,
+	0x06, 0x74, 0x7f, 0x7e, 0x7c, 0x78, 0x00, 0x05, 0x7b, 0x7d, 0x7e, 0x7f, 0x00, 0x53,
+	0x50, 0x11, 0x10, 0x1d, 0x60, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x60,
+	0x00, 0x60, 0x00, 0x60, 0x00, 0x60,
+};
+
+static const unsigned char DATA_1003[] = {
+	0x01,
+};
+
+static const unsigned char DATA_1004[] = {
+	0x01,
+};
+
+static const unsigned char DATA_1010[] = {
+	0x05,
+};
+
+static const unsigned char DATA_1011[] = {
+	0x15,
+};
+
+static const unsigned char DATA_1013[] = {
+	0x14,
 };
 
 static const struct record RECORDS[] = {
-	{ 0x1000, (int)sizeof(DATA_CATEGORY), DATA_CATEGORY },
-	{ 0x0000, (int)sizeof(DATA_NAME),      DATA_NAME      },
+	{ 0x1000, (int)sizeof(DATA_1000), DATA_1000 },
+	{ 0x0000, (int)sizeof(DATA_0000), DATA_0000 },
+	{ 0x000e, (int)sizeof(DATA_000E), DATA_000E },
+	{ 0x000f, (int)sizeof(DATA_000F), DATA_000F },
+	{ 0x0010, (int)sizeof(DATA_0010), DATA_0010 },
+	{ 0x1003, (int)sizeof(DATA_1003), DATA_1003 },
+	{ 0x1004, (int)sizeof(DATA_1004), DATA_1004 },
+	{ 0x1010, (int)sizeof(DATA_1010), DATA_1010 },
+	{ 0x1011, (int)sizeof(DATA_1011), DATA_1011 },
+	{ 0x1013, (int)sizeof(DATA_1013), DATA_1013 },
 };
 #define NRECORD ((int)(sizeof(RECORDS) / sizeof(RECORDS[0])))
 
@@ -149,6 +210,11 @@ static int          s_unknown = UNKNOWN_NONE;
 static int          s_unknown_len = 8;
 static unsigned char s_unknown_buf[64];
 
+/* SMU2000_CARD_REPLAY: answer the 4f polls and the 40 bulk reads from the
+ * captured PLG100-VL conversation. On by default; 0 leaves the card answering
+ * only the control channel, which is what gets it recognised and nothing more. */
+static int s_replay = 1;
+
 /* The largest reply is a page of zeros; a sysex header is 7 bytes. */
 #define MAXTX (7 + (int)sizeof(s_unknown_buf) + 1)
 
@@ -163,7 +229,7 @@ struct answer {
 	int      rx_frames;      /* complete host messages seen */
 	int      rx_bits;       /* bits handed over, for the report */
 	int      rx_bytes;    /* bytes in the message being received */
-	unsigned char msg[8]; /* the current message's head, F0..F7 */
+	unsigned char msg[16]; /* the head, F0..F7: the longest request is 12 */
 	int           msg_n;
 	int           seen_poll; /* a poll has been seen, so `after` can count down */
 	int           read_seen;  /* the identity read arrived; the next poll releases
@@ -177,6 +243,7 @@ struct answer {
 	                             call itself (timing) from what it does (state) */
 	int      rx_total;    /* bytes since reset, for the report */
 	int      rx_polls;    /* messages seen that look like a poll */
+	int      rx_replays;  /* 4f/bulk requests answered from the replay table */
 	char     rx_log[16][24]; /* the first messages, as the card saw them */
 	int      rx_log_n;
 
@@ -280,6 +347,8 @@ static void read_knobs(struct answer *a)
 		else if (!strcmp(e, "long")) s_unknown = UNKNOWN_LONG;
 		else                                s_unknown = UNKNOWN_NONE;
 	}
+	if ((e = getenv("SMU2000_CARD_REPLAY")) != 0 && atoi(e) == 0)
+		s_replay = 0;
 	if ((e = getenv("SMU2000_CARD_UNKNOWN_LEN")) != 0) {
 		const int v = atoi(e);
 		if (v > 0 && v <= (int)sizeof(s_unknown_buf))
@@ -550,6 +619,52 @@ static void answer_rx(plg_card *c, int level, int bit)
 	 *
 	 * `once` is per address, as it is on the real card: with the default each
 	 * address is answered the first time it is asked for and never again. */
+	/* **The other two sub-commands, and this is what the firmware was waiting
+	 * for.** The `4e` control channel below is what gets the card recognised, and
+	 * recognition is not the goal - the AP gets recognised and then the firmware
+	 * puts "PB Com Error!" up and waits. What it waits for is this:
+	 *
+	 *   F0 43 30 4F <4 bytes> F7      a poll, answered
+	 *   F0 43 40 03 <7 bytes> F7      a read, answered
+	 *
+	 * A working PLG100-VL answers 46 of the first and 594 of the second over 120
+	 * emulated seconds, and never stops - the second is a live counter region the
+	 * host polls continuously, which is why silence is fatal rather than merely
+	 * unhelpful. The AP answers neither.
+	 *
+	 * They are answered from tests/plg/vlreply.h, a replay of what the VL
+	 * actually sent, keyed on the bytes between the sub-command and F7. **That
+	 * makes this a replay fixture, not a simulator: the values are the VL's.** It
+	 * is the honest way to answer 600+ requests without a card to model, and
+	 * SMU2000_CARD_REPLAY=0 turns it off to see what recognition alone does.
+	 *
+	 * `4c` - sixteen voice slots - is deliberately unanswered, because neither
+	 * card answers it and the VL works. An earlier version of this file called it
+	 * the blocker; it is not. */
+	if (s_replay && a->msg[0] == 0xf0 && a->msg[1] == 0x43 &&
+	    ((a->msg[2] == 0x30 && a->msg[3] == 0x4f) ||
+	     (a->msg[2] == 0x40 && a->msg[3] == 0x03))) {
+		const unsigned char *payload = a->msg + 4;
+		const int paylen = a->msg_n - 5;   /* drop the 4-byte head and the F7 */
+		if (paylen > 0) {
+			for (int i = 0; i < VLNREPLIES; i++) {
+				if (VLREPLIES[i].reqlen != paylen)
+					continue;
+				if (memcmp(VLREPLIES[i].req, payload, (size_t)paylen) != 0)
+					continue;
+				if (a->tx_byte >= 0 || a->tx_queued)
+					break;              /* still sending; drop, as a real card does */
+				memcpy(a->tx_buf, VLREPLIES[i].rep, (size_t)VLREPLIES[i].replen);
+				a->tx_len = VLREPLIES[i].replen;
+				a->tx_queued = 1;
+				a->sent++;
+				a->rx_replays++;
+				break;
+			}
+		}
+		return;
+	}
+
 	const int is_read = a->msg_n == 8 && a->msg[0] == 0xf0 && a->msg[1] == 0x43 &&
 	                    a->msg[2] == 0x10 && a->msg[3] == 0x4e && a->msg[4] == 0x00;
 	if (is_read) {
@@ -557,8 +672,7 @@ static void answer_rx(plg_card *c, int level, int bit)
 		return;
 	}
 	/* A poll is F0 43 30 4E 01 <hi> <lo> F7 - eight bytes, and msg_n saturates at
-	 * sizeof(msg), which is also eight, so the test is == 8. It was == 7 once, which
-	 * nothing can ever satisfy, and the name was never sent at all. */
+	 * sizeof(msg), which is sixteen, so the test is == 8 for this shape alone. */
 	const int is_poll = a->msg_n == 8 && a->msg[0] == 0xf0 && a->msg[1] == 0x43 &&
 	                    a->msg[2] == 0x30 && a->msg[3] == 0x4e && a->msg[4] == 0x01;
 	if (!is_poll)
