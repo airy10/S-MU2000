@@ -250,6 +250,7 @@ struct answer {
 	int      rx_polls;    /* messages seen that look like a poll */
 	int      rx_replays;  /* 4f/bulk requests answered from the replay table */
 	int      rx_defaults; /* answered with a zeroed fallback instead */
+	int      rx_dropped;  /* requests that arrived mid-transmission and were lost */
 	char     rx_log[16][24]; /* the first messages, as the card saw them */
 	int      rx_log_n;
 
@@ -481,8 +482,8 @@ PLG_EXPORT void plg1500_destroy(plg_card *c)
 	 * that is a fixture and one that has run out of data. */
 	if (a->host && a->host->log) {
 		char l3[128];
-		snprintf(l3, sizeof(l3), "  of %d sent: %d from the VL capture, %d zeroed fallback",
-		         a->sent, a->rx_replays, a->rx_defaults);
+		snprintf(l3, sizeof(l3), "  of %d sent: %d from the VL capture, %d zeroed fallback, %d DROPPED mid-reply",
+		         a->sent, a->rx_replays, a->rx_defaults, a->rx_dropped);
 		a->host->log(a->host->ctx, l3);
 	}
 	for (int i = 0; i < a->rx_log_n; i++) {
@@ -671,8 +672,10 @@ static void answer_rx(plg_card *c, int level, int bit)
 				if (memcmp(VLREPLIES[i].req, payload, (size_t)paylen) != 0)
 					continue;
 				found = 1;
-				if (a->tx_byte >= 0 || a->tx_queued)
-					break;              /* still sending; drop, as a real card does */
+				if (a->tx_byte >= 0 || a->tx_queued) {
+					a->rx_dropped++;
+					break;              /* still sending */
+				}
 				memcpy(a->tx_buf, VLREPLIES[i].rep, (size_t)VLREPLIES[i].replen);
 				a->tx_len = VLREPLIES[i].replen;
 				a->tx_queued = 1;
@@ -727,11 +730,15 @@ static void answer_rx(plg_card *c, int level, int bit)
 				} else {
 					len = 0;
 				}
-				if (len > 0 && a->tx_byte < 0 && !a->tx_queued) {
-					a->tx_len = len;
-					a->tx_queued = 1;
-					a->sent++;
-					a->rx_defaults++;
+				if (len > 0) {
+					if (a->tx_byte < 0 && !a->tx_queued) {
+						a->tx_len = len;
+						a->tx_queued = 1;
+						a->sent++;
+						a->rx_defaults++;
+					} else {
+						a->rx_dropped++;
+					}
 				}
 			}
 		}
