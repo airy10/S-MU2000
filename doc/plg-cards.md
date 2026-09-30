@@ -298,6 +298,29 @@ It makes the host work and the wire honest, and it is the honest way to answer 6
 requests without a card to model - but it does not generate sound, and it is not a
 PLG emulator. `SMU2000_CARD_REPLAY=0` turns it off to see recognition alone.
 
+#### Where it stops, which is content rather than communication
+
+Interactively the card goes
+
+    UTIL -> PLG -> <PLUGIN SELECT> PLG100-VL -> <PLG100-VL SYS> #PartialAssign-01
+
+and that second screen is byte for byte what MAME's real PLG100-VL shows, so the
+identity, the routing and the panel are all right. **ENTER on the card is where it
+ends**, in `PB Com Error!` after the firmware's timeout.
+
+What sits behind that screen is tone and voice data. `SMU2000_CARD_DEFAULT=1` gives
+an unknown address a structurally correct zeroed reply, on the theory that the
+firmware might only need *something* - and it was measured, interactively, and it
+does not work. **The firmware checks.** So the limit here is the same wall a sound
+generator would hit: the wire protocol is right and the content is absent, and
+zeroes are not a piano.
+
+That is a solved communication issue and an unsolved PLG. The next milestone is
+card code that produces sound, proved in mame-playground first - a generator that
+worked here and not there would mean the emulation is wrong somewhere, which is
+worth knowing before building on it. The VL is the platform that currently reaches
+its generator; the AP's card emulation is incomplete and is not the one to use.
+
 #### The card presents the VL, not the AP
 
 | | category at 0x1000 | name | outcome |
