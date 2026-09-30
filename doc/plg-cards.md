@@ -236,28 +236,45 @@ Not done:
   boot never probes the slots. `boot` and `render` are cold by default
   (`--bootcache` is opt-in and must stay unused here), and neither loads NVRAM
   from disk, which is why the scan runs on every run.
-### 5b. The panel does not answer with a card in the slot. One channel of four.
+### 5b. The panel does not answer with a card in the slot. The card is mute.
 
-**The card answers one of the four channels the firmware uses.** That is the whole
-of it, and the firmware says so itself: with an incomplete card in the slot it
-puts **`PB Com Error!`** on the LCD and then waits. The wait is what looks like a
-freeze, and it is the firmware blocking on replies that never come.
+**The firmware uses three message envelopes and four sub-commands, and a working
+card answers three of the four.** That is the whole of it, and the firmware says
+so itself: with an incomplete card in the slot it puts **`PB Com Error!`** on the
+LCD and then waits. The wait is what looks like a freeze.
 
-A real **PLG100-VL** in MAME, over 120 emulated seconds, keeps 680 messages in
-flight and answers 650. The full capture is `tests/plg/plg100vl-capture.txt`.
-Sorting it by the two bytes after `F0 43 10`:
+A real **PLG100-VL** in MAME over 120 emulated seconds keeps 680 messages in
+flight and answers 650. The capture is `tests/plg/plg100vl-capture.txt`. The
+envelope is `F0 43 <dev>` and the byte after it is a sub-command - reading the
+sub-command as a device id, which is what an earlier version of this note did,
+produces a tidy but wrong "four channels":
 
-| host -> card | count | channel | what it is |
+| sub-command | host -> card | VL answers | AP answers |
 |---|---|---|---|
-| `43 30 4e` | 13 | `4e` control | polls; the card answers with the address asked for |
-| `43 10 4e` | 9 | `4e` control | read announces |
-| `43 10 4c` | 17 | `4c` | sixteen voice slots, `08 00 35 01` .. `08 0f 35 01` |
-| `43 30 4f` | 46 | `4f` | polls answered with 13- and 42-byte payloads |
-| `43 40 03` | 595 | `40` | the bulk channel, 12 bytes each, answered `43 40 43` |
+| `4e` control | 22 | 10 | **2** |
+| `4f` polls | 46 | 46 | **0** |
+| `40 03` bulk read | 595 | 594, as `40 43` | **0** |
+| `4c` voice slots | 17 | **0** | **0** |
 
-`answer.c` speaks only `4e`. So the firmware polls `4c`, `4f` and `40`, gets
-silence, and blocks. **That is the comm error, and answering the other three
-channels is the whole of the remaining work.**
+**`4c` needs no answer.** Neither card sends one and the VL works, so the
+sixteen voice-slot requests (`08 00 35 01` .. `08 0f 35 01`) are not the blocker.
+The AP is silent on `4f` and on the bulk channel, and that is what it is.
+
+The bulk channel is a paired memory read - the same four-byte address echoed back
+with data:
+
+```
+host:  F0 43 40 03  4C 70 00 00  40 01 00  F7
+card:  F0 43 40 43  4C 70 00 00  01 00 00  F7
+```
+
+34 distinct addresses are read this way, and the hot ones (`03 4C 09 00` through
+`09 05`, forty to sixty times each) are a live counter region: the host polling
+card state continuously, which is why the conversation never stops.
+
+**So the remaining work is two things, and both are transcription against the
+capture:** answer the `4f` polls with `F0 43 10 4F ...`, and answer each
+`F0 43 40 03 <addr> ... F7` with `F0 43 40 43 <addr> ... F7`.
 
 The two cards also differ in identity, and the one that works is the one a
 reference card should present:
@@ -289,7 +306,9 @@ Two conclusions that were drawn from these numbers and **should not have been**:
   never reached - but *infinite* was never established. It was inferred from the
   panel count not moving, and a long busy-wait for a timeout is indistinguishable
   from outside. A wait for a reply fits every observation, including the 500 ms
-  poll cadence and the error appearing eventually rather than at once.
+  poll cadence and the error appearing eventually rather than at once. The firmware
+  is an official dump and is right; the host emulation is faithful; a firmware that
+  correctly waits for an absent reply *should* look like this.
 - **"The PLG100-VL transmits nothing at all."** Measured on a run whose NVRAM
   state was wrong. MAME reads `nvram/mu2000/ram` at start and writes it at exit, so
   identical commands alternate between two stable states - 25 reads and 39 target
@@ -307,21 +326,18 @@ and still leaves the panel dead:
 | card, warm | `Welcome MU2000 EX` | 24 |
 | no card | part list | 6144 |
 
-So the missing channels explain it and NVRAM does not.
+So the missing replies explain it and NVRAM does not.
 
-#### The AP is incomplete in MAME, which is why it is the broken one
+#### The AP's wave ROM was never the problem
 
-- **`plg150_ap_device`** is documented "Dual SWX00" and instantiates one; the
-  "dual" is a mode bit inside the chip, not a second CPU. In that mode the
-  chip's header puts *wave rom* on its S bus, and the driver registers only
-  `AS_C`, so its 16 MB `ROM_REGION("swx00")` is loaded and reachable from
-  nothing. The region is also declared 8-bit for a 16-bit bus. Both are fixable
-  and both are in `/tmp/ap-changes.patch`; they are **not** committed here,
-  because the behaviour they change could not be measured reliably (see the
-  NVRAM note above) and a plausible fix with no demonstrable benefit is not worth
-  claiming.
-- **`plg100_vl_device`** is an H83002 with its DSP mapped at `0x400000`, and it
-  **completes the protocol** - which is what makes it the reference.
+A previous version of this note claimed the AP's 16 MB `ROM_REGION("swx00")` was
+loaded and reachable from nothing, because `swx00_device` opens no S-bus window
+in `MODE_DUAL`. The window is closed; nothing reads wave ROM over it. The AWM2 is
+`swx00_sound_device`, itself a `device_rom_interface<24, 1, ...>` tagged
+`"swx00"`, and it fetches through its own registers at `0x808`-`0x80f` via
+`read_word(m_rom_address)`. **The region was reachable all along**, and declaring
+it 16-bit - as that version did - breaks the access path that works. Reverted; see
+the playground's `b73f7aa`.
 
 #### Two real bugs came out of all this, both in `answer.c`
 
