@@ -699,7 +699,12 @@ The pieces worth knowing about:
   MIDI-CC-to-parameter convention like VST3's `IMidiMapping`, so the hidden MIDI
   CC parameters are deliberately not built; MIDI arrives through the MusicDevice
   entry points instead. `SetParameter`/`ScheduleParameters` feed XG values through
-  `automation::host` into the same MIDI queue, sample-offset included.
+  `automation::host` into the same MIDI queue, sample-offset included. Clumps carry
+  the same group names as AUv3 (`kAudioUnitProperty_ParameterClumpName`).
+  Panel→host recording needs no push path: there are no parameter-listener
+  selectors in the component dispatch (host-side `AUListener` polling is the
+  mechanism), so `GetParameter` reads live values — panel gain and XG RAM —
+  and a polling host picks panel moves up by itself.
 
 `make au` writes `build/S-MU2000.component`; `make install-au` copies it to
 `~/Library/Audio/Plug-Ins/Components`, which is where `auval` and every DAW look.

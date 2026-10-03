@@ -71,10 +71,11 @@ constexpr UInt32 kGlobalElement = 0;
 
 // ---- Parameters
 //
-// MIDI は MusicDevice の口から入るので、VST3 のような隠し CC パラメータは
-// 要らない。ホストの汎用パネルとオートメーションに見せるのは、出力レベルと
-// 状態に加えて、VST3・CLAP・AUv3 と同じ XG の値の表 (src/vst3/automation.h)。
-// 番号も同じ (PART_BASE 65536〜) で、一度決めたら動かさない
+// MIDI arrives through the MusicDevice entry points, so unlike VST3 there are
+// no hidden CC parameters to map (no IMidiMapping convention in AU). What the
+// host's generic panel and automation see is the output level, the status, and
+// the same XG value table VST3, CLAP and AUv3 share (src/vst3/automation.h).
+// IDs match too (PART_BASE 65536 and up); once set they never move
 enum : AudioUnitParameterID {
 	kParamGain   = 0,
 	kParamStatus = 1,
@@ -82,7 +83,7 @@ enum : AudioUnitParameterID {
 
 namespace autom = smu2000::automation;
 
-// ParameterList に並べる順番。0・1 の次に XG の表の順番
+// ParameterList order: 0 and 1 first, then the XG table's order
 inline size_t au_param_count()
 {
 	return 2 + autom::entries().size();
@@ -97,7 +98,7 @@ inline AudioUnitParameterID au_param_id_at(size_t index)
 	return AudioUnitParameterID(autom::entries()[index - 2].id);
 }
 
-// パラメータ番号がこの AU のものか。XG は表にある番号だけ
+// Whether a parameter ID belongs to this unit. XG IDs are only those in the table
 inline bool au_param_valid(AudioUnitParameterID id)
 {
 	if (id == kParamGain || id == kParamStatus)
@@ -105,21 +106,39 @@ inline bool au_param_valid(AudioUnitParameterID id)
 	return autom::index_of(uint32_t(id)) >= 0;
 }
 
-// XG の clump (汎用パネルの grouping)。表の group ("Part A1" / "Master" /
-// "Insertion 1") の出た順に 1 から。0 は system 用なので使わない
+// XG clumps (generic-panel grouping), in the table's group ("Part A1" /
+// "Master" / "Insertion 1") first-appearance order, starting at 1. 0 stays
+// reserved for system use. The strings match AUv3's AUParameterGroup names
+inline const std::vector<std::string> &au_groups()
+{
+	static const std::vector<std::string> groups = [] {
+		std::vector<std::string> g;
+		for (const autom::entry &e : autom::entries())
+			if (std::find(g.begin(), g.end(), e.group) == g.end())
+				g.push_back(e.group);
+		return g;
+	}();
+	return groups;
+}
+
 inline UInt32 au_param_clump(const autom::entry &want)
 {
-	static std::vector<std::string> groups;
-	if (groups.empty()) {
-		for (const autom::entry &e : autom::entries())
-			if (std::find(groups.begin(), groups.end(), e.group) == groups.end())
-				groups.push_back(e.group);
-	}
+	const std::vector<std::string> &groups = au_groups();
 	for (size_t i = 0; i < groups.size(); i++)
 		if (groups[i] == want.group)
 			return UInt32(i + 1);
 	return 0;
 }
+
+// Value shape for kAudioUnitProperty_ParameterClumpName / ParameterIDName.
+// Same layout as AudioUnitParameterIDName in the legacy AudioUnitUtilities.h
+// (inID, outName, inDesiredLength): the host fills inID and inDesiredLength,
+// the AU answers with a +1 CFString the host releases
+struct au_id_name {
+	AudioUnitParameterID inID;
+	CFStringRef outName;
+	UInt32 inDesiredLength;
+};
 
 constexpr UInt32 kMaxFramesDefault = 1156;
 // How many MIDI messages may be waiting between two render blocks. Past this
@@ -182,8 +201,9 @@ struct au_instance
 
 	smu2000::vst3::engine eng;
 
-	// XG の値のパラメータをホストとの間で受け渡す入れ物。VST3・CLAP・AUv3 と
-	// 同じもの (src/vst3/automation_host.h)。au_open で作る (表は本の糸で)
+	// The XG value exchange with the host, shared with VST3, CLAP and AUv3
+	// (src/vst3/automation_host.h). Built in au_open, on the main thread, so
+	// the table is never first built on the audio thread
 	std::unique_ptr<smu2000::automation::host> xg;
 
 	// The render-context observer handed to hosts (kAudioUnitProperty_
@@ -231,7 +251,6 @@ struct au_instance
 	}
 	UInt32 render_quality = 0;
 	bool   initialized = false;
-	AudioUnitParameterValue gain = 1.0f;
 
 	// ---- Render notifies the host asked to be called back through
 	struct notify { AURenderCallback proc; void *ref; };
@@ -262,9 +281,12 @@ struct au_instance
 		if (mask[0])
 			eng.all_notes_off(mask, mu2000::MIDI_PORTS);
 	}
-	// Output-level ramp state. The target lives in gain (set from any thread);
-	// the audio thread walks gain_now toward it, as the VST3/CLAP builds do,
-	// so automation never steps mid-block.
+	// Output-level ramp state. The target is the panel's gain, owned by the
+	// engine and set from any thread (host automation, the panel's own volume
+	// knob); the audio thread walks gain_now toward it, as the VST3/CLAP/AUv3
+	// builds do, so automation never steps mid-block. Reading it live also
+	// keeps GetParameter truthful for hosts that poll (AUListener): a panel
+	// move shows up without the host setting anything
 	float gain_now = 1.0f;
 
 	// ---- The A/D INPUT bus, offered only to a host that asks for it
@@ -415,7 +437,7 @@ struct au_instance
 
 	void apply_gain(float *left, float *right, UInt32 n)
 	{
-		const float target = gain;
+		const float target = eng.panel().gain();
 		if (gain_now == target && target == 1.0f)
 			return;
 		const float step = 1.0f / 512.0f;
@@ -459,7 +481,8 @@ OSStatus au_open(void *self, AudioComponentInstance instance)
 	au->midi_in.reserve(kMidiReserveMsgs);
 	au->midi_work.reserve(kMidiReserveMsgs);
 
-	// XG の値の表は本の糸で 1 回作っておく (音声の糸で初めて作らせない)
+	// Build the XG table once here: this runs on the main thread, and the
+	// table must never be first built on the audio thread
 	au->xg = std::make_unique<smu2000::automation::host>(au->eng);
 	(void)smu2000::automation::entries();
 
@@ -547,8 +570,9 @@ OSStatus render_block(au_instance *au, AudioUnitRenderActionFlags *flags,
 	}
 	au->note_layout(io);
 
-	// XG の値の区切りの頭。ホストから Set/Schedule で来た値を host_value が
-	// 直列に流すとき、写しはこの区間の真実から読む (VST3 の begin_block と同じ)
+	// Head of an XG block. Values arriving via Set/Schedule flow through
+	// host_value into the serial line; the snapshot it compares against is
+	// this block's truth (same begin_block as VST3)
 	if (au->xg) {
 		if (!au->xg->seeded())
 			au->xg->seed_values();
@@ -737,10 +761,15 @@ bool param_info(AudioUnitParameterID id, AudioUnitParameterInfo *out)
 	return true;
 }
 
+// Gain reads the panel's live value (same as VST3's getParamNormalized), so a
+// host polling GetParameter sees panel moves with no SetParameter involved.
+// There is no AUv2 push path (the component dispatch has no parameter-listener
+// selectors; host-side AUListener polling is the mechanism), so liveness here
+// is what makes panel→host recording work
 AudioUnitParameterValue param_get(au_instance *au, AudioUnitParameterID id)
 {
 	switch (id) {
-	case kParamGain:   return au->gain;
+	case kParamGain:   return au->eng.panel().gain();
 	case kParamStatus: return au->eng.state() == smu2000::vst3::status::ready ? 1.0f
 	                        : au->eng.state() == smu2000::vst3::status::failed ? 2.0f : 0.0f;
 	default: break;
@@ -753,14 +782,13 @@ AudioUnitParameterValue param_get(au_instance *au, AudioUnitParameterID id)
 	return 0.0f;
 }
 
-// XG の値をホストから受け取る。VST3 の process と同じく、変わったところだけ
-// CC かパラメータチェンジにして offset の位置に置く。gain は外の掛け算なので
-// その場で panel に書く
+// Taking an XG value from the host. Like VST3's process, only changed values
+// flow, as a CC or a parameter change queued at offset. Gain is a multiply
+// outside the synth, so it goes straight to the panel
 void param_set_at(au_instance *au, AudioUnitParameterID id, AudioUnitParameterValue v, UInt32 offset)
 {
 	if (id == kParamGain) {
-		au->gain = std::clamp(v, 0.0f, 1.0f);
-		au->eng.panel().set_gain(au->gain);
+		au->eng.panel().set_gain(std::clamp(v, 0.0f, 1.0f));
 		au->notify_all(kAudioUnitProperty_ParameterStringFromValue, kAudioUnitScope_Global, id);
 		return;
 	}
@@ -772,7 +800,7 @@ void param_set_at(au_instance *au, AudioUnitParameterID id, AudioUnitParameterVa
 	const autom::entry &e = autom::entries()[size_t(xi)];
 	const int iv = autom::clamp_value(e, v);
 	au->xg->host_value(xi, iv, [&](int port, const uint8_t *bytes, int n) {
-		(void)port;   // AUv2 の 1 本の流れはつねに MIDI IN A (port 0)
+		(void)port;   // AUv2's single stream is always MIDI IN A (port 0)
 		au->queue(offset, bytes, size_t(n));
 	});
 }
@@ -940,6 +968,16 @@ OSStatus prop_info(au_instance *au, AudioUnitPropertyID id, AudioUnitScope scope
 		out.writable = true;
 		return noErr;
 
+	// The name of a clump (AUv3's AUParameterGroup equivalent): "Part A1" /
+	// "Master" / "Insertion 1". Queried like ParameterIDName, with the clumpID
+	// in inID. element is unused (the clump travels inside the struct)
+	case kAudioUnitProperty_ParameterClumpName:
+		if (!want_global_scope(scope, err))
+			return err;
+		out.size = sizeof(au_id_name);
+		out.writable = false;
+		return noErr;
+
 	// One audio output. The global scope answers the same thing, as
 	// DLSMusicDevice does. **There is no stream format for the MIDI input.**
 	// Answering with a "MIDI stream" here makes auval treat it as the input
@@ -1066,7 +1104,8 @@ OSStatus prop_get(au_instance *au, AudioUnitPropertyID id, AudioUnitScope scope,
 
 		// And this AU's own contents
 		CFDictionarySetValue(dict, CFSTR("S-MU2000"), d);
-		CFNumberRef g = CFNumberCreate(kCFAllocatorDefault, kCFNumberFloat32Type, &au->gain);
+		const float gain = au->eng.panel().gain();
+		CFNumberRef g = CFNumberCreate(kCFAllocatorDefault, kCFNumberFloat32Type, &gain);
 		CFDictionarySetValue(dict, CFSTR("S-MU2000-OutputLevel"), g);
 		CFRelease(g);
 		CFRelease(d);
@@ -1237,6 +1276,23 @@ OSStatus prop_get(au_instance *au, AudioUnitPropertyID id, AudioUnitScope scope,
 		}
 		*static_cast<CFStringRef *>(data) = s;
 		*size = sizeof(CFStringRef);
+		return noErr;
+	}
+
+	case kAudioUnitProperty_ParameterClumpName: {
+		if (*size < sizeof(au_id_name))
+			return kAudioUnitErr_InvalidPropertyValue;
+		auto *q = static_cast<au_id_name *>(data);
+		// inDesiredLength asks how many characters a short name may use. There
+		// are no short aliases, so the full name always comes back
+		(void)q->inDesiredLength;
+		const std::vector<std::string> &groups = au_groups();
+		if (q->inID == 0 || q->inID > groups.size())
+			return kAudioUnitErr_InvalidParameter;
+		q->outName = CFStringCreateWithCString(kCFAllocatorDefault,
+		                                       groups[size_t(q->inID) - 1].c_str(),
+		                                       kCFStringEncodingUTF8);
+		*size = sizeof(au_id_name);
 		return noErr;
 	}
 
@@ -1638,8 +1694,9 @@ OSStatus au_initialize(void *self)
 	// the head of the song (same fix as upstream issue #19 for VST3/CLAP)
 	if (!au->eng.wait_ready(30000))
 		au->eng.log_line("起動が終わらないまま演奏に入る");
-	// 再生頭でホストが流してくる XG の値の flood を、音源がもう持っている値
-	// として弾くための種 (VST3・AUv3 の seed_values と同じ)
+	// Seed against the flood of XG values a host sends at the playback head:
+	// values the synth already holds are dropped instead of replayed
+	// (same seed_values as VST3 and AUv3)
 	if (au->xg)
 		au->xg->seed_values();
 	return noErr;

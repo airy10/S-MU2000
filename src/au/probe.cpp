@@ -247,9 +247,57 @@ int show_info(AudioUnit unit)
 						CFStringGetCString(info.cfNameString, name, sizeof(name), kCFStringEncodingUTF8);
 					AudioUnitParameterValue v = 0;
 					AudioUnitGetParameter(unit, id, kAudioUnitScope_Global, 0, &v);
-					std::printf("  [%u] %-20s %.3f - %.3f（今 %.3f）\n", unsigned(id), name,
-					            double(info.minValue), double(info.maxValue), double(v));
+					if (info.flags & kAudioUnitParameterFlag_HasClump)
+						std::printf("  [%u] %-20s %.3f - %.3f (now %.3f) clump %u\n", unsigned(id),
+						            name, double(info.minValue), double(info.maxValue), double(v),
+						            unsigned(info.clumpID));
+					else
+						std::printf("  [%u] %-20s %.3f - %.3f (now %.3f)\n", unsigned(id), name,
+						            double(info.minValue), double(info.maxValue), double(v));
 				}
+			}
+		}
+	}
+
+	// Clump names (should match AUv3's group names)
+	{
+		std::vector<UInt32> clumps;
+		UInt32 size = 0;
+		if (AudioUnitGetPropertyInfo(unit, kAudioUnitProperty_ParameterList, kAudioUnitScope_Global,
+		                             0, &size, nullptr) == noErr) {
+			std::vector<AudioUnitParameterID> ids(size / sizeof(AudioUnitParameterID));
+			if (AudioUnitGetProperty(unit, kAudioUnitProperty_ParameterList, kAudioUnitScope_Global,
+			                         0, ids.data(), &size) == noErr) {
+				for (AudioUnitParameterID id : ids) {
+					AudioUnitParameterInfo info{};
+					UInt32 is = sizeof(info);
+					if (AudioUnitGetProperty(unit, kAudioUnitProperty_ParameterInfo,
+					                         kAudioUnitScope_Global, id, &info,
+					                         &is) == noErr &&
+					    (info.flags & kAudioUnitParameterFlag_HasClump) &&
+					    std::find(clumps.begin(), clumps.end(), info.clumpID) == clumps.end())
+						clumps.push_back(info.clumpID);
+				}
+			}
+		}
+		struct id_name {
+			AudioUnitParameterID inID;
+			CFStringRef outName;
+			UInt32 inDesiredLength;
+		};
+		std::printf("%zu clumps:\n", clumps.size());
+		for (UInt32 c : clumps) {
+			id_name q{ c, nullptr, 64 };
+			UInt32 qs = sizeof(q);
+			if (AudioUnitGetProperty(unit, kAudioUnitProperty_ParameterClumpName,
+			                         kAudioUnitScope_Global, 0, &q, &qs) == noErr &&
+			    q.outName) {
+				char buf[64] = {};
+				CFStringGetCString(q.outName, buf, sizeof(buf), kCFStringEncodingUTF8);
+				std::printf("  clump %u = %s\n", unsigned(c), buf);
+				CFRelease(q.outName);
+			} else {
+				std::printf("  clump %u = (no name)\n", unsigned(c));
 			}
 		}
 	}

@@ -48,9 +48,10 @@ constexpr AUAudioFrameCount MAX_FRAMES = 4096;
 // MIDI IN A-D。機械の口の数から取るので、増えたら付いてくる
 constexpr int PORTS = mu2000::MIDI_PORTS;
 
-// XG の値のパラメータと共有する出力レベル。VST3 の Output (4096) や CLAP の
-// Output (0) と同じ値で、AUv2 の kParamGain (0) とも同じ番号。XG の番号
-// (65536〜) とは重ならないので、そのまま AUParameterAddress にする
+// Output level, sharing the address space with the XG value parameters. Same
+// value as VST3's Output (4096) and CLAP's Output (0), and same ID as AUv2's
+// kParamGain (0). No overlap with the XG IDs (65536 and up), so the IDs go to
+// AUParameterAddress untouched
 constexpr AUParameterAddress kGainAddress = 0;
 
 // 描き出しの中で使う器。確保はここではしない（allocateRenderResources で済ませる）
@@ -212,9 +213,10 @@ void feed_ump(smu2000::plug::engine *eng, scratch *sc, const AUMIDIEventList &ev
 @implementation SMU2000AudioUnitV3 {
 	std::unique_ptr<smu2000::plug::engine> _engine;
 	std::unique_ptr<scratch>               _scratch;
-	// VST3・CLAP と同じ XG の値の表 (src/vst3/automation.h) を、ホストとの間で
-	// 受け渡すための入れ物 (src/vst3/automation_host.h)。音源へは render の中で
-	// host_value から CC かパラメータチェンジにして流す
+	// The XG value exchange with the host: the same table VST3 and CLAP use
+	// (src/vst3/automation.h), carried in the same holder
+	// (src/vst3/automation_host.h). Values reach the synth in the render block,
+	// via host_value as CC or parameter-change messages
 	std::unique_ptr<smu2000::automation::host> _xgHost;
 	AUParameterTree                   *_paramTree;
 	AUAudioUnitBusArray                   *_inputBusArray;
@@ -223,9 +225,9 @@ void feed_ump(smu2000::plug::engine *eng, scratch *sc, const AUMIDIEventList &ev
 	AUAudioUnitBus                        *_outputBus;
 }
 
-// XG の値の木を作る。番号は VST3・CLAP と同じ (PART_BASE 65536〜) で、一度
-// 決めたら動かさない (automation.h)。値も XG の値そのもの (plain) で、0-1 に
-// 畳まない (CLAP と同じ持ち方)
+// Build the XG value tree. IDs match VST3 and CLAP (PART_BASE 65536 and up)
+// and never move once set (automation.h). Values stay as plain XG values,
+// never squeezed into 0-1 (same holding as CLAP)
 - (void)buildParameterTree
 {
 	namespace autom = smu2000::automation;
@@ -248,8 +250,8 @@ void feed_ump(smu2000::plug::engine *eng, scratch *sc, const AUMIDIEventList &ev
 	                                                    name:@"Output"
 	                                                children:@[gain]]];
 
-	// group ("Part A1" / "Master" / "Insertion 1") ごとにまとめる。
-	// VST3 のユニット・CLAP のモジュールと同じ分け方
+	// Grouped by group ("Part A1" / "Master" / "Insertion 1").
+	// Same split as VST3 units and CLAP modules
 	NSMutableArray *groupOrder = [NSMutableArray array];
 	NSMutableDictionary<NSString *, NSMutableArray *> *groupParams =
 	    [NSMutableDictionary dictionary];
@@ -284,8 +286,9 @@ void feed_ump(smu2000::plug::engine *eng, scratch *sc, const AUMIDIEventList &ev
 
 	_paramTree = [AUParameterTree createTreeWithChildren:top];
 	__weak SMU2000AudioUnitV3 *weakSelf = self;
-	// ホストが値を置いた (自動化の再生など)。音源へは render の中で入れるので、
-	// ここは見せる値の控えだけ (VST3 の setParamNormalized と同じ)
+	// The host put a value (automation playback etc.). Sound injection happens
+	// in render, so this only remembers the shown value (same as VST3's
+	// setParamNormalized)
 	_paramTree.implementorValueObserver = ^(AUParameter *param, AUValue value) {
 		SMU2000AudioUnitV3 *strong = weakSelf;
 		if (!strong || !strong->_engine || !strong->_xgHost)
@@ -299,8 +302,9 @@ void feed_ump(smu2000::plug::engine *eng, scratch *sc, const AUMIDIEventList &ev
 			return;
 		strong->_xgHost->remember(xi, autom::clamp_value(autom::entries()[size_t(xi)], value));
 	};
-	// ホストが今の値を聞いてきた。触ってから 1 秒は触った値、それより後は
-	// 音源の RAM の写しから読む (automation_host.h の shown_value)
+	// The host asked for the current value. Fresh edits (under a second old)
+	// come back as-is; older ones are re-read from the synth's RAM snapshot
+	// (automation_host.h's shown_value)
 	_paramTree.implementorValueProvider = ^AUValue(AUParameter *param) {
 		SMU2000AudioUnitV3 *strong = weakSelf;
 		if (!strong || !strong->_engine || !strong->_xgHost)
@@ -344,9 +348,10 @@ void feed_ump(smu2000::plug::engine *eng, scratch *sc, const AUMIDIEventList &ev
 	self.parameterTree = _paramTree;
 }
 
-// 画面で XG の値を触ったらホストへ伝える (VST3 の beginEdit/performEdit/endEdit
-// に当たる)。つまみを離したことは分からないので、0.4 秒触られなかったら終わり
-// (automation_host.h の gui_idle)
+// Tell the host about XG values touched on the panel (the equivalent of
+// VST3's beginEdit/performEdit/endEdit). Releasing a knob is invisible, so a
+// value untouched for 0.4s counts as the end of the gesture
+// (automation_host.h's gui_idle)
 - (void)installEditHandlers
 {
 	__weak SMU2000AudioUnitV3 *weakSelf = self;
@@ -434,7 +439,8 @@ void feed_ump(smu2000::plug::engine *eng, scratch *sc, const AUMIDIEventList &ev
 	_scratch = std::make_unique<scratch>();
 	_xgHost = std::make_unique<smu2000::automation::host>(*_engine);
 
-	// 本の糸で表を 1 回作っておく (音声の糸で初めて作らせない。automation.h)
+	// Build the table once on the main thread (it must never first build on
+	// the audio thread; see automation.h)
 	[self buildParameterTree];
 	[self installEditHandlers];
 
@@ -464,7 +470,7 @@ void feed_ump(smu2000::plug::engine *eng, scratch *sc, const AUMIDIEventList &ev
 
 - (void)dealloc
 {
-	// 画面からの通知を先に止める (VST3 のデストラクタと同じ)
+	// Stop panel notifications first (same as VST3's destructor)
 	if (_engine)
 		_engine->set_edit_handlers(nullptr, nullptr, nullptr);
 	// Free the buffers here. super's dealloc (inserted by ARC) calls
@@ -568,9 +574,9 @@ void feed_ump(smu2000::plug::engine *eng, scratch *sc, const AUMIDIEventList &ev
 		if (frameCount > MAX_FRAMES)
 			return kAudioUnitErr_TooManyFramesToProcess;
 
-		// 最初の区間の頭で RAM から種を仕込む (VST3 の seed_values と同じ)。
-		// 再生頭でホストが 1,300 個近い値をまとめて流してきても、自分で戻した
-		// 値の写しなので直列に戻さない
+		// Seed from RAM at the head of the first block (same seed_values as
+		// VST3). A host dumping ~1,300 values at the playback head is just
+		// echoing back what was restored, so nothing goes down the serial line
 		if (!xg->seeded())
 			xg->seed_values();
 		xg->begin_block();
@@ -617,7 +623,8 @@ void feed_ump(smu2000::plug::engine *eng, scratch *sc, const AUMIDIEventList &ev
 			}
 		}
 
-		// MIDI とパラメータを挟みながら区間ごとに作る。事象の位置は標本単位で正しく効く
+		// Render slice by slice, interleaving MIDI and parameter events. Event
+		// positions take effect sample-accurately
 		const AURenderEvent *e = realtimeEventListHead;
 		AUAudioFrameCount done = 0;
 		while (done < frameCount) {
@@ -629,8 +636,9 @@ void feed_ump(smu2000::plug::engine *eng, scratch *sc, const AUMIDIEventList &ev
 					break;
 				if (e->head.eventType == AURenderEventParameter ||
 				    e->head.eventType == AURenderEventParameterRamp) {
-					// ランプは終わりの値で受ける。XG は整数の値なので途中に
-					// 意味はなく、出力レベルは下で 1/512 ずつ寄せている
+					// Ramps land on their end value. XG values are integers with
+					// nothing meaningful in between, and the output level gets
+					// its own 1/512 smoothing below
 					const AUParameterAddress addr = e->parameter.parameterAddress;
 					const AUValue v = e->parameter.value;
 					if (addr == kGainAddress) {
@@ -732,8 +740,9 @@ static NSString *const kStateKey = @"S-MU2000.nvram";
 	if (_engine && [d isKindOfClass:[NSData class]] && d.length)
 		_engine->load_state(static_cast<const uint8_t *>(d.bytes), d.length);
 	if (_engine && _xgHost) {
-		// 戻した値を bridge にも写し、ホストの持っている値を読み直させる。
-		// さもないと復元前の古い控え (remember) が残る (VST3 の setState と同じ)
+		// Mirror the restored values into the bridge too, and let the host
+		// re-read what it holds. Otherwise the pre-restore cache (remember)
+		// survives (same as VST3's setState)
 		_engine->publish_xg_now();
 		_xgHost->forget_recent();
 	}
@@ -799,7 +808,8 @@ static NSString *const kStateKey = @"S-MU2000.nvram";
 	if (!currentPreset || currentPreset.number != 0)
 		return;
 	if (_engine) {
-		// ホストにも伝わるようパラメータ経由で戻す (observer が panel に書く)
+		// Reset through the parameter so the host hears about it too (the
+		// observer writes it to the panel)
 		AUParameter *gain = [_paramTree parameterWithAddress:kGainAddress];
 		if (gain)
 			[gain setValue:1.0f originator:nil];

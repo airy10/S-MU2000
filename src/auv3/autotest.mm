@@ -130,7 +130,7 @@ int main(int argc, const char *argv[])
 		bool split = false;                   // --split: Cog と同じく道を 2 つに分ける
 		bool sysex_ump = false;               // --sysex-ump: SysEx も MIDIEventList で送る
 		int view_check = 0;                   // --view / --view2: 画面が出るかだけ見る
-		bool params_only = false;             // --params: パラメータの木だけ見る (起動を待たない)
+		bool params_only = false;             // --params: parameter tree only (no boot wait)
 		int preamble = 0;                     // --pre <印>: 1 消音 / 2 A に GS / 4 B に GS
 		for (int i = 1; i < argc; i++) {
 			if (!std::strcmp(argv[i], "--system")) use_system = true;
@@ -210,19 +210,19 @@ int main(int argc, const char *argv[])
 		// （か、口ごとに音源をもう 1 台開いて起動を何回もやる）
 		std::printf("  MIDI 入   ケーブル %ld 本\n", (long)au.virtualMIDICableCount);
 
-		// ---- --params: XG の値のパラメータの木だけ見る。起動も描き出しも要らない
+		// ---- --params: XG value parameter tree only. No boot, no rendering
 		if (params_only) {
 			AUParameterTree *tree = au.parameterTree;
 			const size_t want = 1 + smu2000::automation::entries().size();
-			std::printf("パラメータ %lu 個 (want %zu)\n",
+			std::printf("%lu parameters (want %zu)\n",
 			            (unsigned long)tree.allParameters.count, want);
 			if (tree.allParameters.count != want) {
-				std::fprintf(stderr, "数が合わない\n");
+				std::fprintf(stderr, "count mismatch\n");
 				return 1;
 			}
 			AUParameter *gain = [tree parameterWithAddress:0];
 			if (!gain || gain.minValue != 0.0f || gain.maxValue != 1.0f) {
-				std::fprintf(stderr, "Output が無い\n");
+				std::fprintf(stderr, "no Output\n");
 				return 1;
 			}
 			[gain setValue:0.5f originator:nil];
@@ -235,28 +235,28 @@ int main(int argc, const char *argv[])
 				AUParameter *p = [tree parameterWithAddress:AUParameterAddress(e.id)];
 				if (!p || p.minValue != float(smu2000::automation::lo(e)) ||
 				    p.maxValue != float(smu2000::automation::hi(e))) {
-					std::fprintf(stderr, "無いか範囲が違う: %s (%u)\n",
+					std::fprintf(stderr, "missing or wrong range: %s (%u)\n",
 					             e.name.c_str(), e.id);
 					if (++fails > 5)
 						return 1;
 					continue;
 				}
-				// 表示と打ち込みが往復すること
+				// Display text and parsed input must round-trip
 				NSString *s = [p stringFromValue:nil];
 				if (!s.length) {
-					std::fprintf(stderr, "表示が無い: %s\n", e.name.c_str());
+					std::fprintf(stderr, "no display text: %s\n", e.name.c_str());
 					if (++fails > 5)
 						return 1;
 				}
 			}
-			// 1 つ動かしてホスト→音源の受け取りだけ見る (値は控えに残る)
+			// Move one value through the host→synth path (the value stays cached)
 			AUParameter *vol = [tree parameterWithAddress:65536];
 			[vol setValue:80.0f originator:nil];
 			std::printf("A1 Volume 80 -> %g / %s\n", double(vol.value),
 			            [vol stringFromValue:nil].UTF8String);
 			if (vol.value != 80.0f)
 				return 1;
-			std::printf("OK: パラメータの木\n");
+			std::printf("OK: parameter tree\n");
 			return fails ? 1 : 0;
 		}
 
