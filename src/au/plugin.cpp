@@ -30,6 +30,8 @@
 #include "editor.h"
 #include "render_watch.h"
 #include "state.h"
+#include "vst3/automation.h"
+#include "vst3/automation_host.h"
 #include "vst3/engine.h"
 
 #include <AudioToolbox/AudioToolbox.h>
@@ -69,15 +71,55 @@ constexpr UInt32 kGlobalElement = 0;
 
 // ---- Parameters
 //
-// An AU has no MIDI-number-to-parameter convention like VST3's IMidiMapping,
-// so there is nothing to map and no reason to build the VST3 side's 2096 of
-// them. These are only what a host's generic panel can usefully show; MIDI goes
-// in through the MusicDevice entry points instead
+// MIDI は MusicDevice の口から入るので、VST3 のような隠し CC パラメータは
+// 要らない。ホストの汎用パネルとオートメーションに見せるのは、出力レベルと
+// 状態に加えて、VST3・CLAP・AUv3 と同じ XG の値の表 (src/vst3/automation.h)。
+// 番号も同じ (PART_BASE 65536〜) で、一度決めたら動かさない
 enum : AudioUnitParameterID {
 	kParamGain   = 0,
 	kParamStatus = 1,
-	kParamCount  = 2,
 };
+
+namespace autom = smu2000::automation;
+
+// ParameterList に並べる順番。0・1 の次に XG の表の順番
+inline size_t au_param_count()
+{
+	return 2 + autom::entries().size();
+}
+
+inline AudioUnitParameterID au_param_id_at(size_t index)
+{
+	if (index == 0)
+		return kParamGain;
+	if (index == 1)
+		return kParamStatus;
+	return AudioUnitParameterID(autom::entries()[index - 2].id);
+}
+
+// パラメータ番号がこの AU のものか。XG は表にある番号だけ
+inline bool au_param_valid(AudioUnitParameterID id)
+{
+	if (id == kParamGain || id == kParamStatus)
+		return true;
+	return autom::index_of(uint32_t(id)) >= 0;
+}
+
+// XG の clump (汎用パネルの grouping)。表の group ("Part A1" / "Master" /
+// "Insertion 1") の出た順に 1 から。0 は system 用なので使わない
+inline UInt32 au_param_clump(const autom::entry &want)
+{
+	static std::vector<std::string> groups;
+	if (groups.empty()) {
+		for (const autom::entry &e : autom::entries())
+			if (std::find(groups.begin(), groups.end(), e.group) == groups.end())
+				groups.push_back(e.group);
+	}
+	for (size_t i = 0; i < groups.size(); i++)
+		if (groups[i] == want.group)
+			return UInt32(i + 1);
+	return 0;
+}
 
 constexpr UInt32 kMaxFramesDefault = 1156;
 // How many MIDI messages may be waiting between two render blocks. Past this
@@ -139,6 +181,10 @@ struct au_instance
 	AudioComponentInstance instance = nullptr;
 
 	smu2000::vst3::engine eng;
+
+	// XG の値のパラメータをホストとの間で受け渡す入れ物。VST3・CLAP・AUv3 と
+	// 同じもの (src/vst3/automation_host.h)。au_open で作る (表は本の糸で)
+	std::unique_ptr<smu2000::automation::host> xg;
 
 	// The render-context observer handed to hosts (kAudioUnitProperty_
 	// RenderContextObserver): the host's audio workgroup for our parallel
@@ -413,6 +459,10 @@ OSStatus au_open(void *self, AudioComponentInstance instance)
 	au->midi_in.reserve(kMidiReserveMsgs);
 	au->midi_work.reserve(kMidiReserveMsgs);
 
+	// XG の値の表は本の糸で 1 回作っておく (音声の糸で初めて作らせない)
+	au->xg = std::make_unique<smu2000::automation::host>(au->eng);
+	(void)smu2000::automation::entries();
+
 	// Find and read the ROMs and start booting on another thread. Returns at once
 	au->eng.start();
 	return noErr;
@@ -496,6 +546,14 @@ OSStatus render_block(au_instance *au, AudioUnitRenderActionFlags *flags,
 		return kAudioUnitErr_TooManyFramesToProcess;
 	}
 	au->note_layout(io);
+
+	// XG の値の区切りの頭。ホストから Set/Schedule で来た値を host_value が
+	// 直列に流すとき、写しはこの区間の真実から読む (VST3 の begin_block と同じ)
+	if (au->xg) {
+		if (!au->xg->seeded())
+			au->xg->seed_values();
+		au->xg->begin_block();
+	}
 
 	// Interleaved output (one buffer holding both channels) is made into two
 	// scratch buffers and written back. They cannot hold the whole block, so it
@@ -624,31 +682,58 @@ OSStatus render_block(au_instance *au, AudioUnitRenderActionFlags *flags,
 
 void param_name(AudioUnitParameterID id, CFStringRef *out)
 {
-	*out = CFStringCreateWithCString(kCFAllocatorDefault,
-	                                 id == kParamGain ? "Output Level" : "Status",
-	                                 kCFStringEncodingUTF8);
+	const char *name = "Output Level";
+	std::string owned;
+	if (id != kParamGain && id != kParamStatus) {
+		const int xi = autom::index_of(uint32_t(id));
+		if (xi >= 0) {
+			owned = autom::entries()[size_t(xi)].name;
+			name = owned.c_str();
+		} else {
+			name = "";
+		}
+	} else if (id == kParamStatus) {
+		name = "Status";
+	}
+	*out = CFStringCreateWithCString(kCFAllocatorDefault, name, kCFStringEncodingUTF8);
 }
 
 bool param_info(AudioUnitParameterID id, AudioUnitParameterInfo *out)
 {
-	if (id >= kParamCount)
+	if (id == kParamGain || id == kParamStatus) {
+		std::memset(out, 0, sizeof(*out));
+		out->flags = kAudioUnitParameterFlag_IsReadable | kAudioUnitParameterFlag_IsWritable |
+		             kAudioUnitParameterFlag_HasCFNameString |
+		             kAudioUnitParameterFlag_CFNameRelease;
+		param_name(id, &out->cfNameString);
+		out->unit = kAudioUnitParameterUnit_LinearGain;
+		out->minValue = 0.0f;
+		out->maxValue = 1.0f;
+		out->defaultValue = 1.0f;
+		if (id == kParamStatus) {
+			out->flags &= ~kAudioUnitParameterFlag_IsWritable;
+			out->unit = kAudioUnitParameterUnit_Indexed;
+			out->minValue = 0.0f;
+			out->maxValue = 2.0f;
+			out->defaultValue = 0.0f;
+		}
+		return true;
+	}
+	const int xi = autom::index_of(uint32_t(id));
+	if (xi < 0)
 		return false;
+	const autom::entry &e = autom::entries()[size_t(xi)];
 	std::memset(out, 0, sizeof(*out));
 	out->flags = kAudioUnitParameterFlag_IsReadable | kAudioUnitParameterFlag_IsWritable |
 	             kAudioUnitParameterFlag_HasCFNameString |
-	             kAudioUnitParameterFlag_CFNameRelease;
+	             kAudioUnitParameterFlag_CFNameRelease |
+	             kAudioUnitParameterFlag_ValuesHaveStrings | kAudioUnitParameterFlag_HasClump;
+	out->clumpID = au_param_clump(e);
 	param_name(id, &out->cfNameString);
-	out->unit = kAudioUnitParameterUnit_LinearGain;
-	out->minValue = 0.0f;
-	out->maxValue = 1.0f;
-	out->defaultValue = 1.0f;
-	if (id == kParamStatus) {
-		out->flags &= ~kAudioUnitParameterFlag_IsWritable;
-		out->unit = kAudioUnitParameterUnit_Indexed;
-		out->minValue = 0.0f;
-		out->maxValue = 2.0f;
-		out->defaultValue = 0.0f;
-	}
+	out->unit = kAudioUnitParameterUnit_Generic;
+	out->minValue = AudioUnitParameterValue(autom::lo(e));
+	out->maxValue = AudioUnitParameterValue(autom::hi(e));
+	out->defaultValue = AudioUnitParameterValue(autom::def(e));
 	return true;
 }
 
@@ -660,20 +745,41 @@ AudioUnitParameterValue param_get(au_instance *au, AudioUnitParameterID id)
 	                        : au->eng.state() == smu2000::vst3::status::failed ? 2.0f : 0.0f;
 	default: break;
 	}
+	if (au->xg) {
+		const int xi = autom::index_of(uint32_t(id));
+		if (xi >= 0)
+			return AudioUnitParameterValue(au->xg->shown_value(xi));
+	}
 	return 0.0f;
+}
+
+// XG の値をホストから受け取る。VST3 の process と同じく、変わったところだけ
+// CC かパラメータチェンジにして offset の位置に置く。gain は外の掛け算なので
+// その場で panel に書く
+void param_set_at(au_instance *au, AudioUnitParameterID id, AudioUnitParameterValue v, UInt32 offset)
+{
+	if (id == kParamGain) {
+		au->gain = std::clamp(v, 0.0f, 1.0f);
+		au->eng.panel().set_gain(au->gain);
+		au->notify_all(kAudioUnitProperty_ParameterStringFromValue, kAudioUnitScope_Global, id);
+		return;
+	}
+	if (!au->xg)
+		return;
+	const int xi = autom::index_of(uint32_t(id));
+	if (xi < 0)
+		return;
+	const autom::entry &e = autom::entries()[size_t(xi)];
+	const int iv = autom::clamp_value(e, v);
+	au->xg->host_value(xi, iv, [&](int port, const uint8_t *bytes, int n) {
+		(void)port;   // AUv2 の 1 本の流れはつねに MIDI IN A (port 0)
+		au->queue(offset, bytes, size_t(n));
+	});
 }
 
 void param_set(au_instance *au, AudioUnitParameterID id, AudioUnitParameterValue v)
 {
-	switch (id) {
-	case kParamGain:
-		au->gain = std::clamp(v, 0.0f, 1.0f);
-		au->eng.panel().set_gain(au->gain);
-		au->notify_all(kAudioUnitProperty_ParameterStringFromValue, kAudioUnitScope_Global, id);
-		break;
-	default:
-		break;
-	}
+	param_set_at(au, id, v, 0);
 }
 
 
@@ -803,14 +909,14 @@ OSStatus prop_info(au_instance *au, AudioUnitPropertyID id, AudioUnitScope scope
 	case kAudioUnitProperty_ParameterList:
 		if (!want_global(scope, element, err))
 			return err;
-		out.size = kParamCount * sizeof(AudioUnitParameterID);
+		out.size = UInt32(au_param_count() * sizeof(AudioUnitParameterID));
 		out.writable = false;
 		return noErr;
 
 	case kAudioUnitProperty_ParameterInfo:
 		if (!want_global_scope(scope, err))
 			return err;
-		if (element >= kParamCount)
+		if (!au_param_valid(element))
 			return kAudioUnitErr_InvalidParameter;
 		out.size = sizeof(AudioUnitParameterInfo);
 		out.writable = false;
@@ -819,7 +925,7 @@ OSStatus prop_info(au_instance *au, AudioUnitPropertyID id, AudioUnitScope scope
 	case kAudioUnitProperty_ParameterStringFromValue:
 		if (!want_global_scope(scope, err))
 			return err;
-		if (element >= kParamCount)
+		if (!au_param_valid(element))
 			return kAudioUnitErr_InvalidParameter;
 		out.size = sizeof(CFStringRef);
 		out.writable = false;
@@ -828,7 +934,7 @@ OSStatus prop_info(au_instance *au, AudioUnitPropertyID id, AudioUnitScope scope
 	case kAudioUnitProperty_ParameterValueFromString:
 		if (!want_global_scope(scope, err))
 			return err;
-		if (element >= kParamCount)
+		if (!au_param_valid(element))
 			return kAudioUnitErr_InvalidParameter;
 		out.size = sizeof(AudioUnitParameterValue);
 		out.writable = true;
@@ -1083,12 +1189,13 @@ OSStatus prop_get(au_instance *au, AudioUnitPropertyID id, AudioUnitScope scope,
 	}
 
 	case kAudioUnitProperty_ParameterList: {
-		if (*size < kParamCount * sizeof(AudioUnitParameterID))
+		const size_t n = au_param_count();
+		if (*size < n * sizeof(AudioUnitParameterID))
 			return kAudioUnitErr_InvalidPropertyValue;
 		auto *out = static_cast<AudioUnitParameterID *>(data);
-		for (AudioUnitParameterID i = 0; i < kParamCount; i++)
-			out[i] = i;
-		*size = kParamCount * sizeof(AudioUnitParameterID);
+		for (size_t i = 0; i < n; i++)
+			out[i] = au_param_id_at(i);
+		*size = UInt32(n * sizeof(AudioUnitParameterID));
 		return noErr;
 	}
 
@@ -1104,17 +1211,29 @@ OSStatus prop_get(au_instance *au, AudioUnitPropertyID id, AudioUnitScope scope,
 	case kAudioUnitProperty_ParameterStringFromValue: {
 		if (*size < sizeof(CFStringRef))
 			return kAudioUnitErr_InvalidPropertyValue;
-		if (element >= kParamCount)
+		if (!au_param_valid(element))
 			return kAudioUnitErr_InvalidParameter;
-		const AudioUnitParameterValue v = param_get(au, element);
 		CFStringRef s = nullptr;
 		if (element == kParamGain) {
+			const AudioUnitParameterValue v = param_get(au, element);
 			char buf[32];
 			std::snprintf(buf, sizeof(buf), "%.3f", double(v));
 			s = CFStringCreateWithCString(kCFAllocatorDefault, buf, kCFStringEncodingUTF8);
-		} else {
+		} else if (element == kParamStatus) {
+			const AudioUnitParameterValue v = param_get(au, element);
 			const char *t = v == 1.0f ? "ready" : v == 2.0f ? "failed" : "loading";
 			s = CFStringCreateWithCString(kCFAllocatorDefault, t, kCFStringEncodingUTF8);
+		} else if (au->xg) {
+			const int xi = autom::index_of(uint32_t(element));
+			if (xi < 0)
+				return kAudioUnitErr_InvalidParameter;
+			const autom::entry &e = autom::entries()[size_t(xi)];
+			const int iv = autom::clamp_value(e, param_get(au, element));
+			s = CFStringCreateWithCString(kCFAllocatorDefault,
+			                              autom::text(e, iv, au->xg->view_ram()).c_str(),
+			                              kCFStringEncodingUTF8);
+		} else {
+			return kAudioUnitErr_InvalidParameter;
 		}
 		*static_cast<CFStringRef *>(data) = s;
 		*size = sizeof(CFStringRef);
@@ -1259,6 +1378,10 @@ OSStatus prop_set(au_instance *au, AudioUnitPropertyID id, AudioUnitScope scope,
 		// machine apply it once it is up. Blocking here instead would hold the
 		// host's thread for as long as a cold boot takes
 		au->eng.load_state(raw.data(), raw.size());
+		if (au->xg) {
+			au->eng.publish_xg_now();
+			au->xg->forget_recent();
+		}
 
 		// Put the card back in the slot, if there was one and the file is still
 		// where it was. A preset with no card ejects whatever was there
@@ -1318,14 +1441,31 @@ OSStatus prop_set(au_instance *au, AudioUnitPropertyID id, AudioUnitScope scope,
 		}
 		param_set(au, kParamGain, 1.0f);
 		au->hush();
+		if (au->xg)
+			au->xg->forget_recent();
 		return noErr;
 
 	case kAudioUnitProperty_ParameterValueFromString: {
-		if (element >= kParamCount || size < sizeof(CFStringRef))
+		if (!au_param_valid(element) || size < sizeof(CFStringRef))
 			return kAudioUnitErr_InvalidParameter;
 		const CFStringRef s = *static_cast<const CFStringRef *>(data);
-		const double v = s ? CFStringGetDoubleValue(s) : 0.0;
-		param_set(au, element, AudioUnitParameterValue(v));
+		if (element == kParamGain) {
+			const double v = s ? CFStringGetDoubleValue(s) : 0.0;
+			param_set(au, element, AudioUnitParameterValue(v));
+			return noErr;
+		}
+		if (!au->xg)
+			return kAudioUnitErr_InvalidParameter;
+		const int xi = autom::index_of(uint32_t(element));
+		if (xi < 0)
+			return kAudioUnitErr_InvalidParameter;
+		char buf[64] = {};
+		if (s)
+			CFStringGetCString(s, buf, sizeof(buf), kCFStringEncodingUTF8);
+		int value = 0;
+		if (!autom::parse(autom::entries()[size_t(xi)], buf, value, au->xg->view_ram()))
+			return kAudioUnitErr_InvalidPropertyValue;
+		param_set(au, element, AudioUnitParameterValue(value));
 		return noErr;
 	}
 
@@ -1498,6 +1638,10 @@ OSStatus au_initialize(void *self)
 	// the head of the song (same fix as upstream issue #19 for VST3/CLAP)
 	if (!au->eng.wait_ready(30000))
 		au->eng.log_line("起動が終わらないまま演奏に入る");
+	// 再生頭でホストが流してくる XG の値の flood を、音源がもう持っている値
+	// として弾くための種 (VST3・AUv3 の seed_values と同じ)
+	if (au->xg)
+		au->xg->seed_values();
 	return noErr;
 }
 
@@ -1636,7 +1780,7 @@ OSStatus au_get_parameter(void *self, AudioUnitParameterID id, AudioUnitScope sc
 	const OSStatus st = param_where(scope, element);
 	if (st != noErr)
 		return st;
-	if (id >= kParamCount)
+	if (!au_param_valid(id))
 		return kAudioUnitErr_InvalidParameter;
 	*value = param_get(au, id);
 	return noErr;
@@ -1648,13 +1792,14 @@ OSStatus au_set_parameter(void *self, AudioUnitParameterID id, AudioUnitScope sc
 	auto *au = static_cast<au_instance *>(self);
 	if (!au)
 		return kAudio_ParamError;
-	(void)offset;
 	const OSStatus st = param_where(scope, element);
 	if (st != noErr)
 		return st;
-	if (id >= kParamCount)
+	if (!au_param_valid(id))
 		return kAudioUnitErr_InvalidParameter;
-	param_set(au, id, value);
+	if (id == kParamStatus)
+		return kAudioUnitErr_PropertyNotWritable;
+	param_set_at(au, id, value, offset);
 	return noErr;
 }
 
@@ -1665,13 +1810,19 @@ OSStatus au_schedule_parameters(void *self, const AudioUnitParameterEvent *event
 		return kAudio_ParamError;
 	for (UInt32 i = 0; i < count; i++) {
 		const AudioUnitParameterEvent &e = events[i];
-		if (param_where(e.scope, e.element) != noErr || e.parameter >= kParamCount)
+		if (param_where(e.scope, e.element) != noErr || !au_param_valid(e.parameter))
 			continue;
-		// A ramp is answered with its start value. This machine's output level is a
-		// single multiply, so stepping it would not be audible anyway
-		const AudioUnitParameterValue v = e.eventType == kParameterEvent_Ramped
-		    ? e.eventValues.ramp.startValue : e.eventValues.immediate.value;
-		param_set(au, e.parameter, v);
+		// A ramp is answered with its start value at its start offset. This
+		// machine's output level is a single multiply with its own 1/512
+		// smoothing, and XG values are integers, so stepping is inaudible
+		if (e.eventType == kParameterEvent_Ramped) {
+			const SInt32 off = e.eventValues.ramp.startBufferOffset;
+			param_set_at(au, e.parameter, e.eventValues.ramp.startValue,
+			             UInt32(off < 0 ? 0 : off));
+		} else {
+			param_set_at(au, e.parameter, e.eventValues.immediate.value,
+			             e.eventValues.immediate.bufferOffset);
+		}
 	}
 	return noErr;
 }

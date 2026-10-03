@@ -1004,7 +1004,7 @@ AU_BIN := $(AU_DIR)/Contents/MacOS/S-MU2000
 # iids.cpp is view.cpp's: it answers IPlugView's interface id, and view.cpp
 # refers to it even when the host on the other side is an AU rather than a VST3
 AU_SRCS := src/au/plugin.cpp src/au/editor_mac.mm src/vst3/engine.cpp src/vst3/iids.cpp \
-           src/vst3/panel_nsview.mm \
+           src/vst3/automation.cpp src/vst3/panel_nsview.mm \
            $(PANEL_VIEW_SRCS) $(PANEL_SRCS) $(VST3_SDK_SRCS)
 AU_OBJS := $(AU_SRCS:%.cpp=$(BUILD)/vst3obj/%.o)
 AU_OBJS := $(AU_OBJS:%.mm=$(BUILD)/vst3obj/%.o)
@@ -1081,7 +1081,7 @@ AUV3_HOST  := $(AUV3_APP)/Contents/MacOS/S-MU2000
 # panel_nsview.mm builds the NSView, view_controller.mm only puts it in the
 # NSViewController the AUv3 hands its host
 AUV3_SRCS := src/auv3/audio_unit.mm src/auv3/factory.mm src/auv3/view_controller.mm \
-             src/vst3/engine.cpp src/vst3/iids.cpp src/vst3/panel_nsview.mm \
+             src/vst3/engine.cpp src/vst3/iids.cpp src/vst3/automation.cpp src/vst3/panel_nsview.mm \
              $(PANEL_VIEW_SRCS) $(PANEL_SRCS) $(VST3_SDK_SRCS)
 AUV3_OBJS := $(AUV3_SRCS:%.cpp=$(BUILD)/auv3obj/%.o)
 AUV3_OBJS := $(AUV3_OBJS:%.mm=$(BUILD)/auv3obj/%.o)

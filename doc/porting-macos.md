@@ -693,11 +693,13 @@ The pieces worth knowing about:
   because it waits for the blob to grow before it sets anything.
 * **Latency** is reported from `latency_samples()`, which is non-zero only when
   the host's rate is not 44100 (then the resampler adds the delay).
-* **Parameters** are two, not the VST3 side's 2098. AU has no MIDI-CC-to-parameter
-  convention like VST3's `IMidiMapping`, so there is nothing to map; MIDI arrives
-  through the MusicDevice entry points instead, and the two parameters are what a
-  host's generic panel can usefully show (output level, and whether the firmware
-  has come up).
+* **Parameters** are output level, status, and the same XG table VST3/CLAP/AUv3
+  share (`src/vst3/automation.h`: 64 parts × 19 + master 27 + insertion 4×16,
+  IDs `65536+pp*32+k` / `67584+k` / `67648+b*16+n-1`). AU has no
+  MIDI-CC-to-parameter convention like VST3's `IMidiMapping`, so the hidden MIDI
+  CC parameters are deliberately not built; MIDI arrives through the MusicDevice
+  entry points instead. `SetParameter`/`ScheduleParameters` feed XG values through
+  `automation::host` into the same MIDI queue, sample-offset included.
 
 `make au` writes `build/S-MU2000.component`; `make install-au` copies it to
 `~/Library/Audio/Plug-Ins/Components`, which is where `auval` and every DAW look.

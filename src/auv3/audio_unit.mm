@@ -26,11 +26,14 @@
 #import "view_controller.h"
 
 #import <AVFoundation/AVFoundation.h>
+#import <AudioToolbox/AUAudioUnitImplementation.h>
 #import <Cocoa/Cocoa.h>
 #import <CoreAudioKit/CoreAudioKit.h>
 #import <CoreMIDI/CoreMIDI.h>
 
 #include "ui/midi_split.h"
+#include "vst3/automation.h"
+#include "vst3/automation_host.h"
 #include "vst3/engine.h"
 
 #include <algorithm>
@@ -44,6 +47,11 @@ namespace {
 constexpr AUAudioFrameCount MAX_FRAMES = 4096;
 // MIDI IN A-D。機械の口の数から取るので、増えたら付いてくる
 constexpr int PORTS = mu2000::MIDI_PORTS;
+
+// XG の値のパラメータと共有する出力レベル。VST3 の Output (4096) や CLAP の
+// Output (0) と同じ値で、AUv2 の kParamGain (0) とも同じ番号。XG の番号
+// (65536〜) とは重ならないので、そのまま AUParameterAddress にする
+constexpr AUParameterAddress kGainAddress = 0;
 
 // 描き出しの中で使う器。確保はここではしない（allocateRenderResources で済ませる）
 struct scratch {
@@ -204,10 +212,194 @@ void feed_ump(smu2000::plug::engine *eng, scratch *sc, const AUMIDIEventList &ev
 @implementation SMU2000AudioUnitV3 {
 	std::unique_ptr<smu2000::plug::engine> _engine;
 	std::unique_ptr<scratch>               _scratch;
+	// VST3・CLAP と同じ XG の値の表 (src/vst3/automation.h) を、ホストとの間で
+	// 受け渡すための入れ物 (src/vst3/automation_host.h)。音源へは render の中で
+	// host_value から CC かパラメータチェンジにして流す
+	std::unique_ptr<smu2000::automation::host> _xgHost;
+	AUParameterTree                   *_paramTree;
 	AUAudioUnitBusArray                   *_inputBusArray;
 	AUAudioUnitBusArray                   *_outputBusArray;
 	AUAudioUnitBus                        *_inputBus;
 	AUAudioUnitBus                        *_outputBus;
+}
+
+// XG の値の木を作る。番号は VST3・CLAP と同じ (PART_BASE 65536〜) で、一度
+// 決めたら動かさない (automation.h)。値も XG の値そのもの (plain) で、0-1 に
+// 畳まない (CLAP と同じ持ち方)
+- (void)buildParameterTree
+{
+	namespace autom = smu2000::automation;
+	const std::vector<autom::entry> &entries = autom::entries();
+
+	AUParameter *gain = [AUParameterTree createParameterWithIdentifier:@"output"
+	                                                            name:@"Output"
+	                                                         address:kGainAddress
+	                                                             min:0.0f
+	                                                             max:1.0f
+	                                                            unit:kAudioUnitParameterUnit_LinearGain
+	                                                        unitName:nil
+	                                                           flags:(kAudioUnitParameterFlag_IsReadable |
+	                                                                  kAudioUnitParameterFlag_IsWritable |
+	                                                                  kAudioUnitParameterFlag_ValuesHaveStrings)
+	                                                    valueStrings:nil
+	                                             dependentParameters:nil];
+	NSMutableArray *top = [NSMutableArray array];
+	[top addObject:[AUParameterTree createGroupWithIdentifier:@"output"
+	                                                    name:@"Output"
+	                                                children:@[gain]]];
+
+	// group ("Part A1" / "Master" / "Insertion 1") ごとにまとめる。
+	// VST3 のユニット・CLAP のモジュールと同じ分け方
+	NSMutableArray *groupOrder = [NSMutableArray array];
+	NSMutableDictionary<NSString *, NSMutableArray *> *groupParams =
+	    [NSMutableDictionary dictionary];
+	for (const autom::entry &e : entries) {
+		NSString *g = [NSString stringWithUTF8String:e.group.c_str()];
+		NSMutableArray *a = groupParams[g];
+		if (!a) {
+			a = [NSMutableArray array];
+			groupParams[g] = a;
+			[groupOrder addObject:g];
+		}
+		NSString *ident = [NSString stringWithFormat:@"xg_%u", e.id];
+		NSString *name = [NSString stringWithUTF8String:e.name.c_str()];
+		AUParameter *p = [AUParameterTree createParameterWithIdentifier:ident
+		                                                           name:name
+		                                                        address:AUParameterAddress(e.id)
+		                                                            min:AUValue(autom::lo(e))
+		                                                            max:AUValue(autom::hi(e))
+		                                                           unit:kAudioUnitParameterUnit_Generic
+		                                                       unitName:nil
+		                                                          flags:(kAudioUnitParameterFlag_IsReadable |
+		                                                                 kAudioUnitParameterFlag_IsWritable |
+		                                                                 kAudioUnitParameterFlag_ValuesHaveStrings)
+		                                                   valueStrings:nil
+		                                            dependentParameters:nil];
+		[a addObject:p];
+	}
+	for (NSString *g in groupOrder)
+		[top addObject:[AUParameterTree createGroupWithIdentifier:g
+		                                                     name:g
+		                                                 children:groupParams[g]]];
+
+	_paramTree = [AUParameterTree createTreeWithChildren:top];
+	__weak SMU2000AudioUnitV3 *weakSelf = self;
+	// ホストが値を置いた (自動化の再生など)。音源へは render の中で入れるので、
+	// ここは見せる値の控えだけ (VST3 の setParamNormalized と同じ)
+	_paramTree.implementorValueObserver = ^(AUParameter *param, AUValue value) {
+		SMU2000AudioUnitV3 *strong = weakSelf;
+		if (!strong || !strong->_engine || !strong->_xgHost)
+			return;
+		if (param.address == kGainAddress) {
+			strong->_engine->panel().set_gain(std::clamp(value, 0.0f, 1.0f));
+			return;
+		}
+		const int xi = autom::index_of(uint32_t(param.address));
+		if (xi < 0)
+			return;
+		strong->_xgHost->remember(xi, autom::clamp_value(autom::entries()[size_t(xi)], value));
+	};
+	// ホストが今の値を聞いてきた。触ってから 1 秒は触った値、それより後は
+	// 音源の RAM の写しから読む (automation_host.h の shown_value)
+	_paramTree.implementorValueProvider = ^AUValue(AUParameter *param) {
+		SMU2000AudioUnitV3 *strong = weakSelf;
+		if (!strong || !strong->_engine || !strong->_xgHost)
+			return 0.0f;
+		if (param.address == kGainAddress)
+			return strong->_engine->panel().gain();
+		const int xi = autom::index_of(uint32_t(param.address));
+		if (xi < 0)
+			return 0.0f;
+		return AUValue(strong->_xgHost->shown_value(xi));
+	};
+	_paramTree.implementorStringFromValueCallback = ^NSString *(AUParameter *param, const AUValue *valuePtr) {
+		SMU2000AudioUnitV3 *strong = weakSelf;
+		AUValue v = valuePtr ? *valuePtr : param.value;
+		if (param.address == kGainAddress)
+			return [NSString stringWithFormat:@"%.0f%%", double(v) * 100.0];
+		if (!strong || !strong->_xgHost)
+			return [NSString stringWithFormat:@"%g", double(v)];
+		const int xi = autom::index_of(uint32_t(param.address));
+		if (xi < 0)
+			return [NSString stringWithFormat:@"%g", double(v)];
+		const autom::entry &e = autom::entries()[size_t(xi)];
+		const int iv = autom::clamp_value(e, v);
+		return [NSString stringWithUTF8String:autom::text(e, iv, strong->_xgHost->view_ram()).c_str()];
+	};
+	_paramTree.implementorValueFromStringCallback = ^AUValue(AUParameter *param, NSString *string) {
+		SMU2000AudioUnitV3 *strong = weakSelf;
+		if (param.address == kGainAddress)
+			return AUValue(std::clamp(string.doubleValue / 100.0, 0.0, 1.0));
+		if (!strong || !strong->_xgHost)
+			return param.value;
+		const int xi = autom::index_of(uint32_t(param.address));
+		if (xi < 0)
+			return param.value;
+		const autom::entry &e = autom::entries()[size_t(xi)];
+		int value = 0;
+		if (!autom::parse(e, string.UTF8String, value, strong->_xgHost->view_ram()))
+			return param.value;
+		return AUValue(value);
+	};
+	self.parameterTree = _paramTree;
+}
+
+// 画面で XG の値を触ったらホストへ伝える (VST3 の beginEdit/performEdit/endEdit
+// に当たる)。つまみを離したことは分からないので、0.4 秒触られなかったら終わり
+// (automation_host.h の gui_idle)
+- (void)installEditHandlers
+{
+	__weak SMU2000AudioUnitV3 *weakSelf = self;
+	_engine->set_edit_handlers(
+	    [weakSelf](const xg::param &p, int part, int value) {
+		    SMU2000AudioUnitV3 *strong = weakSelf;
+		    if (!strong || !strong->_xgHost || !strong->_paramTree)
+			    return;
+		    bool began = false;
+		    const int i = strong->_xgHost->gui_edit(p, part, value, began);
+		    if (i < 0)
+			    return;
+		    AUParameter *param = [strong->_paramTree
+		        parameterWithAddress:AUParameterAddress(smu2000::automation::entries()[size_t(i)].id)];
+		    if (!param)
+			    return;
+		    if (began)
+			    [param setValue:AUValue(value) originator:nil atHostTime:0
+			              eventType:AUParameterAutomationEventTypeTouch];
+		    [param setValue:AUValue(value) originator:nil atHostTime:0
+		              eventType:AUParameterAutomationEventTypeValue];
+	    },
+	    [weakSelf](bool closing) {
+		    SMU2000AudioUnitV3 *strong = weakSelf;
+		    if (!strong || !strong->_xgHost || !strong->_paramTree)
+			    return;
+		    strong->_xgHost->gui_idle(closing, ^(int i) {
+			    AUParameter *param = [strong->_paramTree
+			        parameterWithAddress:AUParameterAddress(smu2000::automation::entries()[size_t(i)].id)];
+			    if (param)
+				    [param setValue:param.value originator:nil atHostTime:0
+				              eventType:AUParameterAutomationEventTypeRelease];
+		    });
+	    },
+	    [weakSelf](uint32_t addr, int, int raw) {
+		    SMU2000AudioUnitV3 *strong = weakSelf;
+		    if (!strong || !strong->_xgHost || !strong->_paramTree)
+			    return;
+		    bool began = false;
+		    int value = 0;
+		    const int i = strong->_xgHost->gui_edit_raw(addr, raw, value, began);
+		    if (i < 0)
+			    return;
+		    AUParameter *param = [strong->_paramTree
+		        parameterWithAddress:AUParameterAddress(smu2000::automation::entries()[size_t(i)].id)];
+		    if (!param)
+			    return;
+		    if (began)
+			    [param setValue:AUValue(value) originator:nil atHostTime:0
+			              eventType:AUParameterAutomationEventTypeTouch];
+		    [param setValue:AUValue(value) originator:nil atHostTime:0
+		              eventType:AUParameterAutomationEventTypeValue];
+	    });
 }
 
 - (instancetype)initWithComponentDescription:(AudioComponentDescription)desc
@@ -240,6 +432,11 @@ void feed_ump(smu2000::plug::engine *eng, scratch *sc, const AUMIDIEventList &ev
 
 	_engine = std::make_unique<smu2000::plug::engine>();
 	_scratch = std::make_unique<scratch>();
+	_xgHost = std::make_unique<smu2000::automation::host>(*_engine);
+
+	// 本の糸で表を 1 回作っておく (音声の糸で初めて作らせない。automation.h)
+	[self buildParameterTree];
+	[self installEditHandlers];
 
 	// ROM を読んで起動するのは別スレッド。ここではすぐ返る
 	_engine->start();
@@ -267,9 +464,13 @@ void feed_ump(smu2000::plug::engine *eng, scratch *sc, const AUMIDIEventList &ev
 
 - (void)dealloc
 {
+	// 画面からの通知を先に止める (VST3 のデストラクタと同じ)
+	if (_engine)
+		_engine->set_edit_handlers(nullptr, nullptr, nullptr);
 	// Free the buffers here. super's dealloc (inserted by ARC) calls
 	// deallocateRenderResources on the way down, which must not touch _engine
 	_scratch.reset();
+	_xgHost.reset();
 	_engine.reset();
 }
 
@@ -352,6 +553,7 @@ void feed_ump(smu2000::plug::engine *eng, scratch *sc, const AUMIDIEventList &ev
 	// 描き出しの中で Objective-C を触らなくて済むよう、素のポインタで捕まえる
 	smu2000::plug::engine *eng = _engine.get();
 	scratch               *sc  = _scratch.get();
+	smu2000::automation::host *xg = _xgHost.get();
 	__unsafe_unretained SMU2000AudioUnitV3 *unowned_self = self;
 
 	return ^AUAudioUnitStatus(AudioUnitRenderActionFlags *actionFlags,
@@ -365,6 +567,13 @@ void feed_ump(smu2000::plug::engine *eng, scratch *sc, const AUMIDIEventList &ev
 		(void)actionFlags; (void)outputBusNumber;
 		if (frameCount > MAX_FRAMES)
 			return kAudioUnitErr_TooManyFramesToProcess;
+
+		// 最初の区間の頭で RAM から種を仕込む (VST3 の seed_values と同じ)。
+		// 再生頭でホストが 1,300 個近い値をまとめて流してきても、自分で戻した
+		// 値の写しなので直列に戻さない
+		if (!xg->seeded())
+			xg->seed_values();
+		xg->begin_block();
 
 		// 出力の器。ホストが mData を寄越さないことがある（その場合はこちらが出す）
 		float *out_l = nullptr, *out_r = nullptr;
@@ -408,7 +617,7 @@ void feed_ump(smu2000::plug::engine *eng, scratch *sc, const AUMIDIEventList &ev
 			}
 		}
 
-		// MIDI を挟みながら区間ごとに作る。事象の位置は標本単位で正しく効く
+		// MIDI とパラメータを挟みながら区間ごとに作る。事象の位置は標本単位で正しく効く
 		const AURenderEvent *e = realtimeEventListHead;
 		AUAudioFrameCount done = 0;
 		while (done < frameCount) {
@@ -418,7 +627,26 @@ void feed_ump(smu2000::plug::engine *eng, scratch *sc, const AUMIDIEventList &ev
 					off = 0;
 				if (AUAudioFrameCount(off) > done)
 					break;
-				if (e->head.eventType == AURenderEventMIDI ||
+				if (e->head.eventType == AURenderEventParameter ||
+				    e->head.eventType == AURenderEventParameterRamp) {
+					// ランプは終わりの値で受ける。XG は整数の値なので途中に
+					// 意味はなく、出力レベルは下で 1/512 ずつ寄せている
+					const AUParameterAddress addr = e->parameter.parameterAddress;
+					const AUValue v = e->parameter.value;
+					if (addr == kGainAddress) {
+						eng->panel().set_gain(std::clamp(v, 0.0f, 1.0f));
+					} else {
+						const int xi = smu2000::automation::index_of(uint32_t(addr));
+						if (xi >= 0) {
+							const smu2000::automation::entry &en =
+							    smu2000::automation::entries()[size_t(xi)];
+							xg->host_value(xi, smu2000::automation::clamp_value(en, v),
+							               [&](int port, const uint8_t *bytes, int n) {
+								               eng->midi(bytes, size_t(n), port);
+							               });
+						}
+					}
+				} else if (e->head.eventType == AURenderEventMIDI ||
 				    e->head.eventType == AURenderEventMIDISysEx) {
 					const AUMIDIEvent *m = &e->MIDI;
 					const int port = (m->cable < PORTS) ? int(m->cable) : 0;
@@ -503,6 +731,12 @@ static NSString *const kStateKey = @"S-MU2000.nvram";
 	NSData *d = state[kStateKey];
 	if (_engine && [d isKindOfClass:[NSData class]] && d.length)
 		_engine->load_state(static_cast<const uint8_t *>(d.bytes), d.length);
+	if (_engine && _xgHost) {
+		// 戻した値を bridge にも写し、ホストの持っている値を読み直させる。
+		// さもないと復元前の古い控え (remember) が残る (VST3 の setState と同じ)
+		_engine->publish_xg_now();
+		_xgHost->forget_recent();
+	}
 }
 
 // 画面。AUv2・VST3 と同じパネル（view_controller.mm）。拡張の中で動くので
@@ -565,9 +799,16 @@ static NSString *const kStateKey = @"S-MU2000.nvram";
 	if (!currentPreset || currentPreset.number != 0)
 		return;
 	if (_engine) {
-		_engine->panel().set_gain(1.0f);
+		// ホストにも伝わるようパラメータ経由で戻す (observer が panel に書く)
+		AUParameter *gain = [_paramTree parameterWithAddress:kGainAddress];
+		if (gain)
+			[gain setValue:1.0f originator:nil];
+		else
+			_engine->panel().set_gain(1.0f);
 		hush_engine(_engine.get(), _scratch.get());
 	}
+	if (_xgHost)
+		_xgHost->forget_recent();
 }
 
 // Silence whatever is still ringing (host stopped us). Only the channels
