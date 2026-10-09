@@ -635,10 +635,20 @@ struct apple_audio_in::impl {
 
 	AVAudioEngine *engine = nil;
 
-	ui::resampler rs;
-	std::vector<s16> staging;    // tap frames as s16 stereo (the resampler's input)
-	std::vector<float> conv;
-	std::vector<s16> out16;
+	// The converter that makes the device's format into ours, and everything it
+	// needs so the tap never allocates. AVAudioConverter is not documented as
+	// real-time safe, so it is built here and the tap only calls it.
+	using ConvBlock = AVAudioBuffer *(^)(AVAudioPacketCount, AVAudioConverterInputStatus *);
+	AVAudioConverter *conv = nil;
+	AVAudioPCMBuffer *conv_out = nil;   // ours to fill, reused every callback
+	AVAudioBuffer *conv_pending = nil;  // what the tap was handed this time
+	bool conv_have = false;             // ...and whether it is still to hand
+	ConvBlock conv_block = nil;
+	std::atomic<bool> warned{false};   // said once
+
+	// Builds conv from the device's format, and is a member because a file-scope
+	// function cannot name impl.
+	bool setup_converter(AVAudioFormat *from, std::string &err);
 
 	std::vector<s16> m_ring = std::vector<s16>(size_t(RING) * 2);
 	std::atomic<u32> m_w{0}, m_r{0};
@@ -656,6 +666,7 @@ struct apple_audio_in::impl {
 
 	std::string dev_name, fmt_line;
 	double dev_rate = double(AUDIO_RATE);
+	u32 dev_channels = 0;
 
 	// 44100Hz 16bit 2ch を輪に積む。溢れる分は捨てる (the tap outruns the
 	// synth's pop when the machine is busy).
@@ -682,6 +693,53 @@ apple_audio_in::apple_audio_in()
 apple_audio_in::~apple_audio_in()
 {
 	stop();
+}
+
+// Builds the converter, and the block that feeds it, once. The output format is
+// the machine's own - 44100, s16, interleaved, stereo - so what comes back is the
+// ring's own layout and pushing it is a copy, and the hardware's rate, channel
+// count, sample type and layout are the converter's problem rather than a switch
+// in this file.
+//
+// Not primed: a conversion during setup ends the stream, and a converter that has
+// been converted with answers every later call with EndOfStream and nothing.
+bool apple_audio_in::impl::setup_converter(AVAudioFormat *from, std::string &err)
+{
+	AVAudioFormat *want = [[AVAudioFormat alloc] initWithCommonFormat:AVAudioPCMFormatInt16
+	                                                       sampleRate:double(AUDIO_RATE)
+	                                                         channels:2
+	                                                      interleaved:YES];
+	AVAudioConverter *made = [[AVAudioConverter alloc] initFromFormat:from toFormat:want];
+	if (!made) {
+		err = std::string("Cannot convert ") + [[from description] UTF8String] +
+		      " to 44100 Hz s16 stereo";
+		return false;
+	}
+	AVAudioPCMBuffer *out = [[AVAudioPCMBuffer alloc] initWithPCMFormat:want frameCapacity:8192];
+	if (!out) {
+		err = "Cannot allocate the recording conversion buffer";
+		return false;
+	}
+	// A local, then stored: a block literal cannot be assigned straight to a
+	// member here, and it has to outlive this function either way.
+	ConvBlock block = ^AVAudioBuffer *(AVAudioPacketCount wanted, AVAudioConverterInputStatus *status) {
+		(void)wanted;
+		// NoDataNow, never EndOfStream. This is the whole difference between a
+		// converter that streams and one that stops after its first buffer: say
+		// EndOfStream and it is finished for good, say NoDataNow and it keeps its
+		// state and asks again when there is more.
+		if (!conv_have) {
+			*status = AVAudioConverterInputStatus_NoDataNow;
+			return nil;
+		}
+		conv_have = false;
+		*status = AVAudioConverterInputStatus_HaveData;
+		return conv_pending;
+	};
+	conv = made;
+	conv_out = out;
+	conv_block = block;
+	return true;
 }
 
 bool apple_audio_in::start(const std::string &device, std::string &err)
@@ -727,7 +785,10 @@ bool apple_audio_in::start(const std::string &device, std::string &err)
 		return false;
 	}
 	m->dev_rate = rate;
-	m->rs.configure(rate, double(AUDIO_RATE));
+	m->dev_channels = tap.channelCount;
+	apple_audio_in::impl *cim = m.get();
+	if (!cim->setup_converter(tap, err))
+		return false;
 
 	apple_audio_in::impl *im = m.get();
 	[node installTapOnBus:0 bufferSize:1024 format:tap
@@ -737,41 +798,36 @@ bool apple_audio_in::start(const std::string &device, std::string &err)
 		                if (!buf || buf.frameLength == 0)
 			                return;
 		                const UInt32 n = buf.frameLength;
-		                const float *const *f = buf.floatChannelData;
-		                if (!f || !f[0])
-			                return;
-		                im->staging.resize(size_t(n) * 2);
-		                AVAudioFormat *fmt = buf.format;
-		                for (UInt32 i = 0; i < n; i++) {
-				                const float l = tap_sample(f, fmt, i, 0);
-				                const float r = tap_sample(f, fmt, i, 1);
-				                im->staging[size_t(i) * 2] =
-				                    s16(std::lround(std::clamp(l, -1.0f, 1.0f) * 32767.0f));
-				                im->staging[size_t(i) * 2 + 1] =
-				                    s16(std::lround(std::clamp(r, -1.0f, 1.0f) * 32767.0f));
+		                // Hand the converter this buffer and take what it makes.
+		                // It asks for more when the ratio needs more input than one
+		                // tap buffer holds - 96k to 44.1k needs about 2.2 buffers for
+		                // every buffer of output - and we keep handing it ours until
+		                // it says it has no data now, which is not the same as saying
+		                // there is no more: a converter is finished for good on
+		                // EndOfStream and keeps its state on NoDataNow.
+		                im->conv_pending = buf;
+		                im->conv_have = true;
+		                for (int guard = 0; guard < 8; guard++) {
+			                im->conv_out.frameLength = 0;
+			                NSError *cerr = nil;
+			                const AVAudioConverterOutputStatus st =
+			                    [im->conv convertToBuffer:im->conv_out error:&cerr
+			                        withInputFromBlock:im->conv_block];
+			                if (st == AVAudioConverterOutputStatus_Error) {
+				                if (!im->warned.exchange(true, std::memory_order_relaxed))
+				                        std::fprintf(stderr, "[audio] in: conversion failed: %s\n",
+				                                     cerr ? [[cerr localizedDescription] UTF8String] : "?");
+				                im->conv_have = false;
+				                break;
+			                }
+			                if (im->conv_out.frameLength > 0)
+				                im->push(static_cast<const s16 *>(
+				                             im->conv_out.int16ChannelData[0]),
+				                         im->conv_out.frameLength);
+			                if (st != AVAudioConverterOutputStatus_InputRanDry || !im->conv_have)
+				                break;
 		                }
-		                if (im->rs.direct()) {
-			                im->push(im->staging.data(), n);
-			                return;
-		                }
-		                // The resampler takes what it can take and gives back what
-		                // that produced, so a 1024-frame tap at 48k becomes 941
-		                // frames at 44100 with nothing kept back.
-		                for (UInt32 at = 0; at < n;) {
-			                const UInt32 k = std::min<UInt32>(1024, n - at);
-			                im->rs.push(im->staging.data() + size_t(at) * 2, int(k));
-			                at += k;
-			                const int got = im->rs.output_available();
-			                if (got <= 0)
-				                continue;
-			                im->conv.resize(size_t(got) * 2);
-			                im->out16.resize(size_t(got) * 2);
-			                im->rs.pull(im->conv.data(), got);
-			                for (size_t j = 0; j < im->out16.size(); j++)
-				                im->out16[j] = s16(std::lround(
-				                    std::clamp(im->conv[j], -1.0f, 1.0f) * 32767.0f));
-			                im->push(im->out16.data(), u32(got));
-		                }
+		                im->conv_pending = nil;
 	                }];
 	NSError *e = nil;
 	if (![engine startAndReturnError:&e]) {
@@ -812,9 +868,16 @@ void apple_audio_in::restart()
 	// session watcher calls restart() after a route change.
 	AVAudioInputNode *node = [engine inputNode];
 	AVAudioFormat *now = [node inputFormatForBus:0];
-	if (now.sampleRate > 0.0 && now.sampleRate != m->dev_rate) {
+	// The converter was built from the format the node had then, so anything
+	// different - rate, channel count, sample type - means a new converter rather
+	// than a reconfigured one.
+	if (now.sampleRate > 0.0 &&
+	    (now.sampleRate != m->dev_rate || now.channelCount != m->dev_channels)) {
 		m->dev_rate = now.sampleRate;
-		m->rs.configure(now.sampleRate, double(AUDIO_RATE));
+		m->dev_channels = now.channelCount;
+		std::string cerr;
+		if (!m->setup_converter(now, cerr))
+			std::fprintf(stderr, "[audio] in: %s\n", cerr.c_str());
 	}
 	NSError *e = nil;
 	if ([engine startAndReturnError:&e]) {
