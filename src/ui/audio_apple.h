@@ -83,8 +83,11 @@ public:
 
 	// The recovery audio_tick() performs: re-resolve the device, re-pin it, stop
 	// and start. Private because the tick and the session watchers are its only
-	// callers, and both say why in the log line they pass.
-	void recover(const char *why);
+	// callers, and both say why in the log line they pass. False when the engine
+	// would not start again, which is not always fixable from here - the device
+	// may have gone to another application - so the caller keeps its own
+	// backoff rather than logging every second until the run ends.
+	bool recover(const char *why);
 
 	// What we hand the unit, written as a WAV: what the machine made, before
 	// any format conversion, which is what a capture on either platform means.
@@ -130,8 +133,17 @@ public:
 	bool start(const std::string &device, std::string &err);
 	void stop();
 
-	// A route change or an interruption stops the input engine too.
+	// A route change or an interruption stops the input engine too. restart()
+	// re-reads the node's format before starting it again: the engine stops
+	// itself when the system clock moves, and starting with the format read
+	// before that fails.
 	void restart();
+
+	// The watchdog loop, on its own thread for as long as the engine records.
+	// Same reason as the output half's: the session watchers are iOS's, so on
+	// macOS nothing restarts a recording engine the clock has stopped, and
+	// nothing else in the core would notice.
+	void watch_loop();
 
 	bool running() const;
 	const std::string &device_name() const;
@@ -177,11 +189,15 @@ struct device_ref {
 	bool        follow = false;  // pin_output() leaves the unit alone
 };
 
-// What a device claim is: which device, and whether taking it is what got
-// it (in which case it has to be given back).
+// What a device claim is: which device, whether taking it is what got it (in
+// which case it has to be given back), and whether it is ours to use at all.
+// The last is separate because a device we already held is ours to use without
+// being taken again - hal::take_hog answers that as success with took_it left
+// false, and exclusive() has to report the truth in both cases.
 struct device_claim {
 	UInt32 id = 0;
 	bool   took = false;
+	bool   held = false;
 };
 
 // The session. iOS sets the category, asks for a rate and an IO buffer

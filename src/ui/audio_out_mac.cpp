@@ -116,11 +116,14 @@ device_claim take_output(const device_ref &dev, std::string &err)
 	}
 	claim.id = dev.id;
 	bool took = false;
+	// took says we are the ones who have to give it back; held says it is ours
+	// to use, which is also true of a device we already held.
 	if (!hal::take_hog(dev.id, took)) {
 		std::fprintf(stderr, "[mac] hog refused: %s\n", dev.name.c_str());
 		return claim;
 	}
 	claim.took = took;
+	claim.held = true;
 	return claim;
 }
 

@@ -79,7 +79,7 @@ struct apple_audio_out::impl {
 	bool want_exact = false;      // and whether a menu name had to match wholly
 
 	std::atomic<bool> running{false};
-	std::atomic<bool> taken{false};   // macOS: the device is ours alone
+	std::atomic<bool> taken{false};   // macOS: exclusive asked for, and the device is ours
 	std::atomic<u32> buffer_frames{0};    // what the last block actually was
 	u32 granted_frames = 0;               // what the platform granted, pre-roll
 	// The connection's layout, copied off the device's own format at start() so
@@ -108,6 +108,7 @@ struct apple_audio_out::impl {
 	std::atomic<u64> last_seen_ticks{0};
 	std::atomic<u64> recoveries{0};
 	std::atomic<bool> watch_run{false};
+	std::atomic<bool> recovering{false};  // a recovery is failing; said once
 	std::atomic<bool> warned{false};       // the block guard below, said once
 	std::thread watchdog;            // joined in stop()
 };
@@ -354,13 +355,21 @@ bool apple_audio_out::start(const request &r, fill_fn fill, std::string &err)
 	if (r.exclusive) {
 		std::string hog_err;
 		m->claim = apple::take_output(m->dev, hog_err);
-		m->taken.store(m->claim.took, std::memory_order_relaxed);
+		// held, not took: a device we already held is ours to use, and exclusive()
+		// has to say so rather than report that we got nothing.
+		m->taken.store(m->claim.held, std::memory_order_relaxed);
 		if (m->claim.took) {
 			[engine stop];
 			NSError *restart_err = nil;
-			if (![engine startAndReturnError:&restart_err])
-				std::fprintf(stderr, "[audio] restart after taking the device: %s\n",
-				             restart_err ? [[restart_err localizedDescription] UTF8String] : "?");
+			if (![engine startAndReturnError:&restart_err]) {
+				// We took the device and cannot open it. Playing nothing while
+				// holding it would be the worst of the three answers, so the
+				// start fails and stop() gives the device back.
+				err = std::string("Cannot play on the device taken for exclusive use: ") +
+				      (restart_err ? [[restart_err localizedDescription] UTF8String] : "?");
+				stop();
+				return false;
+			}
 		}
 	}
 	std::fprintf(stderr, "[audio] %s\n", m->dev_name.c_str());
@@ -396,11 +405,11 @@ void apple_audio_out::watch_loop()
 	}
 }
 
-void apple_audio_out::recover(const char *why)
+bool apple_audio_out::recover(const char *why)
 {
 	AVAudioEngine *engine = m->engine;
 	if (!engine)
-		return;
+		return false;
 	// Safe from this thread, which is why the watchdog has one: the engine's
 	// configuration-change callback runs on an internal dispatch queue, and
 	// Apple's header warns against tearing the engine down inside it.
@@ -426,10 +435,16 @@ void apple_audio_out::recover(const char *why)
 		m->last_produced.store(m->produced.load(std::memory_order_acquire),
 		                       std::memory_order_relaxed);
 		m->last_seen_ticks.store(uint64_t(mach_absolute_time()), std::memory_order_relaxed);
-	} else {
+		m->recovering.store(false, std::memory_order_relaxed);
+		return true;
+	}
+	// Said once per streak. A recovery that keeps failing is usually a device that
+	// has gone to another application, and that is not going to be fixed by
+	// saying it again every second until the program ends.
+	if (!m->recovering.exchange(true, std::memory_order_relaxed))
 		std::fprintf(stderr, "[audio] could not recover (%s): %s\n", why,
 		             e ? [[e localizedDescription] UTF8String] : "?");
-	}
+	return false;
 }
 
 void apple_audio_out::stop()
@@ -629,6 +644,15 @@ struct apple_audio_in::impl {
 	std::atomic<u32> m_w{0}, m_r{0};
 	std::atomic<u64> m_empty{0}, m_dropped{0};
 	std::atomic<bool> running{false};
+	// Liveness. The tap block counts, and the watchdog below watches that count
+	// rather than the ring: the ring only drains when the machine asks for input,
+	// and a synth that never does would look dead.
+	std::atomic<u64> taps{0};
+	std::atomic<u64> last_taps{0};
+	std::atomic<u64> last_seen_ticks{0};
+	std::atomic<bool> watch_run{false};
+	std::atomic<bool> recovering{false};
+	std::thread watchdog;
 
 	std::string dev_name, fmt_line;
 	double dev_rate = double(AUDIO_RATE);
@@ -709,6 +733,7 @@ bool apple_audio_in::start(const std::string &device, std::string &err)
 	[node installTapOnBus:0 bufferSize:1024 format:tap
 	                block:^(AVAudioPCMBuffer *buf, AVAudioTime *when) {
 		                (void)when;
+		                im->taps.fetch_add(1, std::memory_order_relaxed);
 		                if (!buf || buf.frameLength == 0)
 			                return;
 		                const UInt32 n = buf.frameLength;
@@ -762,6 +787,14 @@ bool apple_audio_in::start(const std::string &device, std::string &err)
 	m->m_w.store(0);
 	m->m_r.store(0);
 	m->running.store(true, std::memory_order_release);
+	// The watchdog starts with the engine and stops with it, and its first sight
+	// has to be a count it can tell from zero, or the first tick would call a
+	// fresh engine a stall.
+	m->last_taps.store(m->taps.load(std::memory_order_acquire), std::memory_order_relaxed);
+	m->last_seen_ticks.store(uint64_t(mach_absolute_time()), std::memory_order_relaxed);
+	m->recovering.store(false, std::memory_order_relaxed);
+	m->watch_run.store(true, std::memory_order_release);
+	m->watchdog = std::thread([this] { watch_loop(); });
 	std::fprintf(stderr, "[audio] in: %s (%.0f Hz)\n", m->dev_name.c_str(), rate);
 	return true;
 }
@@ -772,16 +805,65 @@ void apple_audio_in::restart()
 	if (!engine || !m->running.load(std::memory_order_acquire))
 		return;
 	[engine stop];
+	// Re-read the node's format before starting. Starting an engine that has stopped
+	// itself with the format read before it fails - measured, error -10868 -
+	// while asking the node for its format again re-opens the IO unit and the
+	// start succeeds. This is the iOS path's first line of defence, where the
+	// session watcher calls restart() after a route change.
+	AVAudioInputNode *node = [engine inputNode];
+	AVAudioFormat *now = [node inputFormatForBus:0];
+	if (now.sampleRate > 0.0 && now.sampleRate != m->dev_rate) {
+		m->dev_rate = now.sampleRate;
+		m->rs.configure(now.sampleRate, double(AUDIO_RATE));
+	}
 	NSError *e = nil;
-	if (![engine startAndReturnError:&e])
+	if ([engine startAndReturnError:&e]) {
+		m->recovering.store(false, std::memory_order_relaxed);
+		m->last_taps.store(m->taps.load(std::memory_order_acquire), std::memory_order_relaxed);
+		m->last_seen_ticks.store(uint64_t(mach_absolute_time()), std::memory_order_relaxed);
+		return;
+	}
+	// Said once per streak: a recording device that has gone to another
+	// application is not going to be fixed by saying so every second.
+	if (!m->recovering.exchange(true, std::memory_order_relaxed))
 		std::fprintf(stderr, "[audio] in: restart failed: %s\n",
 		             e ? [[e localizedDescription] UTF8String] : "?");
+}
+
+// The output half's watchdog, for the same reason and with the same excuse: the
+// session watchers are iOS's, so on macOS nothing restarts a recording engine
+// the clock has stopped. Its own thread because not every front end has a tick.
+// The signal is the tap's own count and not the ring, which only drains when the
+// machine asks for input.
+void apple_audio_in::watch_loop()
+{
+	while (m->watch_run.load(std::memory_order_acquire)) {
+		std::this_thread::sleep_for(std::chrono::milliseconds(250));
+		if (!m->running.load(std::memory_order_acquire) || !m->engine)
+			continue;
+		const u64 taps = m->taps.load(std::memory_order_acquire);
+		if (taps != m->last_taps.load(std::memory_order_relaxed)) {
+			m->last_taps.store(taps, std::memory_order_relaxed);
+			m->last_seen_ticks.store(uint64_t(mach_absolute_time()), std::memory_order_relaxed);
+			continue;
+		}
+		const u64 seen = uint64_t(mach_absolute_time());
+		if ((seen - m->last_seen_ticks.load(std::memory_order_relaxed)) / mach_tps() < 1.0)
+			continue;
+		m->last_seen_ticks.store(seen, std::memory_order_relaxed);
+		restart();
+	}
 }
 
 void apple_audio_in::stop()
 {
 	if (!m->running.exchange(false))
 		return;
+	// The watchdog first, before the engine goes: it must not decide to restart
+	// an engine that is on its way out, and its thread holds this impl.
+	m->watch_run.store(false, std::memory_order_release);
+	if (m->watchdog.joinable())
+		m->watchdog.join();
 	// Stop first so no new tap fires, then release the tap and the engine: a
 	// block already inside still holds the raw impl pointer.
 	AVAudioEngine *engine = m->engine;
