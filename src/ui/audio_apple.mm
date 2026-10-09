@@ -103,6 +103,7 @@ struct apple_audio_out::impl {
 	std::atomic<u64> last_seen_ticks{0};
 	std::atomic<u64> recoveries{0};
 	std::atomic<bool> watch_run{false};
+	std::atomic<bool> warned{false};       // the block guard below, said once
 	std::thread watchdog;            // joined in stop()
 };
 
@@ -201,6 +202,18 @@ bool apple_audio_out::start(const request &r, fill_fn fill, std::string &err)
 				for (u32 i = 0; i < n * 2; i++)
 					f[i] = float(sv[i]) * (1.0f / 32768.0f);
 			} else {
+				// Not reached unless the graph hands us something other than the
+				// format we connected with - which is our own choice (float32,
+				// stereo, interleaved, AUDIO_RATE) and, per AVAudioEngine's own
+				// note on a configuration change, what the nodes keep across one.
+				// Said once, because a silent zero buffer here is a freeze that
+				// looks like a mute, and that is how the last two defects in this
+				// file were found.
+				if (!im->warned.exchange(true, std::memory_order_relaxed))
+					std::fprintf(stderr,
+					             "[audio] block is %.0f floats where %u were expected;"
+					             " silencing it (the connected format is not ours?)\n",
+					             double(floats), 2u * unsigned(n));
 				zero_buffers(abl);
 			}
 			const u64 t1 = mach_absolute_time();
