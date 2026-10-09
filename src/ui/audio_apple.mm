@@ -620,6 +620,18 @@ static inline float tap_sample(const float *const *chans, AVAudioFormat *fmt,
 	return fmt.isInterleaved ? chans[0][size_t(i) * ch + c] : chans[c][i];
 }
 
+// What to call a sample type in the label the front ends print. AVAudioFormat's
+// own names are longer than a status line wants.
+static const char *sample_name(AVAudioCommonFormat f)
+{
+	switch (f) {
+	case AVAudioPCMFormatFloat32: return "float32";
+	case AVAudioPCMFormatInt16:   return "int16";
+	case AVAudioPCMFormatInt32:   return "int32";
+	default:                      return "other";
+	}
+}
+
 // ---- The input half ---------------------------------------------------------
 //
 // Recording is the same shape as playback with the arrow reversed: the engine
@@ -839,7 +851,7 @@ bool apple_audio_in::start(const std::string &device, std::string &err)
 
 	m->engine = engine;
 	m->dev_name = dev.name;
-	m->fmt_line = apple::input_label(dev, rate, 2);
+	m->fmt_line = apple::input_label(dev, rate, 2, sample_name(tap.commonFormat));
 	m->m_w.store(0);
 	m->m_r.store(0);
 	m->running.store(true, std::memory_order_release);

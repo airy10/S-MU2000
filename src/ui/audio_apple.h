@@ -283,8 +283,11 @@ device_ref resolve_input(const std::string &name, bool exact);
 bool pin_input(AudioUnit unit, const device_ref &dev, std::string &err);
 
 // The line the front ends print under the input device: each platform names
-// its own path, and neither has to be told what the other does.
-std::string input_label(const device_ref &dev, double rate, u32 channels);
+// its own path, and neither has to be told what the other does. The sample type
+// is the device's own rather than a fixed word, because any of them can arrive
+// now that the tap hands over whatever the node has.
+std::string input_label(const device_ref &dev, double rate, u32 channels,
+                        const char *sample);
 
 } // namespace apple
 

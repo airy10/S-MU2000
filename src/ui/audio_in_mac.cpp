@@ -89,15 +89,16 @@ bool pin_input(AudioUnit unit, const device_ref &dev, std::string &err)
 	return true;
 }
 
-// The line the front ends print under the input device. The channel count is
-// the device's own, as it always was, rather than the two channels of the
-// format the shared core asks the tap for.
-std::string input_label(const device_ref &dev, double rate, u32 channels)
+// The line the front ends print under the input device. The channel count is the
+// device's own, as it always was, and so is the sample type: the tap hands over
+// whatever the node has, and the core converts it to s16 at 44100.
+std::string input_label(const device_ref &dev, double rate, u32 channels,
+                        const char *sample)
 {
 	const u32 ch = dev.id != kAudioObjectUnknown ? hal::input_channels(dev.id) : channels;
 	char line[160] = {};
-	std::snprintf(line, sizeof line, "CoreAudio / %.0f Hz %u ch float32 \xe2\x86\x92 44100 Hz",
-	              rate, ch);
+	std::snprintf(line, sizeof line, "CoreAudio / %.0f Hz %u ch %s \xe2\x86\x92 44100 Hz s16",
+	              rate, ch, sample ? sample : "?");
 	return line;
 }
 

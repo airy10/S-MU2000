@@ -91,11 +91,12 @@ bool pin_input(AudioUnit, const device_ref &dev, std::string &)
 	return ios::set_preferred_input(dev.name);
 }
 
-std::string input_label(const device_ref &, double rate, u32 channels)
+std::string input_label(const device_ref &, double rate, u32 channels,
+                        const char *sample)
 {
 	char line[160] = {};
-	std::snprintf(line, sizeof line, "iOS / %.0f Hz %uch float32 \xe2\x86\x92 44100 Hz",
-	              rate, channels);
+	std::snprintf(line, sizeof line, "iOS / %.0f Hz %uch %s \xe2\x86\x92 44100 Hz s16",
+	              rate, channels, sample ? sample : "?");
 	return line;
 }
 
