@@ -32,8 +32,10 @@
 #include <atomic>
 #include <cmath>
 #include <cstdio>
+#include <chrono>
 #include <cstring>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace ui {
@@ -69,11 +71,12 @@ struct apple_audio_out::impl {
 	AVAudioEngine *engine = nil;
 	AVAudioSourceNode *src = nil;
 
-	ui::resampler resamp;
 	std::vector<s16> scratch;   // fill target at 44100 Hz; grown, never shrunk
 	std::vector<s16> *cap = nullptr;   // set_capture()'s buffer, or null
 
 	std::string dev_name;
+	std::string want_name;        // what the request asked for; "" means system default
+	bool want_exact = false;      // and whether a menu name had to match wholly
 
 	std::atomic<bool> running{false};
 	std::atomic<bool> taken{false};   // macOS: the device is ours alone
@@ -94,6 +97,13 @@ struct apple_audio_out::impl {
 	std::atomic<u64> spikes{0};          // callbacks over 20 ms
 	std::atomic<u64> started_ticks{0};   // mach ticks, like the stamps below
 	std::atomic<u64> callbacks{0};
+
+	// The watchdog's state: what it last saw produced, and when. See watch_loop().
+	std::atomic<u64> last_produced{0};
+	std::atomic<u64> last_seen_ticks{0};
+	std::atomic<u64> recoveries{0};
+	std::atomic<bool> watch_run{false};
+	std::thread watchdog;            // joined in stop()
 };
 
 apple_audio_out::apple_audio_out()
@@ -120,40 +130,36 @@ bool apple_audio_out::start(const request &r, fill_fn fill, std::string &err)
 	AVAudioEngine *engine = [[AVAudioEngine alloc] init];
 	AVAudioOutputNode *out_node = [engine outputNode];
 
-	// Asked, not promised: the hardware may be at 48k, and the resampler
-	// below covers the difference rather than playing at the wrong speed.
+	// The engine's rate, for the log line and the diagnostics only. Nothing on
+	// this path converts with it: the graph does, which is the point.
+	//
+	// Connected at AUDIO_RATE, not at the device's rate, and deliberately: the
+	// engine inserts a sample-rate converter of its own when a connection's
+	// format differs from the hardware's - Apple's header names it among the
+	// things a graph may contain ("any sample rate conversion") - so the block is
+	// asked for n frames at 44100, fill(n) needs no translation, and only the
+	// s16-to-float conversion is left on the audio thread.
+	//
+	// This is not only cheaper than ui::resampler, it is the only version that
+	// cannot be wrong. Reading the rate off the output node meant reading it
+	// before the device was pinned, so it described whatever was default at that
+	// moment: a 44100 BlackHole on a machine whose default ran at 96 kHz was
+	// reported as 96000, resampled 44100 -> 96000, and played at the wrong speed
+	// with produced() advancing 2.18x too slowly - which is `live --seconds 8`
+	// taking 17. The device's rate is not our business now; the graph reads it.
 	double rate = [[out_node outputFormatForBus:0] sampleRate];
 	if (!(rate > 0.0))
 		rate = double(AUDIO_RATE);
-	// The conversion is ours, on purpose, and it could be the engine's.
-	//
-	// AVAudioEngine will insert a sample-rate converter of its own if the
-	// connection format's rate differs from the hardware's - Apple's header
-	// names it, among the things a graph may contain ("any sample rate
-	// conversion"), and its converter is at least as good as this one and quite
-	// possibly better. Connecting at 44100 instead of at the device's rate would
-	// hand the job over: the block would then be asked for n frames at 44100,
-	// fill(n) would need no translation at all, and nothing but the s16-to-float
-	// conversion would be left on the audio thread.
-	//
-	// We keep ui::resampler because it is the same code the Windows output and
-	// the Linux input already use (Linux output sidesteps the question by
-	// refusing a device that cannot do 44100), so this is one resampler in the
-	// tree rather than two paths to reason about - and because our converter's
-	// cost is a few percent of a core, which the spikes we are chasing are not.
-	// Worth revisiting if the render block ever needs the room: connect the
-	// source node at AUDIO_RATE, let the engine convert, and keep ui::resampler
-	// for the input side.
 	m->dev_rate = rate;
-	m->resamp.configure(double(AUDIO_RATE), rate);
-	if (!m->resamp.direct())
-		std::fprintf(stderr, "[audio] resampling %.0f -> %.0f Hz\n",
-		             double(AUDIO_RATE), rate);
+	if (rate != double(AUDIO_RATE))
+		std::fprintf(stderr, "[audio] device runs %.0f Hz, the engine converts\n", rate);
 
 	// Which device the request means, then its buffer size. Both before the
 	// engine runs: macOS writes the device's buffer frame size here, which is
 	// what --latency has always meant on that side, and the unit negotiates
 	// against it once it opens.
+	m->want_name = r.device;   // the ask, not the answer: see recover()
+	m->want_exact = r.exact;
 	m->dev = apple::resolve_output(r.device, r.exact);
 	if (!m->dev.found) {
 		err = r.device.empty() ? CLI_T("No audio output found", "音声の出口が見つからない")
@@ -181,33 +187,26 @@ bool apple_audio_out::start(const request &r, fill_fn fill, std::string &err)
 				return noErr;
 			}
 			const u64 t0 = mach_absolute_time();
-			// The device wants n frames at its own rate; the machine makes them
-			// at 44100. input_needed() says how many machine frames that takes,
-			// so one fill() covers the callback exactly - no drift, no stash.
-			const int want = im->resamp.direct() ? int(n) : im->resamp.input_needed(int(n));
-			if (want > 0) {
-				if (im->scratch.size() < size_t(want) * 2)
-					im->scratch.resize(size_t(want) * 2);
-				im->fill(im->scratch.data(), u32(want));
-			}
+			// n frames at 44100, because that is what the node is connected at:
+			// one fill() covers the callback exactly, no drift and no stash, and
+			// n is therefore the machine's own frame count - which is what
+			// produced() and the overrun test below are denominated in.
+			if (im->scratch.size() < size_t(n) * 2)
+				im->scratch.resize(size_t(n) * 2);
+			im->fill(im->scratch.data(), u32(n));
 			float *f = static_cast<float *>(abl->mBuffers[0].mData);
 			const u32 floats = abl->mBuffers[0].mDataByteSize / sizeof(float);
 			if (f && floats >= n * 2) {
-				if (im->resamp.direct()) {
-					const s16 *sv = im->scratch.data();
-					for (u32 i = 0; i < n * 2; i++)
-						f[i] = float(sv[i]) * (1.0f / 32768.0f);
-				} else {
-					im->resamp.push(im->scratch.data(), want);
-					im->resamp.pull(f, int(n));
-				}
+				const s16 *sv = im->scratch.data();
+				for (u32 i = 0; i < n * 2; i++)
+					f[i] = float(sv[i]) * (1.0f / 32768.0f);
 			} else {
 				zero_buffers(abl);
 			}
 			const u64 t1 = mach_absolute_time();
 			const u64 busy = t1 - t0;
 			im->busy_ticks.fetch_add(busy, std::memory_order_relaxed);
-			im->meter.add(double(busy) / mach_tps(), double(n) / im->dev_rate);
+			im->meter.add(double(busy) / mach_tps(), double(n) / double(AUDIO_RATE));
 			const u64 index = im->callbacks.fetch_add(1, std::memory_order_relaxed) + 1;
 			if (const double ms = 1000.0 * double(busy) / mach_tps(); ms > 20.0)
 				im->spikes.fetch_add(1, std::memory_order_relaxed);
@@ -228,32 +227,34 @@ bool apple_audio_out::start(const request &r, fill_fn fill, std::string &err)
 				    std::memory_order_relaxed);
 			}
 			// The overrun proxy CoreAudio has no better name for: we took longer
-			// to make the block than the block is worth. Counted on both
-			// platforms now, where before only the AudioUnit callback had it.
-			if (double(busy) / mach_tps() > double(n) / im->dev_rate)
+			// to make the block than the block is worth. Against AUDIO_RATE,
+			// because the block is 44100 frames whatever the device runs at -
+			// that is what the overrun has to be measured against, and the
+			// device's rate is not ours to know on this path any more.
+			if (double(busy) / mach_tps() > double(n) / double(AUDIO_RATE))
 				im->starved.fetch_add(1, std::memory_order_relaxed);
 			// What the machine made, before any conversion, which is what a
 			// capture means on both platforms. The only allocation on this
 			// path, and only while --dump-dev asked for it.
-			if (im->cap && want > 0)
+			if (im->cap)
 				im->cap->insert(im->cap->end(), im->scratch.data(),
-				                im->scratch.data() + size_t(want) * 2);
-			// want, not n: produced() is a count of 44100 Hz machine frames, which
-		// is what every consumer divides by AUDIO_RATE to get seconds (live.cpp
-		// does, in its progress and its CPU-per-second at the end). n is the
-		// device's frame count, so counting it says 48 kHz frames and reads 8.9%
-		// long on a 48 kHz output - which is what every iPhone runs at. The
-		// machine frames are already worked out above, one fill() per callback
-		// with no drift, so this is the same number the audio left the machine in.
-		im->produced.fetch_add(u64(want > 0 ? want : 0), std::memory_order_relaxed);
+				                im->scratch.data() + size_t(n) * 2);
+			// n, and it needs no thought: the node is connected at AUDIO_RATE,
+			// so n is already the machine's frame count - which is the unit every
+			// consumer divides by AUDIO_RATE to get seconds. This used to be the
+			// device's frame count, which on a 48 kHz output read 8.9% long.
+			im->produced.fetch_add(n, std::memory_order_relaxed);
 			if (isSilence)
 				*isSilence = NO;
 			return noErr;
 		}];
 	// Interleaved float32 stereo: the block above writes one buffer of LRLR, so
 	// the connection format says so rather than converting behind our back.
+	// At AUDIO_RATE, whatever the device runs at: this is the format the block
+	// above is called with, and the engine's own converter takes it from here to
+	// the hardware. The device's rate is read above for the log line only.
 	AVAudioFormat *fmt = [[AVAudioFormat alloc] initWithCommonFormat:AVAudioPCMFormatFloat32
-	                                                      sampleRate:rate
+	                                                      sampleRate:double(AUDIO_RATE)
 	                                                        channels:2
 	                                                     interleaved:YES];
 	if (!fmt) {
@@ -277,8 +278,15 @@ bool apple_audio_out::start(const request &r, fill_fn fill, std::string &err)
 
 	m->engine = engine;
 	m->src = src;
-	m->dev_name = apple::output_label(m->dev, rate);
+	m->dev_name = apple::output_label(m->dev, rate);   // the device's, not ours
 	m->running.store(true, std::memory_order_release);
+	// The watchdog starts with the engine and stops with it (see watch_loop).
+	// Its first sight has to be the count we are about to have, not zero, or the
+	// first tick would call a fresh engine a stall.
+	m->last_produced.store(0, std::memory_order_relaxed);
+	m->last_seen_ticks.store(uint64_t(mach_absolute_time()), std::memory_order_relaxed);
+	m->watch_run.store(true, std::memory_order_release);
+	m->watchdog = std::thread([this] { watch_loop(); });
 	m->callbacks.store(0, std::memory_order_relaxed);
 	m->spikes.store(0, std::memory_order_relaxed);
 	m->started_ticks.store(uint64_t(mach_absolute_time()), std::memory_order_relaxed);
@@ -306,20 +314,84 @@ bool apple_audio_out::start(const request &r, fill_fn fill, std::string &err)
 
 void apple_audio_out::restart()
 {
+	// The session watcher (iOS's AVAudioSession, and the hook macOS's session file
+	// answers) calls this: something changed that we should come back from. The
+	// recovery is the same one the watchdog does, because it is the same
+	// situation - the engine is not running and nobody has noticed.
+	recover("the session says the device changed");
+}
+
+void apple_audio_out::watch_loop()
+{
+	while (m->watch_run.load(std::memory_order_acquire)) {
+		std::this_thread::sleep_for(std::chrono::milliseconds(250));
+		if (!m->running.load(std::memory_order_acquire) || !m->engine)
+			continue;
+		const u64 seen = uint64_t(mach_absolute_time());
+		const u64 produced = m->produced.load(std::memory_order_acquire);
+		if (produced != m->last_produced.load(std::memory_order_relaxed)) {
+			m->last_produced.store(produced, std::memory_order_relaxed);
+			m->last_seen_ticks.store(seen, std::memory_order_relaxed);
+			continue;
+		}
+		if ((seen - m->last_seen_ticks.load(std::memory_order_relaxed)) / mach_tps() < 1.0)
+			continue;
+		m->last_seen_ticks.store(seen, std::memory_order_relaxed);
+		recover("nothing produced for a second");
+	}
+}
+
+void apple_audio_out::recover(const char *why)
+{
 	AVAudioEngine *engine = m->engine;
-	if (!engine || !m->running.load(std::memory_order_acquire))
+	if (!engine)
 		return;
+	// Safe to do from this thread, which is the point of the watchdog being its
+	// own thread: the engine's configuration-change callback runs on an internal
+	// dispatch queue and Apple's header warns against tearing the engine down
+	// inside it - and this is not inside it. The observer only raises a flag, so
+	// the stop and start happen here, on a thread that owns nothing else.
+	//
+	// Re-resolve and re-pin first: the device that went away may be a different
+	// one now, and a pin onto a device that is gone is what we are recovering
+	// from. The connection stays at AUDIO_RATE - which is the whole point of
+	// handing the conversion to the graph - so a rate change needs no rebuild
+	// here; the engine's converter follows the hardware.
+	// From the *request*, not from the device we ended up on: a request for the
+	// system default has to stay a request for the system default, or the first
+	// recovery would quietly pin the device that was default at startup and the
+	// route would stop following - the one thing that request means.
+	apple::device_ref again = apple::resolve_output(m->want_name, m->want_exact);
+	if (again.found) {
+		m->dev = again;
+		std::string err;
+		apple::pin_output([engine outputNode].audioUnit, again, err);
+	}
 	[engine stop];
 	NSError *e = nil;
-	if (![engine startAndReturnError:&e])
-		std::fprintf(stderr, "[audio] restart failed: %s\n",
+	if ([engine startAndReturnError:&e]) {
+		const u64 n = m->recoveries.fetch_add(1, std::memory_order_relaxed) + 1;
+		const double rate = [[engine outputNode] outputFormatForBus:0].sampleRate;
+		std::fprintf(stderr, "[audio] recovered (%s), %.0f Hz, %llu so far\n", why, rate,
+		             (unsigned long long)n);
+		m->last_produced.store(m->produced.load(std::memory_order_acquire),
+		                       std::memory_order_relaxed);
+		m->last_seen_ticks.store(uint64_t(mach_absolute_time()), std::memory_order_relaxed);
+	} else {
+		std::fprintf(stderr, "[audio] could not recover (%s): %s\n", why,
 		             e ? [[e localizedDescription] UTF8String] : "?");
+	}
 }
 
 void apple_audio_out::stop()
 {
 	if (!m->running.exchange(false))
 		return;
+	// The watchdog first, before the engine goes: it must not decide to recover
+	// an engine that is on its way out, and its thread holds this impl.
+	m->watch_run.store(false, std::memory_order_release);
+	if (m->watchdog.joinable())
+		m->watchdog.join();
 	// Stop first so no new block enters, then release: a block already inside
 	// still holds the raw impl pointer, the way a refCon does. The app keeps
 	// this object in a static and never destroys it mid-render, so the window
@@ -453,7 +525,9 @@ double apple_audio_out::cpu_percent() const
 	if (prod == 0)
 		return 0.0;
 	// Fraction of one device-rate second spent rendering, as a percent.
-	return 100.0 * double(busy) / (mach_tps() * double(prod) / m->dev_rate);
+	// prod is a count of 44100 frames and busy is ticks to make one, so the
+	// device's rate is not in this any more (see the render block).
+	return 100.0 * double(busy) / (mach_tps() * (double(prod) / double(AUDIO_RATE)));
 }
 
 double apple_audio_out::worst_ms() const

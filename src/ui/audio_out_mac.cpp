@@ -59,6 +59,11 @@ device_ref resolve_output(const std::string &name, bool exact)
 	dev.found = dev.id != kAudioObjectUnknown;
 	if (dev.found)
 		dev.name = hal::name_of(dev.id);
+	// An empty name is not a device, it is a wish: follow whatever the system
+	// default is, and keep following it. The id is still resolved (the buffer
+	// size is asked of that device, and the status line names it) but nothing is
+	// pinned to it, which is what makes the change of default mean anything.
+	dev.follow = name.empty();
 	return dev;
 }
 
@@ -73,11 +78,16 @@ u32 request_buffer_frames(const device_ref &dev, int latency_ms)
 }
 
 // The same property this file set on a unit of its own, now set on the unit the
-// engine hands out. Note what it means, unchanged: the unit is pinned even for
-// the system default, so a later change of the system default does not move us.
+// engine hands out - and set only for a device that was actually asked for. An
+// unnamed request is left unpinned, which is upstream's kAudioUnitSubType_
+// DefaultOutput in the only terms AVAudioEngine has: the output node with no
+// CurrentDevice follows the system default, so headphones move the sound. Pinning
+// it to whatever was default at the time is the behaviour that stopped that, and
+// the reason the change of default appeared to do nothing until the old device
+// was switched off.
 bool pin_output(AudioUnit unit, const device_ref &dev, std::string &err)
 {
-	if (unit == nullptr || dev.id == kAudioObjectUnknown)
+	if (unit == nullptr || dev.id == kAudioObjectUnknown || dev.follow)
 		return true;
 	if (AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice,
 	                         kAudioUnitScope_Global, 0, &dev.id, sizeof(dev.id)) != noErr) {

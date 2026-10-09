@@ -61,6 +61,7 @@ device_ref resolve_input(const std::string &name, bool exact)
 	dev.found = dev.id != kAudioObjectUnknown;
 	if (dev.found)
 		dev.name = hal::name_of(dev.id);
+	dev.follow = name.empty();   // as on the output side: no name, no pin
 	return dev;
 }
 
@@ -70,7 +71,10 @@ device_ref resolve_input(const std::string &name, bool exact)
 // unit would try to play as well as record.
 bool pin_input(AudioUnit unit, const device_ref &dev, std::string &err)
 {
-	if (unit == nullptr || dev.id == kAudioObjectUnknown)
+	// dev.follow, as pin_output: an unnamed request takes whatever the system
+	// defaults to, now and later. The bus properties below are ours to set
+	// either way - they are the unit's, not the device's.
+	if (unit == nullptr || dev.id == kAudioObjectUnknown || dev.follow)
 		return true;
 	UInt32 on = 1, off = 0;
 	if (AudioUnitSetProperty(unit, kAudioOutputUnitProperty_EnableIO,

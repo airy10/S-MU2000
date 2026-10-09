@@ -62,10 +62,29 @@ public:
 	// survive, so this is a restart and not a rebuild.
 	void restart();
 
+	// Called from the app's own tick. Raises a restart when the engine has gone
+	// quiet. Without it a device that changes under a running engine stops the
+	// engine for good, and nothing on the machine moves again until a relaunch -
+	// the render block is the only thing that advances it on macOS, so the panel
+	// freezes, the LCD stops and the buttons appear dead.
+	void audio_tick();
+
+	// The watchdog loop, on its own thread for as long as the engine runs. It
+	// exists rather than the app's tick because not every front end has one:
+	// `live` waits on produced() in a plain loop, and that is the case that
+	// wedges - the run never reaches its own end, so a tick-driven recovery would
+	// never arrive either.
+	void watch_loop();
+
 	bool running() const;
 	const std::string &device_name() const;
 	bool exclusive() const;
 	void *realtime_workgroup();
+
+	// The recovery audio_tick() performs: re-resolve the device, re-pin it, stop
+	// and start. Private because the tick and the session watchers are its only
+	// callers, and both say why in the log line they pass.
+	void recover(const char *why);
 
 	// What we hand the unit, written as a WAV: what the machine made, before
 	// any format conversion, which is what a capture on either platform means.
@@ -150,6 +169,12 @@ struct device_ref {
 	UInt32      id = 0;          // 0 is kAudioObjectUnknown
 	std::string name;            // what to show for it
 	bool        found = true;    // false when a name was given and nothing matches
+	// "Whatever the system default is", which is a different thing from a device
+	// that happened to be default when we asked. Upstream said it with the unit
+	// it instantiated - kAudioUnitSubType_DefaultOutput rather than HALOutput,
+	// and no pin at all - which is why plugging in headphones moved the sound.
+	// A pinned device does not move, and only falls back when it disappears.
+	bool        follow = false;  // pin_output() leaves the unit alone
 };
 
 // What a device claim is: which device, and whether taking it is what got
