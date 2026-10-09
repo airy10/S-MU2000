@@ -82,7 +82,12 @@ struct apple_audio_out::impl {
 	std::atomic<bool> taken{false};   // macOS: the device is ours alone
 	std::atomic<u32> buffer_frames{0};    // what the last block actually was
 	u32 granted_frames = 0;               // what the platform granted, pre-roll
-	double dev_rate = double(AUDIO_RATE);
+	// The connection's layout, copied off the device's own format at start() so
+	// the block below can write the buffer it is handed without asking anything.
+	// Plain values, not the AVAudioFormat: this is the audio thread.
+	bool conn_planar = true;      // one buffer per channel, not interleaved
+	bool conn_float = true;       // float32 rather than int16
+	bool conn_known = false;      // false when the device wanted something else
 	std::atomic<u64> produced{0}, starved{0};
 	std::atomic<u64> busy_ticks{0}, worst_ticks{0};
 	cpu_meter meter;   // recent load for the display (issue #80, shared helper)
@@ -131,29 +136,11 @@ bool apple_audio_out::start(const request &r, fill_fn fill, std::string &err)
 	AVAudioEngine *engine = [[AVAudioEngine alloc] init];
 	AVAudioOutputNode *out_node = [engine outputNode];
 
-	// The engine's rate, for the log line and the diagnostics only. Nothing on
-	// this path converts with it: the graph does, which is the point.
-	//
-	// Connected at AUDIO_RATE, not at the device's rate, and deliberately: the
-	// engine inserts a sample-rate converter of its own when a connection's
-	// format differs from the hardware's - Apple's header names it among the
-	// things a graph may contain ("any sample rate conversion") - so the block is
-	// asked for n frames at 44100, fill(n) needs no translation, and only the
-	// s16-to-float conversion is left on the audio thread.
-	//
-	// This is not only cheaper than ui::resampler, it is the only version that
-	// cannot be wrong. Reading the rate off the output node meant reading it
-	// before the device was pinned, so it described whatever was default at that
-	// moment: a 44100 BlackHole on a machine whose default ran at 96 kHz was
-	// reported as 96000, resampled 44100 -> 96000, and played at the wrong speed
-	// with produced() advancing 2.18x too slowly - which is `live --seconds 8`
-	// taking 17. The device's rate is not our business now; the graph reads it.
-	double rate = [[out_node outputFormatForBus:0] sampleRate];
-	if (!(rate > 0.0))
-		rate = double(AUDIO_RATE);
-	m->dev_rate = rate;
-	if (rate != double(AUDIO_RATE))
-		std::fprintf(stderr, "[audio] device runs %.0f Hz, the engine converts\n", rate);
+	// The connection is at AUDIO_RATE, not at the device's rate: the engine inserts
+	// a sample-rate converter of its own when a connection's format differs from
+	// the hardware's, so fill(n) needs no translation. Nothing here reads the
+	// device's rate to compute with; the one read is after the pin, and it
+	// labels the device.
 
 	// Which device the request means, then its buffer size. Both before the
 	// engine runs: macOS writes the device's buffer frame size here, which is
@@ -195,25 +182,63 @@ bool apple_audio_out::start(const request &r, fill_fn fill, std::string &err)
 			if (im->scratch.size() < size_t(n) * 2)
 				im->scratch.resize(size_t(n) * 2);
 			im->fill(im->scratch.data(), u32(n));
-			float *f = static_cast<float *>(abl->mBuffers[0].mData);
-			const u32 floats = abl->mBuffers[0].mDataByteSize / sizeof(float);
-			if (f && floats >= n * 2) {
-				const s16 *sv = im->scratch.data();
-				for (u32 i = 0; i < n * 2; i++)
-					f[i] = float(sv[i]) * (1.0f / 32768.0f);
+			// Into the layout the device asked for, which is the one the block is
+			// called with: the connection is the hardware's own format at
+			// AUDIO_RATE, so the engine's converter has a rate to do and nothing
+			// else to do. Only the rate is ours; the layout is read off the
+			// pinned device in start() and copied into conn_planar/conn_float.
+			const s16 *sv = im->scratch.data();
+			bool ok = false;
+			if (im->conn_planar && abl->mNumberBuffers >= 2) {
+				AudioBuffer *lb = &abl->mBuffers[0], *rb = &abl->mBuffers[1];
+				if (im->conn_float &&
+				    lb->mDataByteSize >= n * sizeof(float) &&
+				    rb->mDataByteSize >= n * sizeof(float)) {
+					float *l = static_cast<float *>(lb->mData);
+					float *r = static_cast<float *>(rb->mData);
+					for (u32 i = 0; i < n; i++) {
+						l[i] = float(sv[i * 2])     * (1.0f / 32768.0f);
+						r[i] = float(sv[i * 2 + 1]) * (1.0f / 32768.0f);
+					}
+					ok = true;
+				} else if (!im->conn_float &&
+				           lb->mDataByteSize >= n * sizeof(s16) &&
+				           rb->mDataByteSize >= n * sizeof(s16)) {
+					s16 *l = static_cast<s16 *>(lb->mData);
+					s16 *r = static_cast<s16 *>(rb->mData);
+					for (u32 i = 0; i < n; i++) {
+						l[i] = sv[i * 2];
+						r[i] = sv[i * 2 + 1];
+					}
+					ok = true;
+				}
+			} else if (!im->conn_planar && abl->mNumberBuffers >= 1) {
+				AudioBuffer *b = &abl->mBuffers[0];
+				if (im->conn_float && b->mDataByteSize >= n * 2 * sizeof(float)) {
+					float *f = static_cast<float *>(b->mData);
+					for (u32 i = 0; i < n * 2; i++)
+						f[i] = float(sv[i]) * (1.0f / 32768.0f);
+					ok = true;
+				} else if (!im->conn_float && b->mDataByteSize >= n * 2 * sizeof(s16)) {
+					std::memcpy(b->mData, sv, size_t(n) * 2 * sizeof(s16));
+					ok = true;
+				}
+			}
+			if (ok) {
+				// nothing to undo
 			} else {
 				// Not reached unless the graph hands us something other than the
-				// format we connected with - which is our own choice (float32,
-				// stereo, interleaved, AUDIO_RATE) and, per AVAudioEngine's own
-				// note on a configuration change, what the nodes keep across one.
-				// Said once, because a silent zero buffer here is a freeze that
-				// looks like a mute, and that is how the last two defects in this
-				// file were found.
+				// format we connected with - which is the device's own, and, per
+				// AVAudioEngine's own note on a configuration change, what the
+				// nodes keep across one. Said once, because a silent zero buffer
+				// here is a freeze that looks like a mute, and that is how the
+				// last two defects in this file were found.
 				if (!im->warned.exchange(true, std::memory_order_relaxed))
 					std::fprintf(stderr,
-					             "[audio] block is %.0f floats where %u were expected;"
-					             " silencing it (the connected format is not ours?)\n",
-					             double(floats), 2u * unsigned(n));
+					             "[audio] block does not match the connected format"
+					             " (%u buffers, planar=%d, float=%d); silencing it\n",
+					             unsigned(abl->mNumberBuffers), int(im->conn_planar),
+					             int(im->conn_float));
 				zero_buffers(abl);
 			}
 			const u64 t1 = mach_absolute_time();
@@ -261,25 +286,35 @@ bool apple_audio_out::start(const request &r, fill_fn fill, std::string &err)
 				*isSilence = NO;
 			return noErr;
 		}];
-	// Interleaved float32 stereo: the block above writes one buffer of LRLR, so
-	// the connection format says so rather than converting behind our back.
-	// At AUDIO_RATE, whatever the device runs at: this is the format the block
-	// above is called with, and the engine's own converter takes it from here to
-	// the hardware. The device's rate is read above for the log line only.
-	AVAudioFormat *fmt = [[AVAudioFormat alloc] initWithCommonFormat:AVAudioPCMFormatFloat32
-	                                                      sampleRate:double(AUDIO_RATE)
-	                                                        channels:2
-	                                                     interleaved:YES];
-	if (!fmt) {
-		err = "cannot describe float32 stereo";
-		return false;
-	}
 	[engine attachNode:src];
 	NSError *e = nil;
 	// The device is pinned before the connection, because the format is
-	// negotiated against whichever device the unit holds.
+	// negotiated against whichever device the unit holds - and because the
+	// format below is read off that device.
 	if (!apple::pin_output([out_node audioUnit], m->dev, err)) {
 		[engine detachNode:src];
+		return false;
+	}
+
+	// The connection is the hardware's own format at AUDIO_RATE, so the rate is the
+	// only difference and the engine has only the rate to convert. Asking for
+	// anything else has it convert the layout too.
+	//
+	// Two channels whatever the device has: the machine is stereo, and a device
+	// with more gets the graph's own downmix. A sample format that is neither
+	// float32 nor int16 gets float32 and the graph's conversion after all.
+	AVAudioFormat *hw_fmt = [out_node outputFormatForBus:0];
+	const bool hw_int16 = hw_fmt.commonFormat == AVAudioPCMFormatInt16;
+	const bool hw_planar = hw_fmt.channelCount < 1 ? true : !hw_fmt.isInterleaved;
+	im->conn_float = !hw_int16;
+	im->conn_planar = hw_planar;
+	AVAudioFormat *fmt = [[AVAudioFormat alloc] initWithCommonFormat:
+	    hw_int16 ? AVAudioPCMFormatInt16 : AVAudioPCMFormatFloat32
+	                                                       sampleRate:double(AUDIO_RATE)
+	                                                         channels:2
+	                                                      interleaved:!hw_planar];
+	if (!fmt) {
+		err = "cannot describe the device's stereo format at 44100";
 		return false;
 	}
 	[engine connect:src to:out_node fromBus:0 toBus:0 format:fmt];
@@ -291,7 +326,14 @@ bool apple_audio_out::start(const request &r, fill_fn fill, std::string &err)
 
 	m->engine = engine;
 	m->src = src;
+	// Read here, not before the pin: from here on the unit holds the device, so
+	// this is that device's rate rather than whatever was default when this
+	// function was entered. It labels the device and says the graph is
+	// converting; nothing computes with it.
+	const double rate = [[out_node outputFormatForBus:0] sampleRate];
 	m->dev_name = apple::output_label(m->dev, rate);   // the device's, not ours
+	if (rate > 0.0 && rate != double(AUDIO_RATE))
+		std::fprintf(stderr, "[audio] device runs %.0f Hz, the engine converts\n", rate);
 	m->running.store(true, std::memory_order_release);
 	// The watchdog starts with the engine and stops with it (see watch_loop).
 	// Its first sight has to be the count we are about to have, not zero, or the
@@ -359,21 +401,15 @@ void apple_audio_out::recover(const char *why)
 	AVAudioEngine *engine = m->engine;
 	if (!engine)
 		return;
-	// Safe to do from this thread, which is the point of the watchdog being its
-	// own thread: the engine's configuration-change callback runs on an internal
-	// dispatch queue and Apple's header warns against tearing the engine down
-	// inside it - and this is not inside it. The observer only raises a flag, so
-	// the stop and start happen here, on a thread that owns nothing else.
+	// Safe from this thread, which is why the watchdog has one: the engine's
+	// configuration-change callback runs on an internal dispatch queue, and
+	// Apple's header warns against tearing the engine down inside it.
 	//
 	// Re-resolve and re-pin first: the device that went away may be a different
 	// one now, and a pin onto a device that is gone is what we are recovering
-	// from. The connection stays at AUDIO_RATE - which is the whole point of
-	// handing the conversion to the graph - so a rate change needs no rebuild
-	// here; the engine's converter follows the hardware.
-	// From the *request*, not from the device we ended up on: a request for the
-	// system default has to stay a request for the system default, or the first
-	// recovery would quietly pin the device that was default at startup and the
-	// route would stop following - the one thing that request means.
+	// from. The connection stays at AUDIO_RATE, so a rate change needs no rebuild.
+	// From the *request*, not from the device we ended up on, or a request for
+	// the system default would pin whatever was default at startup.
 	apple::device_ref again = apple::resolve_output(m->want_name, m->want_exact);
 	if (again.found) {
 		m->dev = again;
@@ -650,25 +686,16 @@ bool apple_audio_in::start(const std::string &device, std::string &err)
 	if (!apple::pin_input([node audioUnit], dev, err))
 		return false;
 
-	// The rate here is the device's own and AUDIO_RATE is not negotiable, which
-	// is the opposite of the output side: that one connects its source at
-	// AUDIO_RATE and lets the graph convert, because the output node supports
-	// rate conversion. Nothing goes ahead of the input node - it is the thing
-	// that reads the IO unit - so a connection here asking for a rate other
-	// than the hardware's is accepted, starts, and delivers nothing. Measured
-	// on macOS with the hardware at 96000, one engine, 600 ms each: a mixer fed
-	// a 44100 source node gave 6 buffers, and the same mixer fed the input node
-	// at 44100 gave 0; the input node at 96000 gave 6. The channel count is not
-	// the constraint - the input node asked for 2ch against a 1ch device gave 6,
-	// folded - so ui::resampler below exists for the rate and only the rate.
+	// The device's rate, unlike the output side: no converter goes ahead of the
+	// input node, so a connection asking for a rate the hardware is not running
+	// is accepted, starts, and delivers nothing. Measured, hardware at 96000,
+	// 600 ms each: the input node at 44100 gave 0 buffers, at 96000 gave 6. The
+	// channel count is not the constraint - 2ch against a 1ch device folded and
+	// gave 6 - so ui::resampler below is here for the rate alone.
 	//
-	// The tap asks for the device's own format, whatever that is. Asking for
-	// 2ch interleaved instead looks harmless - the tap is accepted and the
-	// engine starts - but on a mono device the block is then never called at
-	// all, so the machine hears silence and nothing says why. Measured on
-	// macOS with a bare engine: a 1ch device delivered 48000 frames in 10
-	// callbacks on its own format and zero on a forced 2ch one. The block
-	// below folds the channels instead.
+	// The tap asks for the device's own format. A forced 2ch interleaved one is
+	// accepted and starts, and on a mono device the block is then never called.
+	// The block below folds the channels instead.
 	AVAudioFormat *tap = [node inputFormatForBus:0];
 	const double rate = tap.sampleRate;
 	if (!(rate > 0.0) || tap.channelCount < 1) {
