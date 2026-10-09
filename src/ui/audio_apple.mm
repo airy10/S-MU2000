@@ -620,16 +620,33 @@ static inline float tap_sample(const float *const *chans, AVAudioFormat *fmt,
 	return fmt.isInterleaved ? chans[0][size_t(i) * ch + c] : chans[c][i];
 }
 
-// What to call a sample type in the label the front ends print. AVAudioFormat's
-// own names are longer than a status line wants.
-static const char *sample_name(AVAudioCommonFormat f)
+// A sample type as a small number, so the tap can publish what it was given in
+// one store beside the rate.
+static inline int sample_code(AVAudioCommonFormat f)
 {
 	switch (f) {
-	case AVAudioPCMFormatFloat32: return "float32";
-	case AVAudioPCMFormatInt16:   return "int16";
-	case AVAudioPCMFormatInt32:   return "int32";
-	default:                      return "other";
+	case AVAudioPCMFormatFloat32: return 1;
+	case AVAudioPCMFormatInt16:   return 2;
+	case AVAudioPCMFormatInt32:   return 3;
+	default:                      return 0;
 	}
+}
+
+// What to call a sample type in the label the front ends print. AVAudioFormat's
+// own names are longer than a status line wants.
+static const char *sample_code_name(int code)
+{
+	switch (code) {
+	case 1: return "float32";
+	case 2: return "int16";
+	case 3: return "int32";
+	default: return "other";
+	}
+}
+
+static const char *sample_name(AVAudioCommonFormat f)
+{
+	return sample_code_name(sample_code(f));
 }
 
 // ---- The input half ---------------------------------------------------------
@@ -647,9 +664,14 @@ struct apple_audio_in::impl {
 
 	AVAudioEngine *engine = nil;
 
-	// The converter that makes the device's format into ours, and everything it
-	// needs so the tap never allocates. AVAudioConverter is not documented as
-	// real-time safe, so it is built here and the tap only calls it.
+	// The converter turns the device's format into float32 stereo at the
+	// device's own rate, and the rate itself is left to ui::resampler: the tap
+	// hands over whatever the node has - any sample type, any layout, any channel
+	// count - and none of that needs a switch here, while the rate conversion is
+	// the one our own resampler does without adding delay.
+	//
+	// It is not documented as real-time safe, so it is built here, once, and the
+	// tap only calls it.
 	using ConvBlock = AVAudioBuffer *(^)(AVAudioPacketCount, AVAudioConverterInputStatus *);
 	AVAudioConverter *conv = nil;
 	AVAudioPCMBuffer *conv_out = nil;   // ours to fill, reused every callback
@@ -658,9 +680,39 @@ struct apple_audio_in::impl {
 	ConvBlock conv_block = nil;
 	std::atomic<bool> warned{false};   // said once
 
+	ui::resampler rs;
+	std::vector<s16> staging;    // converted frames as s16 stereo (the resampler's input)
+	std::vector<float> conv_buf;
+	std::vector<s16> out16;
+
 	// Builds conv from the device's format, and is a member because a file-scope
 	// function cannot name impl.
 	bool setup_converter(AVAudioFormat *from, std::string &err);
+
+	// n frames of s16 stereo at the device's rate in, 44100 Hz s16 stereo into
+	// the ring. Unchanged from before the converter: the resampler takes what it
+	// can take and gives back what that produced, so nothing is kept back.
+	void run_resampler(const s16 *in, u32 n)
+	{
+		if (rs.direct()) {
+			push(in, n);
+			return;
+		}
+		for (u32 at = 0; at < n;) {
+			const u32 k = std::min<u32>(1024, n - at);
+			rs.push(const_cast<s16 *>(in + size_t(at) * 2), int(k));
+			at += k;
+			const int ready = rs.output_available();
+			if (ready <= 0)
+				continue;
+			conv_buf.resize(size_t(ready) * 2);
+			out16.resize(size_t(ready) * 2);
+			rs.pull(conv_buf.data(), ready);
+			for (size_t j = 0; j < out16.size(); j++)
+				out16[j] = s16(std::lround(std::clamp(conv_buf[j], -1.0f, 1.0f) * 32767.0f));
+			push(out16.data(), u32(ready));
+		}
+	}
 
 	std::vector<s16> m_ring = std::vector<s16>(size_t(RING) * 2);
 	std::atomic<u32> m_w{0}, m_r{0};
@@ -670,6 +722,27 @@ struct apple_audio_in::impl {
 	// rather than the ring: the ring only drains when the machine asks for input,
 	// and a synth that never does would look dead.
 	std::atomic<u64> taps{0};
+	std::atomic<int> seen_rate{0};   // what the last tap buffer was worth
+	std::atomic<int> seen_shape{0};  // its channels and sample type, packed
+
+	// The tap's block, kept so it can be installed again against a new format.
+	// A tap holds the format it was given: when the device's own rate moves, the
+	// engine will not start with the old one still installed - measured,
+	// kAudioUnitErr_FormatNotSupported - so the tap is what has to be replaced,
+	// not just the converter beside it.
+	using TapBlock = void (^)(AVAudioPCMBuffer *, AVAudioTime *);
+	TapBlock tap_block = nil;
+	AVAudioInputNode *tap_node = nil;
+
+	// Installs the block on this node's input bus with the format given, after
+	// taking off any tap already there.
+	void install_tap(AVAudioInputNode *node, AVAudioFormat *fmt)
+	{
+		if (tap_node)
+			[tap_node removeTapOnBus:0];
+		[tap_node = node installTapOnBus:0 bufferSize:1024 format:fmt block:tap_block];
+	}
+	std::atomic<u64> last_rate_ticks{0};  // when we last acted on a rate change
 	std::atomic<u64> last_taps{0};
 	std::atomic<u64> last_seen_ticks{0};
 	std::atomic<bool> watch_run{false};
@@ -679,6 +752,7 @@ struct apple_audio_in::impl {
 	std::string dev_name, fmt_line;
 	double dev_rate = double(AUDIO_RATE);
 	u32 dev_channels = 0;
+	AVAudioCommonFormat dev_format = AVAudioPCMFormatFloat32;
 
 	// 44100Hz 16bit 2ch を輪に積む。溢れる分は捨てる (the tap outruns the
 	// synth's pop when the machine is busy).
@@ -717,14 +791,18 @@ apple_audio_in::~apple_audio_in()
 // been converted with answers every later call with EndOfStream and nothing.
 bool apple_audio_in::impl::setup_converter(AVAudioFormat *from, std::string &err)
 {
-	AVAudioFormat *want = [[AVAudioFormat alloc] initWithCommonFormat:AVAudioPCMFormatInt16
-	                                                       sampleRate:double(AUDIO_RATE)
+	// Same rate as the input: this is the format conversion only. The arrow to
+	// 44100 is ui::resampler's job, because it adds no delay - it can ask for the
+	// input ahead of the moment it needs it - where converting the rate here
+	// would add about a millisecond of filter delay.
+	AVAudioFormat *want = [[AVAudioFormat alloc] initWithCommonFormat:AVAudioPCMFormatFloat32
+	                                                       sampleRate:from.sampleRate
 	                                                         channels:2
-	                                                      interleaved:YES];
+	                                                      interleaved:NO];
 	AVAudioConverter *made = [[AVAudioConverter alloc] initFromFormat:from toFormat:want];
 	if (!made) {
 		err = std::string("Cannot convert ") + [[from description] UTF8String] +
-		      " to 44100 Hz s16 stereo";
+		      " to float32 stereo";
 		return false;
 	}
 	AVAudioPCMBuffer *out = [[AVAudioPCMBuffer alloc] initWithPCMFormat:want frameCapacity:8192];
@@ -798,25 +876,42 @@ bool apple_audio_in::start(const std::string &device, std::string &err)
 	}
 	m->dev_rate = rate;
 	m->dev_channels = tap.channelCount;
+	m->dev_format = tap.commonFormat;
+	m->rs.configure(rate, double(AUDIO_RATE));
 	apple_audio_in::impl *cim = m.get();
 	if (!cim->setup_converter(tap, err))
 		return false;
 
 	apple_audio_in::impl *im = m.get();
-	[node installTapOnBus:0 bufferSize:1024 format:tap
-	                block:^(AVAudioPCMBuffer *buf, AVAudioTime *when) {
+	im->tap_block = ^(AVAudioPCMBuffer *buf, AVAudioTime *when) {
 		                (void)when;
 		                im->taps.fetch_add(1, std::memory_order_relaxed);
 		                if (!buf || buf.frameLength == 0)
 			                return;
 		                const UInt32 n = buf.frameLength;
-		                // Hand the converter this buffer and take what it makes.
-		                // It asks for more when the ratio needs more input than one
-		                // tap buffer holds - 96k to 44.1k needs about 2.2 buffers for
-		                // every buffer of output - and we keep handing it ours until
-		                // it says it has no data now, which is not the same as saying
-		                // there is no more: a converter is finished for good on
-		                // EndOfStream and keeps its state on NoDataNow.
+		                // Convert the format, then the rate. The converter gives us
+		                // float32 stereo at the device's own rate and ui::resampler
+		                // takes it to 44100 without adding delay.
+		                //
+		                // It asks for more when the buffer it wants is bigger than the
+		                // one it has, so we keep handing it ours until it says it has
+		                // no data *now* - which leaves its state alone. EndOfStream
+		                // instead would finish the converter for good: measured, one
+		                // converter at init gave its first buffer and nothing after.
+		                // What the tap is being handed is the device's own rate, and
+		                // the resampler below is configured for the rate we were given
+		                // at start(). If those ever differ the recording is running at
+		                // the wrong speed, so the watchdog is told rather than left to
+		                // notice: the tap cannot ask for anything, so this is the only
+		                // place the answer exists.
+		                im->seen_rate.store(int(buf.format.sampleRate + 0.5),
+		                                   std::memory_order_relaxed);
+		                // Channels and sample type too: a converter built for a mono
+		                // float32 device is wrong for a stereo int16 one at the same
+		                // rate, and nothing else would notice.
+		                im->seen_shape.store((int(buf.format.channelCount) << 8) |
+		                                        sample_code(buf.format.commonFormat),
+		                                    std::memory_order_relaxed);
 		                im->conv_pending = buf;
 		                im->conv_have = true;
 		                for (int guard = 0; guard < 8; guard++) {
@@ -829,21 +924,34 @@ bool apple_audio_in::start(const std::string &device, std::string &err)
 				                if (!im->warned.exchange(true, std::memory_order_relaxed))
 				                        std::fprintf(stderr, "[audio] in: conversion failed: %s\n",
 				                                     cerr ? [[cerr localizedDescription] UTF8String] : "?");
-				                im->conv_have = false;
 				                break;
 			                }
-			                if (im->conv_out.frameLength > 0)
-				                im->push(static_cast<const s16 *>(
-				                             im->conv_out.int16ChannelData[0]),
-				                         im->conv_out.frameLength);
+			                const UInt32 got = im->conv_out.frameLength;
+			                if (got > 0) {
+				                const float *const *f = im->conv_out.floatChannelData;
+				                if (f && f[0] && f[1]) {
+					                im->staging.resize(size_t(got) * 2);
+					                for (UInt32 i = 0; i < got; i++) {
+						                im->staging[size_t(i) * 2] = s16(std::lround(
+						                    std::clamp(f[0][i], -1.0f, 1.0f) * 32767.0f));
+						                im->staging[size_t(i) * 2 + 1] = s16(std::lround(
+						                    std::clamp(f[1][i], -1.0f, 1.0f) * 32767.0f));
+					                }
+					                im->run_resampler(im->staging.data(), got);
+				                }
+			                }
 			                if (st != AVAudioConverterOutputStatus_InputRanDry || !im->conv_have)
 				                break;
 		                }
 		                im->conv_pending = nil;
-	                }];
+	                };
+	im->install_tap(node, tap);
 	NSError *e = nil;
 	if (![engine startAndReturnError:&e]) {
-		[node removeTapOnBus:0];
+		if (im->tap_node) {
+			[im->tap_node removeTapOnBus:0];
+			im->tap_node = nil;
+		}
 		err = std::string("AVAudioEngine input start: ") +
 		      (e ? [[e localizedDescription] UTF8String] : "?");
 		return false;
@@ -860,6 +968,7 @@ bool apple_audio_in::start(const std::string &device, std::string &err)
 	// fresh engine a stall.
 	m->last_taps.store(m->taps.load(std::memory_order_acquire), std::memory_order_relaxed);
 	m->last_seen_ticks.store(uint64_t(mach_absolute_time()), std::memory_order_relaxed);
+	m->last_rate_ticks.store(uint64_t(mach_absolute_time()), std::memory_order_relaxed);
 	m->recovering.store(false, std::memory_order_relaxed);
 	m->watch_run.store(true, std::memory_order_release);
 	m->watchdog = std::thread([this] { watch_loop(); });
@@ -884,16 +993,31 @@ void apple_audio_in::restart()
 	// different - rate, channel count, sample type - means a new converter rather
 	// than a reconfigured one.
 	if (now.sampleRate > 0.0 &&
-	    (now.sampleRate != m->dev_rate || now.channelCount != m->dev_channels)) {
+	    (now.sampleRate != m->dev_rate || now.channelCount != m->dev_channels ||
+	     now.commonFormat != m->dev_format)) {
 		m->dev_rate = now.sampleRate;
 		m->dev_channels = now.channelCount;
+		m->dev_format = now.commonFormat;
+		m->rs.configure(now.sampleRate, double(AUDIO_RATE));
 		std::string cerr;
 		if (!m->setup_converter(now, cerr))
 			std::fprintf(stderr, "[audio] in: %s\n", cerr.c_str());
+		if (m->tap_block)
+			m->install_tap(node, now);
 	}
 	NSError *e = nil;
 	if ([engine startAndReturnError:&e]) {
+		const bool rebuilt = m->seen_rate.load(std::memory_order_relaxed) !=
+		                         int(m->dev_rate + 0.5) ||
+		                     m->seen_shape.load(std::memory_order_relaxed) !=
+		                         ((int(m->dev_channels) << 8) |
+		                          sample_code(m->dev_format));
 		m->recovering.store(false, std::memory_order_relaxed);
+		m->seen_rate.store(int(m->dev_rate + 0.5), std::memory_order_relaxed);
+		m->seen_shape.store((int(m->dev_channels) << 8) | sample_code(m->dev_format),
+		                    std::memory_order_relaxed);
+		if (rebuilt)
+			std::fprintf(stderr, "[audio] in: rebuilt, %.0f Hz\n", m->dev_rate);
 		m->last_taps.store(m->taps.load(std::memory_order_acquire), std::memory_order_relaxed);
 		m->last_seen_ticks.store(uint64_t(mach_absolute_time()), std::memory_order_relaxed);
 		return;
@@ -916,6 +1040,35 @@ void apple_audio_in::watch_loop()
 		std::this_thread::sleep_for(std::chrono::milliseconds(250));
 		if (!m->running.load(std::memory_order_acquire) || !m->engine)
 			continue;
+		// A rate change first: the tap may well keep delivering, in which case
+		// the liveness test below never fires, and the resampler would carry on
+		// converting to the rate the device had when it was configured.
+		// Its own clock, not last_seen_ticks: that one is refreshed every time a
+		// tap arrives, which is every 250 ms, so sharing it would mean this never
+		// got past the one-second gate.
+		const int rate = m->seen_rate.load(std::memory_order_relaxed);
+		const int shape = m->seen_shape.load(std::memory_order_relaxed);
+		// Parenthesised: != binds tighter than |, and without these brackets the
+		// test is a bool OR'd with an int and therefore always true, which is a
+		// rebuild every second saying the rate did not change.
+		const int want_shape = (int(m->dev_channels) << 8) |
+		                       sample_code(m->dev_format);
+		if (rate > 0 && (rate != int(m->dev_rate) || shape != want_shape)) {
+			const u64 at = uint64_t(mach_absolute_time());
+			if ((at - m->last_rate_ticks.load(std::memory_order_relaxed)) / mach_tps() >= 1.0) {
+				m->last_rate_ticks.store(at, std::memory_order_relaxed);
+				if (!m->recovering.exchange(true, std::memory_order_relaxed))
+					std::fprintf(stderr,
+					             "[audio] in: the device is now %.0f Hz/%u ch/%s,"
+					             " was %.0f Hz/%u ch/%s; rebuilding\n",
+					             double(rate), unsigned(shape >> 8),
+					             sample_code_name(shape & 0xff),
+					             m->dev_rate, m->dev_channels,
+					             sample_name(m->dev_format));
+				restart();
+			}
+			continue;
+		}
 		const u64 taps = m->taps.load(std::memory_order_acquire);
 		if (taps != m->last_taps.load(std::memory_order_relaxed)) {
 			m->last_taps.store(taps, std::memory_order_relaxed);
@@ -943,10 +1096,16 @@ void apple_audio_in::stop()
 	// block already inside still holds the raw impl pointer.
 	AVAudioEngine *engine = m->engine;
 	m->engine = nil;
-	if (engine) {
-		[[engine inputNode] removeTapOnBus:0];
-		[engine stop];
+	// Through tap_node, which is the one that installed it, and cleared here: the
+	// engine goes below, and install_tap() takes the old tap off before putting a
+	// new one on - a node belonging to a released engine is not something to send
+	// a message to, and it throws rather than failing.
+	if (m->tap_node) {
+		[m->tap_node removeTapOnBus:0];
+		m->tap_node = nil;
 	}
+	if (engine)
+		[engine stop];
 }
 
 bool apple_audio_in::running() const
