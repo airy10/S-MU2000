@@ -24,9 +24,11 @@ jobs:
       - uses: actions/checkout@v7
       - run: make -j$(sysctl -n hw.ncpu) all
       - run: make auv3 AUV3_ROMS=none clap
+      - run: make -j2 ios-standalone IOS_SDK_NAME=iphonesimulator IOS_ROMS=
       - run: make check-audio-output
       - run: make check-audio-input
       - run: make check-fx
+      - run: make check-settings
       - run: python3 tools/check_texts.py
       - run: make test
 
@@ -67,6 +69,7 @@ jobs:
           export PKG_CONFIG_PATH="$HOME/sdl3/lib/pkgconfig:$HOME/sdl3/lib/x86_64-linux-gnu/pkgconfig"
           export LD_LIBRARY_PATH="$HOME/sdl3/lib:$HOME/sdl3/lib/x86_64-linux-gnu"
           make -j$(nproc) all
+      - run: make check-settings
       - run: python3 tools/check_texts.py
       - run: |
           export PKG_CONFIG_PATH="$HOME/sdl3/lib/pkgconfig:$HOME/sdl3/lib/x86_64-linux-gnu/pkgconfig"
@@ -91,6 +94,7 @@ jobs:
       - run: make check-audio-input
       - run: make check-fx
       - run: make -j$(nproc) all
+      - run: make check-settings
       - run: python3 tools/check_texts.py
       - run: make test
 

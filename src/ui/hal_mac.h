@@ -110,6 +110,50 @@ inline std::string name_of(AudioDeviceID dev)
 }
 
 // The names, for the menu.
+// What a device could be asked for, for the settings window's lists: the rates
+// the device says it can run, the standard ones it says nothing about included,
+// and its channel count. The ranges are asked of the device rather than guessed,
+// so a device that lists 8000-768000 contributes them all and one that says
+// nothing still gets its current rate.
+inline std::vector<int> available_rates(AudioDeviceID dev)
+{
+	std::vector<int> out;
+	AudioObjectPropertyAddress addr = {
+		kAudioDevicePropertyAvailableNominalSampleRates,
+		kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain
+	};
+	UInt32 size = 0;
+	std::vector<AudioValueRange> ranges;
+	if (AudioObjectGetPropertyDataSize(dev, &addr, 0, nullptr, &size) == noErr) {
+		ranges.resize(size / sizeof(AudioValueRange));
+		if (AudioObjectGetPropertyData(dev, &addr, 0, nullptr, &size, ranges.data()) != noErr)
+			ranges.clear();
+	}
+	for (int rate : { 8000, 11025, 16000, 22050, 32000, 44100, 48000, 88200, 96000,
+	                  176400, 192000 })
+		for (const AudioValueRange &r : ranges)
+			if (rate >= r.mMinimum && rate <= r.mMaximum) { out.push_back(rate); break; }
+	return out;
+}
+
+// How many channels the device has in that direction, 0 when it will not say.
+// Read from the stream format, not from kAudioDevicePropertyStreamConfiguration:
+// that one answers with the list of streams, whose count is not a channel count.
+inline u32 stream_channels(AudioDeviceID dev, direction dir)
+{
+	AudioObjectPropertyAddress addr = {
+		kAudioDevicePropertyStreamFormat,
+		dir == direction::input ? kAudioDevicePropertyScopeInput
+		                        : kAudioDevicePropertyScopeOutput,
+		kAudioObjectPropertyElementMain
+	};
+	AudioStreamBasicDescription fmt{};
+	UInt32 size = sizeof(fmt);
+	if (AudioObjectGetPropertyData(dev, &addr, 0, nullptr, &size, &fmt) != noErr)
+		return 0;
+	return fmt.mChannelsPerFrame;
+}
+
 inline std::vector<std::string> names(direction dir)
 {
 	std::vector<std::string> out;

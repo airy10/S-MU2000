@@ -235,6 +235,18 @@ make install-vsti   VSTI_INSTALL（既定は Program Files/VstPlugins）へ複�
 **macOS**（Apple silicon）では VST3 と Audio Unit（AUv2、`aumu`）が作れる。
 `make` で道具と両方のバンドルができる。くわしくは [doc/porting-macos.md](doc/porting-macos.md)。
 
+## スタンドアロンの設定
+
+ツールバー、各クイックメニュー、または `--settings` で **設定** を開く。
+一般では日本語と英語を切り替える。音声では再生・録音デバイス、サンプルレート、
+バッファー、待ち時間、出力チャンネル、リサンプラー、音量、DC 除去、
+ピーク制限を選べる。変更は即座に反映し、失敗した変更は前の設定に戻る。
+デバイスの一覧は自動で更新する。
+
+エミュレーションには C++ エフェクト、firmware バイパス、MIDI ファイルの
+軽量化がある。各項目にマウスを重ねると説明が出る。
+既存の WASAPI・CoreAudio・ALSA を使い、DAC や回路のシミュレーションは追加しない。
+
 ## 待ち時間
 
 **実測で 117ms → 16ms まで詰めた**（MIDI を受けてから音が出るまで。実機と

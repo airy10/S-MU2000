@@ -79,6 +79,7 @@ inline bool consume_output_option(char **argv, int argc, int &i, output_options 
 // Startup flags shared by the two graphical front ends (gui, gui_mac).
 // live/render have no windows, so these stay out of engine_options.
 struct window_options {
+	bool open_settings = false;
 	bool open_editor = false;
 	bool open_list = false;
 	bool open_fx = false;
@@ -93,6 +94,7 @@ struct window_options {
 // Takes a single argv entry. True when it was a shared window flag.
 inline bool consume_window_option(const char *arg, window_options &o)
 {
+	if (!std::strcmp(arg, "--settings")) { o.open_settings = true; return true; }
 	if (!std::strcmp(arg, "--editor")) { o.open_editor = true; return true; }
 	if (!std::strcmp(arg, "--list-window")) { o.open_list = true; return true; }
 	if (!std::strcmp(arg, "--fx-window")) { o.open_fx = true; return true; }

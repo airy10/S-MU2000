@@ -32,6 +32,7 @@
 #pragma once
 
 #include "compat/mamecompat.h"
+#include "audio_stream.h"
 #include "cpu_meter.h"
 
 #include <atomic>
@@ -71,6 +72,10 @@ public:
 	// 使える再生デバイスの名前。番号は挿し直すとずれるので、**名前で選ぶ**
 	// (live --list prints this on both platforms, so macOS needs the same answer)
 	static std::vector<std::string> list();
+	static std::string default_device_name();
+	// Set only while stopped; read stream_info() after start() completes.
+	void set_stream_options(const audio_stream_options &s) { m_stream = s; }
+	const audio_stream_info &stream_info() const { return m_info; }
 
 	// latency_ms is the target amount to keep queued (0 or less leaves the
 	// device's own buffer size alone). exclusive asks for hog mode, which is this
@@ -125,6 +130,7 @@ public:
 	// keep the device rate to themselves. Arithmetic on produced() is safe;
 	// arithmetic on buffer_frames() is not.
 	u32 buffer_frames() const;
+	bool running() const;
 	u64 produced() const;
 	u64 starved() const;
 	// The CoreAudio render callback already runs at real-time priority, so this
@@ -137,6 +143,8 @@ public:
 	double worst_ms() const;
 
 private:
+	audio_stream_options m_stream;
+	audio_stream_info m_info;
 	struct impl;
 	std::unique_ptr<impl> m_impl;
 
@@ -146,6 +154,7 @@ private:
 	std::vector<s16> m_cap;
 	bool             m_capturing = false;
 	std::string      m_cap_path;
+	u32 m_capture_rate = AUDIO_RATE, m_capture_channels = 2;
 };
 
 #else
@@ -160,6 +169,10 @@ public:
 
 	// 使える再生デバイスの名前。番号は挿し直すとずれるので、**名前で選ぶ**
 	static std::vector<std::string> list();
+	static std::string default_device_name();
+	// Set only while stopped; read stream_info() after start() completes.
+	void set_stream_options(const audio_stream_options &s) { m_stream = s; }
+	const audio_stream_info &stream_info() const { return m_info; }
 
 	// latency_ms は**溜める目標の長さ**。0 以下ならデバイスの周期 2 つぶん。
 	// exclusive なら Windows の混ぜ合わせを通さない（他のアプリは鳴らせない）。
@@ -226,6 +239,8 @@ public:
 	std::string latency_line() const;
 
 private:
+	audio_stream_options m_stream;
+	audio_stream_info m_info;
 	void run(int latency_ms, bool exclusive);
 
 	fill_fn           m_fill;

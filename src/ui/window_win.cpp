@@ -246,6 +246,10 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 	case win_app::WM_APP_DEFERRED:
 		// 描画の外で行う仕事（app::defer_outside_paint。録音デバイスの選び直しなど）
 		g_win->run_deferred_win();
+		if (!g_win->last_error.empty()) {
+			ui::win_error(hwnd, g_win->last_error);
+			g_win->last_error.clear();
+		}
 		InvalidateRect(hwnd, nullptr, FALSE);
 		return 0;
 

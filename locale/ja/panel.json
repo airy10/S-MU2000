@@ -3,10 +3,9 @@
 	"tab_panel": "パネル",
 	"tab_editor": "エディタ",
 	"tab_effects": "エフェクト",
-
-	// Front page hint (panel.cpp)
 	"hint_front": "大きなダイヤルはホイールで回す ／ ボタンはクリック ／ キー: A=PLAY E=EDIT U=UTIL F=EFFECT [ ]=PART",
 
+	// Front page hint (panel.cpp)
 	// Editor page (editor.cpp)
 	// may contain \n
 	"editor_hint": "つまみは上下にドラッグ、またはホイール。\n送っているのは XG のパラメータチェンジ。\n値は MU2000 に問い合わせて読み返している。",

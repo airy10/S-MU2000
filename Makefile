@@ -167,7 +167,7 @@ BUILD ?= build
 # outputs with silence: make check-audio-output AUDIO_DEVICES=1.
 ifeq ($(PLATFORM),windows)
 AUDIO_OUTPUT_TEST_SRC := src/ui/audio_out.cpp
-AUDIO_OUTPUT_TEST_LIBS := -lole32 -lavrt
+AUDIO_OUTPUT_TEST_LIBS := -lole32 -lavrt -lwinmm -ldsound -luuid
 else ifeq ($(PLATFORM),macos)
 # The macOS backend is the shared render path plus the HAL questions it asks, so
 # the test links audio_apple.mm as well - and compiles it as Objective-C++ with
@@ -470,7 +470,7 @@ $(BUILD)/rec$(EXE): $(BUILD)/src/smf.o $(BUILD)/src/rec.o $(BUILD)/src/compat/co
 # live は Windows の MIDI 入力と音声出力を使う
 $(BUILD)/live$(EXE): $(OBJS) $(BUILD)/src/mu2000.o $(BUILD)/src/ui/midi_in.o $(BUILD)/src/ui/audio_out.o $(BUILD)/src/live.o
 	@mkdir -p $(dir $@)
-	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS) -lwinmm -lole32 -lavrt
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS) -lwinmm -lole32 -luuid -lavrt
 
 # ---- VST3 プラグイン
 #
@@ -1380,6 +1380,15 @@ test: $(TEST_EXES)
 
 test-update: $(TEST_EXES)
 	SMU_BUILD=$(BUILD) $(PYTHON) tools/run_tests.py --update $(if $(T),--only $(T),)
+
+# Actual ImGui widget interactions, sample conversion/routing and persistence.
+$(BUILD)/settings_test$(EXE): tools/test_settings.cpp $(IMGUI_CORE) $(wildcard src/ui/*.h)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -DIMGUI_ENABLE_TEST_ENGINE -I third_party/imgui -o $@ tools/test_settings.cpp $(IMGUI_CORE) $(LDFLAGS)
+
+.PHONY: check-settings
+check-settings: $(BUILD)/settings_test$(EXE)
+	$(WINE) $(BUILD)/settings_test$(EXE)
 
 clean:
 	rm -rf $(BUILD)

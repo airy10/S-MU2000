@@ -30,6 +30,8 @@
 #include "ui/audio_in.h"
 #include "ui/audio_out.h"
 #include "ui/audio_output_switch.h"
+#include "ui/audio_start.h"
+#include "ui/audio_device_watch.h"
 #include "ui/bridge.h"
 #include "ui/engine.h"
 #include "ui/fx_editor.h"
@@ -54,6 +56,8 @@
 #include "ui/player_view.h"
 #include "ui/tool_args.h"
 #include "ui/settings.h"
+#include "ui/settings_view.h"
+#include "ui/audio_session.h"
 #include "ui/shot.h"
 #include "ui/snapshot.h"
 #include "ui/status.h"
@@ -86,6 +90,7 @@ public:
 		// the answer is ours, and it changes from two places (that window's
 		// combo and the panel's A/D INPUT menu), so it is a question and not a
 		// value either of them writes.
+		wire_settings_actions();
 		b.set_ain_current_fn([this] { return ain_name; });
 	}
 
@@ -120,6 +125,9 @@ public:
 	pc_window shapes{ std::make_unique<part_shapes>() };
 	pc_window master{ std::make_unique<master_editor>() };
 	pc_window sampling{ std::make_unique<sampling_editor>() };
+	settings_state preferences_state;
+	settings_actions preferences_actions;
+	pc_window settings_win{ std::make_unique<settings_view>(preferences_state, preferences_actions) };
 	// MIDI プレイヤーの窓。gui だけが持つ（上の 6 つはプラグインにもある）
 	pc_window player_win{ std::make_unique<player_view>(play) };
 	// プラグインボードの窓。これも gui だけ（プラグインではマスターの窓に欄が出る。xgui::set_board_window）
@@ -144,8 +152,17 @@ public:
 	std::string audio_name;          // the audio device, by name
 	std::vector<std::string> audio_menu_devices;
 	std::atomic<bool> audio_ready{false};
-	int audio_latency = 20;
-	bool audio_exclusive = false;
+	audio_preferences audio_settings;
+	std::vector<audio_channel_route> audio_routes;
+	audio_session audio_job;
+	audio_output_config previous_audio, persisted_audio;
+	bool audio_change_from_user = true;
+	std::string audio_error, startup_song;
+	bool audio_startup_completed = false;
+	std::chrono::steady_clock::time_point next_devices{};
+	audio_device_watch audio_devices;
+	bool audio_recovery_pending = false;
+	int persisted_native_fx = 0, persisted_native_engine = 0;
 	bool audio_failed = false; // firmware is booted, but its output failed
 	std::string ain_name;            // the recording device, by name
 	std::string ain_keep;
@@ -179,6 +196,7 @@ public:
 	void frame_work()
 	{
 		run_deferred();
+		poll_audio_settings();
 		if (br.take_restart_request())
 			defer_outside_paint([this] { do_restart(); });
 		poll();
@@ -190,6 +208,8 @@ public:
 			ImGuiContext *const panel_ctx = ImGui::GetCurrentContext();
 			player_win.frame(panel.xg(), panel.ram(), br);
 			board_win.frame(panel.xg(), panel.ram(), br);
+			sync_settings_state();
+			settings_win.frame(panel.xg(), panel.ram(), br);
 			// マスターの窓の「プラグインボード...」
 			if (xgui::take_board_window_request())
 				open_pc_window(board_win);
@@ -204,7 +224,7 @@ public:
 	{
 		frame_work();
 		char middle[64] = {};
-		if (out && out->produced())
+		if (audio_ready.load() && !audio_job.busy() && out && out->produced())
 			format_middle(middle, sizeof(middle));
 		paint_into(dl, w, middle, f);
 	}
@@ -221,7 +241,7 @@ public:
 		br.read(s);
 		const u64 pressed = br.buttons();
 		char status[320] = {};
-		if (out && out->produced()) {
+		if (audio_ready.load() && !audio_job.busy() && out && out->produced()) {
 			format_status_line(status, sizeof(status),
 			                   s.voices_master + s.voices_slave,
 			                   out->cpu_percent(), out->worst_ms(),
@@ -328,8 +348,11 @@ public:
 	// The F4 native-engine toggle both sides offer (key and menu)
 	void toggle_engine()
 	{
-		if (eng)
-			eng->want_native_engine.store(eng->native_engine.load() ? 0 : 1);
+		if (eng) {
+			persisted_native_engine = eng->native_engine.load() ? 0 : 1;
+			eng->want_native_engine.store(persisted_native_engine);
+			save_settings();
+		}
 	}
 
 	// The window lost focus: let go of everything the user was holding
@@ -373,7 +396,7 @@ public:
 
 	// Which popup the point asks for. The
 	// card slot, PHONES and A/D INPUT have their own; everywhere else gets
-	// the port picker
+	// the settings menu
 	// Which menu a press opens. Named and public because a platform adds groups
 	// of its own to some of these and not others - iOS puts Bluetooth and
 	// network MIDI in the menus that carry MIDI at all, and the ROM import in
@@ -472,6 +495,10 @@ public:
 	// Open a PC window by BAR_* id (F2/F3, the strip, the menus)
 	void open_window_by_kind(int kind)
 	{
+		if (kind == BAR_SETTINGS) {
+			open_pc_window(settings_win);
+			return;
+		}
 		if (kind == BAR_PLAYER) {
 			open_pc_window(player_win);
 			return;
@@ -501,7 +528,12 @@ public:
 		r.out       = out_name.empty()    ? out_keep    : out_name;
 		r.out_b     = out_name_b.empty()  ? out_keep_b  : out_name_b;
 		r.out_mu    = out_name_mu.empty() ? out_keep_mu : out_name_mu;
-		r.audio_out = audio_name;
+		r.audio_out = persisted_audio.device;
+		r.audio = persisted_audio.preferences;
+		r.audio_routes = audio_routes;
+		r.limiter = eng && eng->limit_output.load();
+		r.native_fx = persisted_native_fx;
+		r.native_engine = persisted_native_engine;
 		r.audio_in  = ain_name.empty() ? ain_keep : ain_name;
 		r.card      = card_path;
 		r.volume    = br.gain();
@@ -528,7 +560,7 @@ public:
 		write_settings_file(path, collect_settings(r));
 	}
 
-	static remembered load_remembered(const std::string &path)
+	static remembered load_remembered(const std::string &path, bool processing = true)
 	{
 		remembered r;
 		if (path.empty())
@@ -537,6 +569,7 @@ public:
 		if (!read_settings_file(path, kv))
 			return r;
 		apply_settings(kv, r);
+		if (!processing) clear_processing_settings(r);
 		return r;
 	}
 
@@ -791,7 +824,7 @@ public:
 	void poll()
 	{
 		panel.tick(br);
-		if (out && out->produced())
+		if (audio_ready.load() && !audio_job.busy() && out && out->produced())
 			br.set_cpu(float(out->cpu_recent()));   // 直近の重さ（平均は終わりの集計に）
 		br.set_engine(eng ? eng->native_engine.load() : -1);
 		card_tick();
@@ -934,53 +967,166 @@ public:
 	// from the menu snapshot, never from a new enumeration after the click.
 	void choose_audio(int dev)
 	{
-		if (!audio_ready.load() || !out || !eng || !state || state->load() == 0)
-			return;
-		if (dev >= 0 && size_t(dev) >= audio_menu_devices.size())
-			return;
-		const std::string wanted = dev < 0 ? std::string() : audio_menu_devices[size_t(dev)];
-		join_reboot();
-		if (state->load() != 1 && !audio_failed)
-			return;
-		// Pause emulation while opening outputs; their initial callbacks may
-		// run before start() returns. Resume the existing machine afterward.
-		eng->state.store(0);
-		while (eng->in_fill.load())
-			smu2000::sleep_ms(1);
-#if defined(__APPLE__)
-		// The slave must leave the old AudioUnit's workgroup before that
-		// unit is disposed. Keep the threading policy, not just its current
-		// admission state (the instance limit may have parked the slave).
-		const bool threaded = eng->mu.threading_requested();
-		eng->mu.set_threaded(false);
-		eng->mu.set_realtime_workgroup(nullptr);
-#endif
-		const auto r = switch_audio_output(*out, audio_latency,
-			[this](s16 *o, u32 n) { eng->fill(o, n); },
-			audio_exclusive, wanted, audio_name);
-#if defined(__APPLE__)
-		if (r.selected || r.restored)
-			eng->mu.set_realtime_workgroup(out->realtime_workgroup());
-		eng->mu.set_threaded(threaded);
-#endif
-		audio_failed = !r.selected && !r.restored;
-		if (!audio_failed)
-			eng->state.store(1); // also recover a failed output at startup
-		if (r.selected) {
-			audio_name = wanted;
-			save_settings();
-			say_audio_opened(audio_exclusive);
-		} else {
-			if (!r.restored) {
-				eng->message = r.error;
-				eng->state.store(2);
-				eng->publish();
+		if (dev >= 0 && size_t(dev) >= audio_menu_devices.size()) return;
+		request_audio({dev < 0 ? std::string() : audio_menu_devices[size_t(dev)], audio_settings});
+	}
+
+	void request_audio(audio_output_config wanted, bool user = true)
+	{
+		if (!audio_ready.load() || audio_job.busy() || !out || !eng || !state) return;
+		if (state->load() != 1 && !audio_failed) return;
+		if (reboot.joinable()) join_reboot();
+		if (wanted.device != audio_name) {
+			wanted.preferences.stream.sample_rate = 0;
+			wanted.preferences.stream.left = 0;
+			wanted.preferences.stream.right = 1;
+			const std::string key = wanted.device.empty() ? audio_out::default_device_name() : audio_device_key(wanted.device);
+			for (const auto &route : audio_routes) if (route.device == key) {
+				wanted.preferences.stream.left = route.left;
+				wanted.preferences.stream.right = route.right;
 			}
-			char error[2048];
-			std::snprintf(error, sizeof(error), UI_TEXT(audio_switch_failed_fmt,
-			              "Cannot switch audio output:\n%s"), r.error.c_str());
-			menu_error(error);
 		}
+		wanted.preferences.stream.strict = user;
+		previous_audio = {audio_name, audio_settings};
+		audio_change_from_user = user;
+		audio_job.begin(*eng, *out, wanted, previous_audio, !audio_failed);
+	}
+
+	void complete_audio_startup()
+	{
+		if (audio_startup_completed || audio_failed || audio_job.busy() || !audio_ready.load()) return;
+		audio_startup_completed = true;
+		// Normalize a CLI substring to the full menu name on the UI thread.
+		// Empty stays empty so System default continues to follow the OS.
+		if (!audio_name.empty()) {
+			const std::string opened = out->device_name();
+			audio_name = opened;
+			for (const auto &name : audio_out::list())
+				if (name == opened || name.substr(0, name.find("  (")) == opened) {
+					audio_name = name;
+					break;
+				}
+		}
+		start_ad();
+		if (!startup_song.empty()) play_song(startup_song);
+		say_audio_running();
+	}
+
+	void finish_audio_change(const audio_output_switch_result &result)
+	{
+		audio_failed = !result.selected && !result.restored;
+		audio_error = result.selected ? std::string() : result.error;
+		if (result.selected || result.restored) {
+			audio_name = result.config.device;
+			audio_settings = result.config.preferences;
+		}
+		if (result.selected) {
+			if (audio_change_from_user) remember_audio_change(persisted_audio, previous_audio, result.config);
+			const std::string device = out->device_name();
+			auto it = std::find_if(audio_routes.begin(), audio_routes.end(), [&](const auto &r) { return r.device == device; });
+			const audio_channel_route route{device, audio_settings.stream.left, audio_settings.stream.right};
+			if (audio_change_from_user) {
+				if (it == audio_routes.end()) audio_routes.push_back(route); else *it = route;
+				save_settings();
+			}
+			say_audio_opened(audio_settings.exclusive);
+		}
+		if (!result.selected && audio_change_from_user) {
+			char error[2048];
+			std::snprintf(error, sizeof(error), UI_TEXT(audio_switch_failed_fmt, "Cannot switch audio output:\n%s"), result.error.c_str());
+			defer_outside_paint([this, text = std::string(error)] { menu_error(text); });
+		}
+		if (audio_failed) report_audio_failure();
+	}
+
+	void report_audio_failure()
+	{
+		eng->message = CLI_T("cannot open the audio device", "音声デバイスを開けない");
+		eng->state.store(2);
+		eng->publish();
+	}
+
+	void poll_audio_settings()
+	{
+		if (!audio_ready.load()) return;
+		if (const auto result = audio_job.poll()) finish_audio_change(*result);
+		if (!audio_job.busy() && !out->running() && !audio_failed) {
+			audio_failed = true;
+			audio_error = CLI_T("Audio output disconnected", "音声出力が切断された");
+			report_audio_failure();
+			audio_recovery_pending = true;
+		}
+		if (audio_recovery_pending && !audio_job.busy()) {
+			audio_recovery_pending = false;
+			defer_outside_paint([this] { request_audio({audio_name, audio_settings}, false); });
+		}
+		if (!audio_startup_completed && !audio_failed && !audio_job.busy())
+			defer_outside_paint([this] { complete_audio_startup(); });
+		const auto now = std::chrono::steady_clock::now();
+		if (!settings_win.visible() || now < next_devices) return;
+		next_devices = now + std::chrono::seconds(1);
+		defer_outside_paint([this] { refresh_audio_devices(); });
+	}
+
+	void refresh_audio_devices()
+	{
+		if (audio_job.busy()) return;
+		preferences_state.outputs = audio_out::list();
+		preferences_state.inputs = audio_in::list();
+		// Hog mode can move macOS's system default away from the device we hold.
+		const bool follows_default = audio_name.empty() && !out->exclusive();
+		const std::string default_name = follows_default ? audio_out::default_device_name() : std::string();
+		const bool changed = audio_devices.changed(preferences_state.outputs, default_name);
+		const bool default_changed = follows_default && !default_name.empty() && default_name != out->device_name();
+		if (!changed || (!audio_failed && !default_changed)) return;
+		audio_output_config wanted{audio_name, audio_settings};
+		if (default_changed) {
+			wanted.preferences.stream.sample_rate = 0;
+			wanted.preferences.stream.left = 0; wanted.preferences.stream.right = 1;
+			for (const auto &route : audio_routes) if (route.device == default_name) {
+				wanted.preferences.stream.left = route.left; wanted.preferences.stream.right = route.right;
+			}
+		}
+		request_audio(wanted, false);
+	}
+
+	void sync_settings_state()
+	{
+		auto &s = preferences_state;
+		s.ready = audio_ready.load();
+		s.busy = audio_job.busy();
+		if (!s.ready) return; // all boot-thread writes precede this handshake
+		s.audio = {audio_name, audio_settings};
+		s.input = ain_name.empty() ? ain_keep : ain_name;
+		s.error = audio_error;
+		s.connected = !audio_failed && !s.busy;
+		if (!s.busy && out) {
+			s.stream = out->stream_info();
+		}
+		s.gain = br.gain();
+		s.analog = eng->analog.load();
+		s.limiter = eng->limit_output.load();
+		s.native_fx = eng->native_fx.load();
+		s.native_engine = eng->native_engine.load();
+		s.thin_bends = play.thin_bends();
+	}
+
+	void wire_settings_actions()
+	{
+		preferences_actions.language = [](int value) { xgui::set_help_lang(value); };
+		preferences_actions.audio = [this](audio_output_config c) {
+			defer_outside_paint([this, c = std::move(c)] { request_audio(c); });
+		};
+		preferences_actions.input = [this](std::string name) {
+			defer_outside_paint([this, name] {
+				const int dev = find_device(audio_in::list(), name);
+				if (name.empty() || dev >= 0) choose_ain(dev);
+			});
+		};
+		preferences_actions.command = [this](int id) { defer_outside_paint([this, id] { menu_chosen(id); }); };
+		preferences_actions.volume = [this](float gain) { br.set_gain(gain); };
+		preferences_actions.save_volume = [this] { save_settings(); };
+		preferences_actions.limiter = [this](bool on) { eng->limit_output.store(on); save_settings(); };
 	}
 
 	// Throwing the settings away means rebooting the machine, which takes
@@ -1035,8 +1181,11 @@ public:
 
 	void toggle_fx()
 	{
-		if (eng)
-			eng->want_native_fx.store(eng->native_fx.load() ? 0 : 2);
+		if (eng) {
+			persisted_native_fx = eng->native_fx.load() ? 0 : 2;
+			eng->want_native_fx.store(persisted_native_fx);
+			save_settings();
+		}
 	}
 
 	// What the shared menu builders (ui/menu.h) show, from this window's state
@@ -1048,9 +1197,11 @@ public:
 		s.audio_ins = audio_in::list();
 		s.audio_outs = audio_out::list();
 		audio_menu_devices = s.audio_outs;
-		s.audio_ready = audio_ready.load() && state && (state->load() == 1 || audio_failed);
-		if (s.audio_ready)
+		s.audio_ready = audio_ready.load() && !audio_job.busy() && state && (state->load() == 1 || audio_failed);
+		if (s.audio_ready) {
 			s.audio_name = audio_name;
+		}
+		if (!audio_ready.load()) return s;
 		for (int p = 0; p < IN_PORTS; p++)
 			s.in_dev[p] = in_dev[p];
 		s.out_dev = out_dev;
@@ -1062,7 +1213,7 @@ public:
 		s.play_name = play.name();
 		s.fold34 = play.fold_extra_ports();
 		s.thin_bends = play.thin_bends();
-		s.ready = eng && state && state->load() == 1;
+		s.ready = audio_ready.load() && !audio_job.busy() && eng && state && state->load() == 1;
 		s.native_fx = eng && eng->native_fx.load();
 		s.native_engine = eng && eng->native_engine.load();
 		s.analog = eng && eng->analog.load();
@@ -1102,6 +1253,7 @@ public:
 		else if (id == ID_NATIVE_ENGINE)                              toggle_engine();
 		else if (id == ID_FACTORY)                                    do_factory_reset();
 		else if (id == ID_RESTART)                                    do_restart();
+		else if (id == ID_SETTINGS)                                   open_window_by_kind(BAR_SETTINGS);
 		else if (id == ID_PC_EDITOR)                                  open_window_by_kind(BAR_EDITOR);
 		else if (id == ID_OVERVIEW)                                   open_window_by_kind(BAR_LIST);
 		else if (id == ID_OUTPUT_DIGITAL || id == ID_OUTPUT_ANALOG)   set_analog(id == ID_OUTPUT_ANALOG);
@@ -1220,10 +1372,12 @@ public:
 		panel.resize(a.win_w, a.win_h);
 		{
 			// The VOLUME knob starts where it was left
-			remembered r = load_remembered(settings_path());
+			remembered r = load_remembered(settings_path(), !keep_settings);
 			br.set_gain(r.volume);
-			if (eng)
+			if (eng) {
 				eng->analog.store(r.analog);
+				eng->limit_output.store(r.limiter);
+			}
 			if (r.analog)
 				std::printf(CLI_T("Sound output: analogue (DC removed)\n", "音の出口: アナログ（直流を切る）\n"));
 			play.set_fold_extra_ports(r.fold34);
@@ -1294,7 +1448,7 @@ public:
 	// Opens the remembered MIDI ports by name (--midi and friends win).
 	// Reports what is and is not there
 	void open_remembered_ports(tool_args &a, const output_options &o)	{
-		remembered want = load_remembered(settings_path());
+		remembered want = load_remembered(settings_path(), !keep_settings);
 		ain_name = want.audio_in;
 		ain_keep = want.audio_in;
 		if (!want.card.empty())
@@ -1339,6 +1493,7 @@ public:
 	// Opens the --editor/--list-window and friends alongside the panel
 	void open_startup_windows(const window_options &w)
 	{
+		if (w.open_settings && !w.lcd_only) open_window_by_kind(BAR_SETTINGS);
 		if (w.open_editor && !w.lcd_only)
 			open_window_by_kind(BAR_EDITOR);
 		if (w.open_fx && !w.lcd_only)
@@ -1359,34 +1514,22 @@ public:
 
 	// Starts the audio device. False parks the engine on the failure and
 	// asks main to return (the device line each side prints stays per side)
-	bool start_audio(int latency_ms, bool exclusive)
+	bool start_audio()
 	{
 		if (!out || !eng)
 			return false;
 		std::string err;
-		if (!out->start(latency_ms, [this](s16 *o, u32 n) { eng->fill(o, n); },
-		                err, exclusive, audio_name)) {
+		audio_output_config config{audio_name, audio_settings};
+		if (!start_audio_stream(*out, [this](s16 *o, u32 n) { eng->fill(o, n); }, config, err, false)) {
 			std::fprintf(stderr, CLI_T("Audio: %s\n", "音声: %s\n"), err.c_str());
-			eng->message = CLI_T("cannot open the audio device", "音声デバイスを開けない");
-			eng->state.store(2);
-			eng->publish();
+			audio_error = err;
+			report_audio_failure();
 			return false;
 		}
-		// Remember the port that was actually opened, by name. After the
-		// MIDI ports above, or the settings written here would carry an
-		// empty MIDI name and the next start would come up with no ports
-		// Empty stays empty, so System default is still the default next time.
-		// Normalize CLI substring matches to a full menu label (ALSA labels
-		// include a description after the PCM name returned by device_name()).
-		if (!audio_name.empty()) {
-			const std::string opened = out->device_name();
-			audio_name = opened;
-			for (const auto &name : audio_out::list())
-				if (name == opened || name.substr(0, name.find("  (")) == opened) {
-					audio_name = name;
-					break;
-				}
-		}
+		audio_settings = config.preferences;
+		if (!err.empty()) std::fprintf(stderr, CLI_T("Audio: %s\n", "音声: %s\n"), err.c_str());
+		if (audio_settings.exclusive && !out->exclusive())
+			std::fprintf(stderr, CLI_T("Could not open in exclusive mode (falling back to shared)\n", "独り占めで開けなかった（共有に落とす）\n"));
 #if defined(__APPLE__)
 		// The parallel slave thread joins the output unit's audio workgroup
 		// from here (Apple's parallel real-time threads pattern; the join
@@ -1439,11 +1582,13 @@ public:
 		if (m_shut)
 			return;
 		m_shut = true;
+		if (const auto result = audio_job.join()) finish_audio_change(*result);
 		pc_shutdown_all(list, pc, fx, shapes, master, sampling, br);
 		{
 			ImGuiContext *const panel_ctx = ImGui::GetCurrentContext();
 			player_win.shutdown(br);
 			board_win.shutdown(br);
+			settings_win.shutdown(br);
 			ImGui::SetCurrentContext(panel_ctx);
 		}
 		if (m_ain_lister.joinable())
@@ -1478,13 +1623,13 @@ public:
 		// it came up
 		if (eng) {
 			eng->settle_for_save();
-			if (eng->state.load() == 1 && !smu2000::nvram::save(eng->mu))
+			if ((eng->state.load() == 1 || (audio_ready.load() && (eng->state.load() == 0 || audio_failed))) && !smu2000::nvram::save(eng->mu))
 				std::fprintf(stderr, CLI_T("Could not save the settings: %s\n", "設定を残せなかった: %s\n"),
 				             smu2000::nvram::path(eng->mu).c_str());
 			// Snapshot for the settings just saved, or the next boot after
 			// touching them is the slow one. The window is gone, so the
 			// second it takes holds nobody up; old snapshots are pruned here
-			if (eng->state.load() == 1) {
+			if (eng->state.load() == 1 || (audio_ready.load() && (eng->state.load() == 0 || audio_failed))) {
 				if (smu2000::bootcache::refresh(eng->mu))
 					std::printf(CLI_T("Made the boot copy for the next start\n", "次の起動ぶんの写しを作った\n"));
 				smu2000::bootcache::prune();
@@ -1503,7 +1648,7 @@ public:
 	// the backend counted (WASAPI late(), CoreAudio starved())
 	void print_exit_stats(u64 drops)
 	{
-		if (out && out->produced()) {
+		if (audio_ready.load() && !audio_job.busy() && out && out->produced()) {
 			std::printf(CLI_T("CPU %.1f%%, worst single block %.2f ms, late %llu times\n", "CPU %.1f%%、1 回の最悪 %.2f ms、間に合わなかった %llu 回\n"),
 			            out->cpu_percent(), out->worst_ms(),
 			            (unsigned long long)drops);
@@ -1517,16 +1662,27 @@ public:
 
 	// ---- the program itself (both mains end here)
 
-	// Everything after the machine is loaded: put the window up, boot on a
-	// thread, pump events, close down. The mains keep the argument parsing
-	// and the object construction; what still differs is only the shell
-	// below (window creation, the event pump, the audio say-lines)
+	// iOS has its own event loop, but shares the saved audio startup choices.
+	remembered initialize_audio_settings(const tool_args &a, const output_options &oo)
+	{
+		keep_settings = a.nomidi;
+		const remembered saved = load_remembered(settings_path(), !keep_settings);
+		persisted_audio = {saved.audio_out, saved.audio};
+		persisted_native_fx = saved.native_fx; persisted_native_engine = saved.native_engine;
+		audio_settings = saved.audio;
+		if (a.latency_given) audio_settings.latency_ms = a.latency;
+		if (oo.exclusive) audio_settings.exclusive = true;
+		audio_settings.stream.strict = false;
+		audio_routes = saved.audio_routes;
+		startup_song = a.play_path;
+		return saved;
+	}
+
+	// Put up the window, boot, pump events, and close down.
 	int run(tool_args &a, const engine_options &eo, const output_options &oo,
 	        const window_options &wo)
 	{
-		keep_settings = a.nomidi;
-		audio_latency = a.latency;
-		audio_exclusive = oo.exclusive;
+		const remembered saved = initialize_audio_settings(a, oo);
 		setup_for_window(a, wo, oo.factory);
 
 		// The remembered ports open on this thread, while the machine boots
@@ -1554,23 +1710,20 @@ public:
 				return;
 			}
 			// After boot, as always: starting needs the firmware
-			apply_native_engine(*eng, eo);
+			engine_options startup = eo;
+			if (!startup.native_fx) startup.native_fx = saved.native_fx;
+			if (!startup.native_engine) startup.native_engine = saved.native_engine;
+			if (startup.native_fx) { eng->mu.set_native_fx(startup.native_fx); eng->native_fx.store(startup.native_fx); }
+			apply_native_engine(*eng, startup);
 			eng->state.store(1);
 			eng->publish();
 
-			if (!start_audio(a.latency, oo.exclusive)) {
+			if (!start_audio()) {
 				audio_failed = true;
 				audio_ready.store(true); // PHONES can recover by picking another output
 				return;
 			}
-			say_audio_opened(oo.exclusive);
-			// A/D INPUT: open the recording device that was picked last time
-			start_ad();
-			// With --play, start streaming as soon as it begins to sound
-			if (!a.play_path.empty())
-				play_song(a.play_path);
-			say_audio_running();
-			std::fflush(stdout);
+			say_audio_opened(audio_settings.exclusive);
 			audio_ready.store(true); // all startup writes finish before UI switching
 		});
 

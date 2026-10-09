@@ -102,16 +102,19 @@ static bool boot_machine_once(ui::gui_app &gui, ui::engine &eng, ui::tool_args &
 		std::fprintf(stderr, "[ios] boot failed: %s\n", eng.message.c_str());
 		return false;
 	}
+	ui::engine_options startup;
+	startup.native_fx = gui.persisted_native_fx;
+	startup.native_engine = gui.persisted_native_engine;
+	gui.wire_engine(eng, startup);
+	if (startup.native_fx) eng.mu.set_native_fx(startup.native_fx);
+	gui.apply_native_engine(eng, startup);
 	eng.state.store(1);
-	// What run()'s boot thread does after boot: open the audio device now that
-	// the firmware is up. a.latency is the shared default (30 ms); exclusive
-	// would ask for hog mode, which does not exist on iOS. On failure the shared
-	// code parks the engine (state 2) and says why - silence with a reason beats
-	// silence without one.
-	if (gui.start_audio(a.latency, false)) {
+	// Open only after boot; failures use the shared LCD error state.
+	if (gui.start_audio()) {
 		gui.say_audio_opened(false);
 		gui.say_audio_running();
 	} else {
+		gui.audio_failed = true;
 		std::fprintf(stderr, "[ios] audio start failed; panel runs silent\n");
 	}
 	gui.audio_ready.store(true);
@@ -160,7 +163,7 @@ static bool boot_machine_once(ui::gui_app &gui, ui::engine &eng, ui::tool_args &
 	// bridge, four MIDI inputs (mu2000::MIDI_PORTS of them) and three outputs
 	// (THRU A, THRU B, and the machine's own OUT), then the app over them.
 	static ui::bridge br;
-	static ui::midi_in  midi_ports[mu2000::MIDI_PORTS];
+	static ui::midi_in  midi_ports[ui::IN_PORTS];
 	static ui::midi_out mout, mout_b, mout_mu;
 	static ui::gui_app gui(br, midi_ports, mout, mout_b, mout_mu);
 	ui::g_gui = &gui;
@@ -185,7 +188,6 @@ static bool boot_machine_once(ui::gui_app &gui, ui::engine &eng, ui::tool_args &
 	static ui::engine eng(br, midi_ports[0]);
 	gui.eng = &eng;
 	gui.state = &eng.state;
-	ui::engine_options eng_opts;
 
 	// load_machine wants the parsed tool_args because it reads a.dir and a.usb_host
 	// off them. Rather than run the argv parser - there is no command line on iOS -
@@ -212,8 +214,8 @@ static bool boot_machine_once(ui::gui_app &gui, ui::engine &eng, ui::tool_args &
 	// Boot now, and again later if this launch had nothing to boot: the picker
 	// opens at the end of this method and boot_machine() runs once the install
 	// lands, so the machine comes up without a relaunch.
+	gui.initialize_audio_settings(*a, {});
 	const bool booted = boot_machine(gui, eng, *a);
-	gui.wire_engine(eng, eng_opts);
 
 	// What ui::app::run() does for every desktop main before showing the window:
 	// LCD/panel sizing, the layout file (art/real included), remembered volume.

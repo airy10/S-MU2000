@@ -27,6 +27,7 @@
 #include "midi_out.h"
 #include "texts.h"
 #include "analog_out.h"
+#include "output_limiter.h"
 #include "mu2000.h"
 #include "bootcache.h"
 #include "nvram.h"
@@ -67,6 +68,7 @@ struct engine {
 	bool use_nvram = false;           // 覚えている設定で起動するか（窓を出すときだけ）
 	// 音の出口。false = デジタル（S/PDIF と同じ。DPCM の直流も残る）、true = アナログ（直流を切る。analog_out.h）
 	std::atomic<bool> analog{false};
+	std::atomic<bool> limit_output{false};
 	// エフェクトを C++ で鳴らす軽量モード（doc/native-dsp.md）。0 切 / 1 / 2。
 	// 画面からはここへ頼むだけで、切り替えは音声の糸が fill() の頭で行う
 	std::atomic<int>  want_native_fx{-1};
@@ -270,6 +272,8 @@ struct engine {
 		if (to_analog && !m_analog_was)
 			m_dc.reset();
 		m_analog_was = to_analog;
+		const bool limit = limit_output.load(std::memory_order_relaxed);
+		if (!limit) m_limiter.reset();
 
 		for (u32 i = 0; i < n; i++) {
 			s32 l = 0, r = 0;
@@ -284,10 +288,18 @@ struct engine {
 				l = s32(std::lrint(m_dc.run(0, l)));
 				r = s32(std::lrint(m_dc.run(1, r)));
 			}
-			l = s32(l * g) * 32768 / mu2000::DAC_FULL_SCALE;
-			r = s32(r * g) * 32768 / mu2000::DAC_FULL_SCALE;
-			out[i * 2 + 0] = s16(l < -32768 ? -32768 : l > 32767 ? 32767 : l);
-			out[i * 2 + 1] = s16(r < -32768 ? -32768 : r > 32767 ? 32767 : r);
+			if (!limit) {
+				l = s32(l * g) * 32768 / mu2000::DAC_FULL_SCALE;
+				r = s32(r * g) * 32768 / mu2000::DAC_FULL_SCALE;
+				out[i * 2] = s16(std::clamp(l, -32768, 32767));
+				out[i * 2 + 1] = s16(std::clamp(r, -32768, 32767));
+				continue;
+			}
+			double lf = double(l) * g / mu2000::DAC_FULL_SCALE;
+			double rf = double(r) * g / mu2000::DAC_FULL_SCALE;
+			m_limiter.process(lf, rf, true);
+			out[i * 2] = s16(std::clamp(lf * 32768, -32768.0, 32767.0));
+			out[i * 2 + 1] = s16(std::clamp(rf * 32768, -32768.0, 32767.0));
 		}
 
 		// firmware が送り出したもの。画面（パラメータの層）と MIDI OUT の口へ。
@@ -300,6 +312,7 @@ struct engine {
 
 private:
 	smu2000::analog_out m_dc{ AUDIO_RATE };
+	output_limiter m_limiter;
 	bool m_analog_was = false;
 };
 

@@ -207,6 +207,7 @@ inline void dx11_paint(dx11_state &st, int w, int h,
 		ImGui_ImplWin32_NewFrame();
 	else
 		ImGui::GetIO().DisplaySize = ImVec2(float(w), float(h));
+	ensure_cjk_ui_fonts(ImGui::GetIO().Fonts);
 	ImGui::NewFrame();
 	paint(ImGui::GetBackgroundDrawList());
 	ImGui::Render();
@@ -312,6 +313,7 @@ inline void metal_paint(ImGuiContext *ctx, CAMetalLayer *layer,
 	pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1);
 	pass.colorAttachments[0].storeAction = MTLStoreActionStore;
 	ImGui_ImplMetal_NewFrame(pass);
+	ensure_cjk_ui_fonts(ImGui::GetIO().Fonts);
 	ImGui::NewFrame();
 	paint(ImGui::GetBackgroundDrawList());
 	ImGui::Render();

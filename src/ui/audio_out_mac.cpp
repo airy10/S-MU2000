@@ -135,6 +135,50 @@ void release_output(const device_claim &claim)
 
 // The device's own name, which is what the status line and the menu compare
 // against. A device with no name (should not happen) falls back to the rate.
+bool custom_output_format(const device_ref &dev, const audio_stream_options &want,
+                          std::string &err)
+{
+	if (dev.id == kAudioObjectUnknown)
+		return true;   // nothing to check against; the core will say if it cannot
+	const u32 channels = hal::stream_channels(dev.id, hal::direction::output);
+	if (!valid_audio_route(want, channels)) {
+		err = CLI_T("The selected output channels are unavailable",
+		            "選んだ出力チャンネルは使えない");
+		return false;
+	}
+	if (want.sample_rate) {
+		const std::vector<int> rates = hal::available_rates(dev.id);
+		if (!rates.empty() && std::find(rates.begin(), rates.end(), want.sample_rate) == rates.end()) {
+			err = CLI_T("The selected output rate is not one of the device's",
+			            "選んだ出力周波数はこの端末のものではない");
+			return false;
+		}
+	}
+	return true;
+}
+
+u32 output_channels(const device_ref &dev)
+{
+	return dev.id == kAudioObjectUnknown ? 2
+	                                     : hal::stream_channels(dev.id, hal::direction::output);
+}
+
+audio_stream_info output_capabilities(const device_ref &dev, double rate)
+{
+	audio_stream_info info;
+	if (dev.id == kAudioObjectUnknown)
+		return info;
+	info.rate = int(rate > 0.0 ? rate : 0.0);
+	info.rates = hal::available_rates(dev.id);
+	if (info.rates.empty() && info.rate > 0)
+		info.rates.push_back(info.rate);
+	const u32 ch = hal::stream_channels(dev.id, hal::direction::output);
+	for (u32 c = 0; c < ch; c++)
+		info.channels.push_back("Output " + std::to_string(c + 1));
+	info.manual_buffer = false;   // the device's buffer is asked for, not imposed
+	return info;
+}
+
 std::string output_label(const device_ref &dev, double rate)
 {
 	if (dev.id != kAudioObjectUnknown && !dev.name.empty())

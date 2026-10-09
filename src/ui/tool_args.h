@@ -59,6 +59,7 @@ struct tool_args {
 	int in_dev[5] = { -2, -2, -2, -2, -2 };   // -2 unset (remembered), -1 unused
 	int mout_dev = -2, moutb_dev = -2, moutmu_dev = -2;
 	bool usb_host = true;                  // HOST SELECT = USB (ports C/D work)
+	bool latency_given = false;
 	int latency = 30;                      // preset per backend before parsing
 	int win_w = 1000, win_h = 400;
 	bool size_given = false;
@@ -130,7 +131,7 @@ inline int parse_tool_args(int argc, char **argv, tool_args &a,
 			a.mout_dev = a.moutb_dev = a.moutmu_dev = -1;
 			a.nomidi = true;
 		}
-		else if (!std::strcmp(argv[i], "--latency") && i + 1 < argc) a.latency = std::atoi(argv[++i]);
+		else if (!std::strcmp(argv[i], "--latency") && i + 1 < argc) { a.latency = std::atoi(argv[++i]); a.latency_given = true; }
 		else if (consume_engine_option(argv[i], eng_opts)) {}
 		else if (consume_output_option(argv, argc, i, out_opts)) {}
 		else if (consume_window_option(argv[i], win_opts)) {}

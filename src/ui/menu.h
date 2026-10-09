@@ -94,8 +94,9 @@ enum : int {
 	ID_FACTORY = 5200,
 	ID_RESTART = 5201,       // power the MU off and on
 	ID_NATIVE_FX = 5215,     // lightweight mode (C++ effects)
+	ID_SETTINGS = 5220,
 	ID_NATIVE_ENGINE = 5216, // firmware を走らせない口（聞き比べ用）
-	ID_PC_EDITOR = 5201,
+	ID_PC_EDITOR = 5203,
 	ID_OVERVIEW = 5202,
 	ID_OUTPUT_DIGITAL = 5300, ID_OUTPUT_ANALOG = 5301,
 	ID_AUDIO_DEFAULT = 5500, ID_AUDIO_BASE = 5501,
@@ -115,9 +116,12 @@ static_assert([] {
 	                        ID_AIN_NONE, ID_CARD_NEW16, ID_CARD_NEW32, ID_CARD_NEW64,
 	                        ID_CARD_NEW128, ID_CARD_OPEN, ID_CARD_EJECT,
 	                        ID_PLAY_FILE, ID_STOP_FILE, ID_FACTORY, ID_RESTART, ID_NATIVE_FX,
-	                        ID_NATIVE_ENGINE,
+	                        ID_NATIVE_ENGINE, ID_SETTINGS,
 	                        ID_PORTS34_FOLD, ID_PORTS34_DROP, ID_THIN_BENDS, ID_PC_EDITOR, ID_OVERVIEW,
 	                        ID_OUTPUT_DIGITAL, ID_OUTPUT_ANALOG, ID_AUDIO_DEFAULT, ID_INE_NONE };
+	for (size_t i = 0; i < std::size(singles); i++)
+		for (size_t j = 0; j < i; j++)
+			if (singles[i] == singles[j]) return false;
 	for (int base : bases) {
 		for (int id : singles)
 			if (id >= base && id < base + 256)
@@ -127,7 +131,7 @@ static_assert([] {
 				return false;
 	}
 	return true;
-}(), "a menu id falls inside another menu's ID_BASE..ID_BASE+255 range");
+}(), "menu ids overlap or fall inside another menu's ID_BASE..ID_BASE+255 range");
 
 // The names shown in the menu and in the startup report, A B C D.
 // (The gui.ini keys stay per front end with the settings code.)
@@ -200,6 +204,14 @@ inline menu_item separator()
 	menu_item m;
 	m.separator = true;
 	return m;
+}
+
+inline menu_group settings_shortcut(bool separated = true)
+{
+	menu_group g;
+	if (separated) g.items.push_back(separator());
+	g.items.push_back(text(UI_TEXT(settings_title, "Settings..."), ID_SETTINGS, false, true));
+	return g;
 }
 
 // The file name in the slot, so it is clear which one is going out.
@@ -304,6 +316,7 @@ inline std::vector<menu_group> menu_ports(const menu_state &s)
 	g.items.push_back(text(UI_TEXT(menu_restart, "Restart the MU (power off and on)"), ID_RESTART, false, s.ready));
 	g.items.push_back(text(UI_TEXT(menu_factory, "Factory reset..."), ID_FACTORY, false, s.ready));
 	groups.push_back(g);
+	groups.push_back(settings_shortcut());
 	return groups;
 }
 
@@ -347,6 +360,7 @@ inline std::vector<menu_group> menu_card(const menu_state &s)
 	g.items.push_back(separator());
 	g.items.push_back(text(UI_TEXT(menu_thin_bends, "Lighten heavy MIDI: thin pitch bends, drop Roland display data (unlike the real unit)"), ID_THIN_BENDS, s.thin_bends, true));
 	groups.push_back(g);
+	groups.push_back(settings_shortcut());
 	return groups;
 }
 
@@ -362,7 +376,7 @@ inline std::vector<menu_group> menu_phones(const menu_state &s)
 	                       ID_OUTPUT_DIGITAL, !s.analog, true));
 	g.items.push_back(text(UI_TEXT(menu_out_analog, "Analog (LINE OUT/PHONES; cuts DC)"),
 	                       ID_OUTPUT_ANALOG, s.analog, true));
-	return { menu_audio_output(s), g };
+	return { menu_audio_output(s), g, settings_shortcut() };
 }
 
 // The POWER switch: restart the machine
@@ -371,7 +385,7 @@ inline std::vector<menu_group> menu_power(const menu_state &s)
 	using namespace menu_detail;
 	menu_group g;
 	g.items.push_back(text(UI_TEXT(menu_restart, "Restart the MU (power off and on)"), ID_RESTART, false, s.ready));
-	return { g };
+	return { g, settings_shortcut() };
 }
 
 // The A/D INPUT jack on its own: the recording-device picker under its heading
@@ -385,7 +399,7 @@ inline std::vector<menu_group> menu_ain_only(const std::vector<std::string> &nam
 	g.items.push_back(separator());
 	for (const menu_item &item : head.items)
 		g.items.push_back(item);
-	return { g };
+	return { g, settings_shortcut() };
 }
 
 // The plug-in card slot: a fresh SmartMedia image, the image in the slot,

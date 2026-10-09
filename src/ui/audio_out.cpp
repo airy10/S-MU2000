@@ -46,18 +46,18 @@ bool is_pcm16(const WAVEFORMATEX *f)
 enum class devfmt { f32, i16, i24in32 };
 
 // 独り占めモードで試す形式を組む
-WAVEFORMATEXTENSIBLE make_format(u32 rate, bool flt, int bits, int container)
+WAVEFORMATEXTENSIBLE make_format(u32 rate, bool flt, int bits, int container, u32 channels = 2, DWORD mask = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT)
 {
 	WAVEFORMATEXTENSIBLE e{};
 	e.Format.wFormatTag      = WAVE_FORMAT_EXTENSIBLE;
-	e.Format.nChannels       = 2;
+	e.Format.nChannels       = WORD(channels);
 	e.Format.nSamplesPerSec  = rate;
 	e.Format.wBitsPerSample  = WORD(container);
-	e.Format.nBlockAlign     = WORD(2 * container / 8);
+	e.Format.nBlockAlign     = WORD(channels * container / 8);
 	e.Format.nAvgBytesPerSec = rate * e.Format.nBlockAlign;
 	e.Format.cbSize          = sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX);
 	e.Samples.wValidBitsPerSample = WORD(bits);
-	e.dwChannelMask          = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT;
+	e.dwChannelMask          = mask;
 	// KSDATAFORMAT_SUBTYPE_{PCM,IEEE_FLOAT}
 	e.SubFormat.Data1 = flt ? 3 : 1;
 	e.SubFormat.Data2 = 0x0000;
@@ -122,13 +122,32 @@ std::vector<std::string> audio_out::list()
 }
 
 
+std::string audio_out::default_device_name()
+{
+	const bool com = SUCCEEDED(CoInitializeEx(nullptr, COINIT_MULTITHREADED));
+	IMMDeviceEnumerator *en = nullptr;
+	IMMDevice *dev = nullptr;
+	std::string name;
+	if (SUCCEEDED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
+	                               __uuidof(IMMDeviceEnumerator), (void **)&en))) {
+		if (SUCCEEDED(en->GetDefaultAudioEndpoint(eRender, eConsole, &dev))) {
+			name = endpoint_name(dev);
+			dev->Release();
+		}
+		en->Release();
+	}
+	if (com) CoUninitialize();
+	return name;
+}
+
 bool audio_out::start(int latency_ms, fill_fn fill, std::string &err, bool exclusive,
                       const std::string &device, bool raw, bool exact)
 {
-	m_want_raw = raw;
-	m_exact_dev = exact;
+	if (!valid_audio_request(m_stream)) { err = "Invalid audio stream settings"; return false; }
 	if (m_thread.joinable())
 		return true;
+	m_want_raw = raw;
+	m_exact_dev = exact;
 
 	LARGE_INTEGER f;
 	QueryPerformanceFrequency(&f);
@@ -146,6 +165,8 @@ bool audio_out::start(int latency_ms, fill_fn fill, std::string &err, bool exclu
 	m_queue_sum.store(0); m_queue_n.store(0); m_queue_worst.store(0);
 	m_inflight_sum.store(0); m_inflight_n.store(0); m_inflight_worst.store(0);
 	m_cpu_meter.reset();
+	m_mmcss.store(false);
+	m_period_ms.store(0); m_stream_ms.store(0);
 
 	m_want_dev = device;
 	m_start_state.store(0);
@@ -247,7 +268,7 @@ std::string audio_out::format_line() const
 	              m_dev_bits.load() == 24 ? "24bit(32)"
 	              : (m_dev_float.load() ? "float" : "16bit"),
 	              m_period_ms.load(),
-	              m_converting.load() ? CLI_T("own sinc", "自前 sinc") : CLI_T("none (44100 as is)", "無し（44100 のまま）"));
+	              m_converting.load() ? (m_stream.quality == resampler_quality::sinc ? "sinc" : m_stream.quality == resampler_quality::linear ? "linear" : "nearest") : CLI_T("none (44100 as is)", "無し（44100 のまま）"));
 	if (m_raw.load())
 		std::strncat(buf, " / RAW", sizeof(buf) - std::strlen(buf) - 1);
 	return buf;
@@ -344,6 +365,33 @@ void audio_out::run(int latency_ms, bool want_exclusive)
 		client->GetDevicePeriod(&def_period, &min_period);
 
 		// ---- 独り占めモード。Windows の混ぜ合わせを通さないので一番短い
+		m_info = {};
+		for (u32 c = 0; c < mix->nChannels; c++)
+			m_info.channels.push_back("Output " + std::to_string(c + 1));
+		if (!valid_audio_route(m_stream, mix->nChannels)) {
+			m_err = "The selected output channels are unavailable";
+			goto done;
+		}
+		const DWORD mask = mix->wFormatTag == WAVE_FORMAT_EXTENSIBLE
+		    ? reinterpret_cast<WAVEFORMATEXTENSIBLE *>(mix)->dwChannelMask : 0;
+		if (want_exclusive) {
+			for (int rate : { 8000, 11025, 16000, 22050, 32000, 44100, 48000, 88200, 96000, 176400, 192000 }) {
+				for (const auto &f : { make_format(rate, false, 24, 32, mix->nChannels, mask),
+				                       make_format(rate, true, 32, 32, mix->nChannels, mask),
+				                       make_format(rate, false, 16, 16, mix->nChannels, mask) }) {
+					if (client->IsFormatSupported(AUDCLNT_SHAREMODE_EXCLUSIVE, &f.Format, nullptr) == S_OK) {
+						m_info.rates.push_back(rate);
+						break;
+					}
+				}
+			}
+		} else {
+			m_info.rates.push_back(int(mix->nSamplesPerSec));
+			if (m_stream.sample_rate && m_stream.sample_rate != int(mix->nSamplesPerSec)) {
+				m_err = "Shared mode uses the system device rate; choose exclusive mode to select a rate";
+				goto done;
+			}
+		}
 		if (want_exclusive) {
 			// **デバイスが言っている周波数を先に試す。** そこがデバイスの
 			// 時計なので、違う周波数を通すと（受け付けられても）速さが
@@ -362,9 +410,10 @@ void audio_out::run(int latency_ms, bool want_exclusive)
 				{ AUDIO_RATE, false, 16, 16 },
 			};
 			for (const auto &c : cands) {
-				WAVEFORMATEXTENSIBLE want = make_format(c.rate, c.flt, c.bits, c.container);
-				if (FAILED(client->IsFormatSupported(AUDCLNT_SHAREMODE_EXCLUSIVE,
-				                                    &want.Format, nullptr)))
+				const u32 requested_rate = m_stream.sample_rate ? u32(m_stream.sample_rate) : c.rate;
+				WAVEFORMATEXTENSIBLE want = make_format(requested_rate, c.flt, c.bits, c.container, mix->nChannels, mask);
+				hr = client->IsFormatSupported(AUDCLNT_SHAREMODE_EXCLUSIVE, &want.Format, nullptr);
+				if (hr != S_OK)
 					continue;
 				// **周期は 2 の冪のフレーム数にする。**
 				//
@@ -374,17 +423,17 @@ void audio_out::run(int latency_ms, bool want_exclusive)
 				// RME を 1024 サンプルで走らせている機械に 480 フレーム
 				// （10ms）を頼んで、実際にそうなった
 				const double want_ms = latency_ms > 0 ? double(latency_ms) : 10.0;
-				u32 frames = u32(want_ms * c.rate / 1000.0 + 0.5);
+				u32 frames = m_stream.buffer_frames ? u32(m_stream.buffer_frames) : u32(want_ms * requested_rate / 1000.0 + 0.5);
 				u32 pow2 = 64;
 				while (pow2 < frames && pow2 < 8192)
 					pow2 <<= 1;
 				if (pow2 > 64 && (pow2 - frames) > (frames - (pow2 >> 1)))
 					pow2 >>= 1;          // 下のほうが近ければそちら
 				frames = pow2;
-				REFERENCE_TIME per = REFERENCE_TIME(10000000.0 * frames / c.rate + 0.5);
+				REFERENCE_TIME per = REFERENCE_TIME(10000000.0 * frames / requested_rate + 0.5);
 				while (per < min_period && frames < 8192) {
 					frames <<= 1;
-					per = REFERENCE_TIME(10000000.0 * frames / c.rate + 0.5);
+					per = REFERENCE_TIME(10000000.0 * frames / requested_rate + 0.5);
 				}
 				hr = client->Initialize(AUDCLNT_SHAREMODE_EXCLUSIVE,
 				                        AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
@@ -399,7 +448,7 @@ void audio_out::run(int latency_ms, bool want_exclusive)
 					if (FAILED(dev->Activate(__uuidof(IAudioClient), CLSCTX_ALL,
 					                         nullptr, (void **)&client)))
 						break;
-					per = REFERENCE_TIME(10000.0 * 1000.0 * aligned / c.rate + 0.5);
+					per = REFERENCE_TIME(10000.0 * 1000.0 * aligned / requested_rate + 0.5);
 					hr = client->Initialize(AUDCLNT_SHAREMODE_EXCLUSIVE,
 					                        AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
 					                        per, per, &want.Format, nullptr);
@@ -409,8 +458,8 @@ void audio_out::run(int latency_ms, bool want_exclusive)
 					dev_float = c.flt;
 					fmt       = c.flt ? devfmt::f32
 					          : (c.container == 32 ? devfmt::i24in32 : devfmt::i16);
-					dev_ch    = 2;
-					dev_rate  = c.rate;
+					dev_ch    = mix->nChannels;
+					dev_rate  = requested_rate;
 					m_period_ms.store(per / 10000.0);
 					break;
 				}
@@ -420,6 +469,10 @@ void audio_out::run(int latency_ms, bool want_exclusive)
 				if (FAILED(dev->Activate(__uuidof(IAudioClient), CLSCTX_ALL,
 				                         nullptr, (void **)&client)))
 					break;
+			}
+			if (!exclusive && m_stream.strict) {
+				fail(CLI_T("Opening the exclusive audio stream", "排他音声ストリームの開始"), hr);
+				goto done;
 			}
 			if (!exclusive && client)
 				m_err = CLI_T("Could not open in exclusive mode (falling back to shared)", "独り占めで開けなかった（共有に落とす）");
@@ -459,12 +512,22 @@ void audio_out::run(int latency_ms, bool want_exclusive)
 			fmt       = dev_float ? devfmt::f32 : devfmt::i16;
 			dev_ch    = use->nChannels;
 			dev_rate  = use->nSamplesPerSec;
+			if (m_stream.sample_rate && m_stream.sample_rate != int(dev_rate)) {
+				m_err = "The shared stream cannot use the requested sample rate";
+				goto done;
+			}
+			if (!valid_audio_route(m_stream, dev_ch)) {
+				m_err = "The stream cannot use the selected channels";
+				goto done;
+			}
+			m_info.rates = {int(dev_rate)};
+			m_info.channels.resize(dev_ch);
 			m_period_ms.store(def_period / 10000.0);
 
 			// **器は余裕を持って取り、溜めるのは target だけ。**
 			// 器が小さいと、起きるのが少し遅れたときに書く場所が無くなる
-			const double want_ms = latency_ms > 0 ? double(latency_ms)
-			                                     : 2.0 * def_period / 10000.0;
+			const double want_ms = m_stream.buffer_frames ? 1000.0 * m_stream.buffer_frames / dev_rate
+			    : latency_ms > 0 ? double(latency_ms) : 2.0 * def_period / 10000.0;
 			const double buf_ms = std::max(want_ms + 2.0 * def_period / 10000.0,
 			                               3.0 * def_period / 10000.0);
 			const DWORD flags = AUDCLNT_STREAMFLAGS_EVENTCALLBACK |
@@ -490,10 +553,11 @@ void audio_out::run(int latency_ms, bool want_exclusive)
 
 		m_exclusive.store(exclusive);
 		m_dev_rate.store(dev_rate);
+		m_info.rate = int(dev_rate);
 		m_dev_channels.store(dev_ch);
 		m_dev_float.store(dev_float);
 		m_dev_bits.store(fmt == devfmt::i24in32 ? 24 : (fmt == devfmt::i16 ? 16 : 32));
-		rs.configure(double(AUDIO_RATE), double(dev_rate));
+		rs.configure(double(AUDIO_RATE), double(dev_rate), m_stream.quality);
 		m_converting.store(!rs.direct());
 		stage.resize(size_t(CHUNK + 64) * 2);
 		mixbuf.resize(size_t(CHUNK) * 2);
@@ -562,37 +626,20 @@ void audio_out::run(int latency_ms, bool want_exclusive)
 				}
 				rs.pull(mixbuf.data(), int(n));
 
-				if (fmt == devfmt::f32) {
-					float *out = reinterpret_cast<float *>(dst) + size_t(at) * dev_ch;
+				auto route = [&](auto *out, auto convert) {
+					std::fill_n(out, size_t(n) * dev_ch, 0);
 					for (UINT32 i = 0; i < n; i++) {
-						out[i * dev_ch + 0] = mixbuf[i * 2 + 0];
-						if (dev_ch > 1)
-							out[i * dev_ch + 1] = mixbuf[i * 2 + 1];
-						for (u32 c = 2; c < dev_ch; c++)
-							out[i * dev_ch + c] = 0.0f;
+						out[size_t(i) * dev_ch + m_stream.left] = convert(mixbuf[i * 2]);
+						if (dev_ch > 1) out[size_t(i) * dev_ch + m_stream.right] = convert(mixbuf[i * 2 + 1]);
 					}
-				} else if (fmt == devfmt::i24in32) {
-					// 32bit の器に左詰め。下の 8bit は 0
-					s32 *out = reinterpret_cast<s32 *>(dst) + size_t(at) * dev_ch;
-					for (UINT32 i = 0; i < n; i++) {
-						for (u32 s = 0; s < 2 && s < dev_ch; s++) {
-							const float v = std::clamp(mixbuf[i * 2 + s], -1.0f, 1.0f);
-							out[i * dev_ch + s] = s32(v * 8388607.0f) << 8;
-						}
-						for (u32 c = 2; c < dev_ch; c++)
-							out[i * dev_ch + c] = 0;
-					}
-				} else {
-					s16 *out = reinterpret_cast<s16 *>(dst) + size_t(at) * dev_ch;
-					for (UINT32 i = 0; i < n; i++) {
-						for (u32 s = 0; s < 2 && s < dev_ch; s++) {
-							const float v = std::clamp(mixbuf[i * 2 + s], -1.0f, 1.0f);
-							out[i * dev_ch + s] = s16(v * 32767.0f);
-						}
-						for (u32 c = 2; c < dev_ch; c++)
-							out[i * dev_ch + c] = 0;
-					}
-				}
+				};
+				if (fmt == devfmt::f32)
+					route(reinterpret_cast<float *>(dst) + size_t(at) * dev_ch, [](float v) { return v; });
+				else if (fmt == devfmt::i24in32)
+					route(reinterpret_cast<s32 *>(dst) + size_t(at) * dev_ch,
+					      [](float v) { return s32(std::clamp(v, -1.0f, 1.0f) * 8388607.0f) * 256; });
+				else
+					route(reinterpret_cast<s16 *>(dst) + size_t(at) * dev_ch, audio_stream_renderer::pcm16_truncate);
 				at += n;
 			}
 		};

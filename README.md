@@ -236,6 +236,18 @@ write `usb=0` in `%LOCALAPPDATA%\S-MU2000\plugin.ini`.
 **macOS** (Apple silicon) can build VST3 and Audio Unit (AUv2, `aumu`).
 `make` builds the tools and both bundles. Details: [doc/porting-macos.md](doc/porting-macos.md).
 
+## Standalone settings
+
+Open **Settings** from the toolbar, any quick menu, or `--settings`.
+General selects English or Japanese. Audio selects playback and recording devices,
+sample rate, buffer size, latency, output channels, resampler, volume, DC filtering,
+and peak limiting. Changes apply immediately; failed changes restore the previous
+stream. Device lists refresh automatically.
+
+Emulation contains C++ effects, firmware bypass, and MIDI-file lightening.
+Hover over each option for details. The existing WASAPI, CoreAudio, and ALSA
+backends are used; this adds no DAC or circuit simulation.
+
 ## Latency
 
 **Measured 117 ms → 16 ms end to end** (MIDI in to sound out, measured from waveforms

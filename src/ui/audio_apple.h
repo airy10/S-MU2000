@@ -23,6 +23,7 @@
 #define S_MU2000_UI_AUDIO_APPLE_H
 
 #include "ui/audio_out.h"
+#include "ui/audio_stream.h"
 
 #include <AudioToolbox/AudioToolbox.h>
 
@@ -49,6 +50,11 @@ public:
 		std::string device;
 		bool      exact = false;     // a menu name must match a whole name
 		bool      exclusive = false; // macOS: take the device for ourselves
+		// What the Settings window asked for. Automatic - all zeros - is the
+		// device's own format with the graph converting, which is the whole
+		// design; a custom rate or channel pair is honoured by converting in
+		// the render block instead, the way the other back ends do it.
+		audio_stream_options stream;
 	};
 
 	apple_audio_out();
@@ -77,6 +83,12 @@ public:
 	void watch_loop();
 
 	bool running() const;
+	// The rate the device is actually running at, for the settings window's
+	// "what is playing now" and for its list of what else it could run.
+	u32 device_rate() const;
+	// The rate we are producing into it: the device's own, unless a custom
+	// output format asked for another.
+	u32 stream_rate() const;
 	const std::string &device_name() const;
 	bool exclusive() const;
 	void *realtime_workgroup();
@@ -146,6 +158,12 @@ public:
 	void watch_loop();
 
 	bool running() const;
+	// The rate the device is actually running at, for the settings window's
+	// "what is playing now" and for its list of what else it could run.
+	u32 device_rate() const;
+	// The rate we are producing into it: the device's own, unless a custom
+	// output format asked for another.
+	u32 stream_rate() const;
 	const std::string &device_name() const;
 	std::string format_line() const;
 	u64 empty_count() const;
@@ -212,6 +230,17 @@ bool session_open(int latency_ms, std::string &err);
 // is the only choice the system offers.
 std::vector<std::string> output_list();
 
+// A custom output format - a rate or a channel pair of the user's choosing -
+// answered per platform. macOS converts it in the render block and can say yes,
+// as long as the device offers the rate and the channels. iOS has one route and
+// one rate and the session decides both, so it says no and says why.
+bool custom_output_format(const device_ref &dev, const audio_stream_options &want,
+                          std::string &err);
+
+// How many channels a custom request is spread over: the device's own. Two when
+// there is nothing to ask, which is iOS, and the automatic case everywhere.
+u32 output_channels(const device_ref &dev);
+
 // Which device a name means. macOS: the HAL lookup this file has always done -
 // whole-name first when exact, then a substring, case-insensitively - with an
 // empty name meaning the system default. iOS: the route, whatever it is called.
@@ -238,6 +267,11 @@ void release_output(const device_claim &claim);
 
 // The name to show for what was opened: the device on macOS, the route on iOS.
 std::string output_label(const device_ref &dev, double rate);
+
+// What the settings window offers for this device: the rates it can run, the
+// channels it has, and the rate it is running at now. A request for something
+// outside these lists is refused rather than converted into something else.
+audio_stream_info output_capabilities(const device_ref &dev, double rate);
 
 // ---- The session watchers --------------------------------------------------
 //

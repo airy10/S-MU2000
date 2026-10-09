@@ -291,6 +291,7 @@ void pc_window::frame(xg::model &m, const xg_snapshot &ram, bridge &br)
 
 	ImGui_ImplDX11_NewFrame();
 	ImGui_ImplWin32_NewFrame();
+	ensure_cjk_ui_fonts(ImGui::GetIO().Fonts);
 	ImGui::NewFrame();
 	m_view->draw(m, ram, br);
 	xgui::drag_flush(br);          // マウスで動かしている値の、間引いた送信

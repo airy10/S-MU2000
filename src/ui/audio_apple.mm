@@ -81,6 +81,7 @@ struct apple_audio_out::impl {
 	std::atomic<bool> running{false};
 	std::atomic<bool> taken{false};   // macOS: exclusive asked for, and the device is ours
 	std::atomic<u32> buffer_frames{0};    // what the last block actually was
+	std::atomic<u32> dev_rate{0};         // what the pinned device runs at, 0 before start
 	u32 granted_frames = 0;               // what the platform granted, pre-roll
 	// The connection's layout, copied off the device's own format at start() so
 	// the block below can write the buffer it is handed without asking anything.
@@ -110,6 +111,13 @@ struct apple_audio_out::impl {
 	std::atomic<bool> watch_run{false};
 	std::atomic<bool> recovering{false};  // a recovery is failing; said once
 	std::atomic<bool> warned{false};       // the block guard below, said once
+	// A custom output format: what the settings window asked for, and the
+	// renderer that produces it. Automatic - the default - leaves the rate and
+	// the channel pair at the machine's own and lets the graph convert.
+	audio_stream_renderer renderer;
+	bool custom = false;
+	u32 out_channels = 2, out_left = 0, out_right = 1;
+	double out_rate = double(AUDIO_RATE);
 	std::thread watchdog;            // joined in stop()
 };
 
@@ -150,6 +158,19 @@ bool apple_audio_out::start(const request &r, fill_fn fill, std::string &err)
 	m->want_name = r.device;   // the ask, not the answer: see recover()
 	m->want_exact = r.exact;
 	m->dev = apple::resolve_output(r.device, r.exact);
+	// A custom rate or channel pair is converted here in the render block; the
+	// automatic case - all of it at the defaults - is the graph's. iOS has one
+	// route and one rate, so it refuses, which is what its answer says.
+	m->custom = ui::custom_audio_format(r.stream);
+	if (m->custom && !apple::custom_output_format(m->dev, r.stream, err))
+		return false;
+	m->out_channels = m->custom ? apple::output_channels(m->dev) : 2;
+	m->out_left = m->custom ? u32(r.stream.left) : 0;
+	m->out_right = m->custom ? u32(r.stream.right) : 1;
+	// A custom request with no rate of its own keeps the device's, so nothing is
+	// converted that does not have to be.
+	m->out_rate = (m->custom && r.stream.sample_rate) ? double(r.stream.sample_rate)
+	                                                 : double(AUDIO_RATE);
 	if (!m->dev.found) {
 		err = r.device.empty() ? CLI_T("No audio output found", "音声の出口が見つからない")
 		                       : CLI_T("No audio output with that name: ", "その名前の音声の出口が見つからない: ")
@@ -175,14 +196,35 @@ bool apple_audio_out::start(const request &r, fill_fn fill, std::string &err)
 					*isSilence = YES;
 				return noErr;
 			}
+			// The rate this block is being called at, and what n of it is worth in
+			// the machine's own frames. Both AUDIO_RATE unless a custom output
+			// format moved the connection, which is the only thing that can.
+			const double block_rate = im->custom ? im->out_rate : double(AUDIO_RATE);
+			const u64 machine_frames =
+			    im->custom ? u64(double(n) * double(AUDIO_RATE) / block_rate + 0.5) : u64(n);
 			const u64 t0 = mach_absolute_time();
-			// n frames at 44100, because that is what the node is connected at:
-			// one fill() covers the callback exactly, no drift and no stash, and
-			// n is therefore the machine's own frame count - which is what
-			// produced() and the overrun test below are denominated in.
-			if (im->scratch.size() < size_t(n) * 2)
-				im->scratch.resize(size_t(n) * 2);
-			im->fill(im->scratch.data(), u32(n));
+			// n frames at the connection's rate: one fill() covers the callback
+			// exactly, no drift and no stash. At AUDIO_RATE - the automatic case -
+			// that is the machine's own frame count; a custom format asks for
+			// another rate and converts above, which is what machine_frames above
+			// is for.
+			const u32 chans = im->out_channels;
+			if (im->custom) {
+				// A custom format asked for, so the machine's 44100 is converted
+				// here to the rate and channel pair that was requested, and the
+				// engine converts from there to the hardware. The renderer asks
+				// fill() for as much as each chunk needs, so nothing is kept back.
+				if (im->scratch.size() < size_t(n) * chans)
+					im->scratch.resize(size_t(n) * chans);
+				im->renderer.render(im->scratch.data(), n, chans, im->out_left,
+				                    im->out_right,
+				                    [im](s16 *dst, unsigned need) { im->fill(dst, need); },
+				                    audio_stream_renderer::pcm16);
+			} else {
+				if (im->scratch.size() < size_t(n) * 2)
+					im->scratch.resize(size_t(n) * 2);
+				im->fill(im->scratch.data(), u32(n));
+			}
 			// Into the layout the device asked for, which is the one the block is
 			// called with: the connection is the hardware's own format at
 			// AUDIO_RATE, so the engine's converter has a rate to do and nothing
@@ -190,40 +232,40 @@ bool apple_audio_out::start(const request &r, fill_fn fill, std::string &err)
 			// pinned device in start() and copied into conn_planar/conn_float.
 			const s16 *sv = im->scratch.data();
 			bool ok = false;
-			if (im->conn_planar && abl->mNumberBuffers >= 2) {
-				AudioBuffer *lb = &abl->mBuffers[0], *rb = &abl->mBuffers[1];
-				if (im->conn_float &&
-				    lb->mDataByteSize >= n * sizeof(float) &&
-				    rb->mDataByteSize >= n * sizeof(float)) {
-					float *l = static_cast<float *>(lb->mData);
-					float *r = static_cast<float *>(rb->mData);
-					for (u32 i = 0; i < n; i++) {
-						l[i] = float(sv[i * 2])     * (1.0f / 32768.0f);
-						r[i] = float(sv[i * 2 + 1]) * (1.0f / 32768.0f);
+			const u32 need_samples = n * chans;
+			if (im->conn_planar && abl->mNumberBuffers >= chans) {
+				// One plane per channel, each n samples, interleaved in scratch.
+				bool room = true;
+				for (u32 c = 0; c < chans && room; c++)
+					room = abl->mBuffers[c].mDataByteSize >= n * sizeof(float);
+				if (room && im->conn_float) {
+					for (u32 c = 0; c < chans; c++) {
+						float *p = static_cast<float *>(abl->mBuffers[c].mData);
+						for (u32 i = 0; i < n; i++)
+							p[i] = float(sv[size_t(i) * chans + c]) * (1.0f / 32768.0f);
 					}
 					ok = true;
-				} else if (!im->conn_float &&
-				           lb->mDataByteSize >= n * sizeof(s16) &&
-				           rb->mDataByteSize >= n * sizeof(s16)) {
-					s16 *l = static_cast<s16 *>(lb->mData);
-					s16 *r = static_cast<s16 *>(rb->mData);
-					for (u32 i = 0; i < n; i++) {
-						l[i] = sv[i * 2];
-						r[i] = sv[i * 2 + 1];
+				} else if (room) {
+					for (u32 c = 0; c < chans; c++) {
+						s16 *p = static_cast<s16 *>(abl->mBuffers[c].mData);
+						for (u32 i = 0; i < n; i++)
+							p[i] = sv[size_t(i) * chans + c];
 					}
 					ok = true;
 				}
-			} else if (!im->conn_planar && abl->mNumberBuffers >= 1) {
-				AudioBuffer *b = &abl->mBuffers[0];
-				if (im->conn_float && b->mDataByteSize >= n * 2 * sizeof(float)) {
-					float *f = static_cast<float *>(b->mData);
-					for (u32 i = 0; i < n * 2; i++)
-						f[i] = float(sv[i]) * (1.0f / 32768.0f);
-					ok = true;
-				} else if (!im->conn_float && b->mDataByteSize >= n * 2 * sizeof(s16)) {
-					std::memcpy(b->mData, sv, size_t(n) * 2 * sizeof(s16));
-					ok = true;
-				}
+			} else if (!im->conn_planar && abl->mNumberBuffers >= 1 &&
+			           abl->mBuffers[0].mDataByteSize >= need_samples * sizeof(float) &&
+			           im->conn_float) {
+				float *f = static_cast<float *>(abl->mBuffers[0].mData);
+				for (u32 i = 0; i < need_samples; i++)
+					f[i] = float(sv[i]) * (1.0f / 32768.0f);
+				ok = true;
+			} else if (!im->conn_planar && abl->mNumberBuffers >= 1 &&
+			           abl->mBuffers[0].mDataByteSize >= need_samples * sizeof(s16) &&
+			           !im->conn_float) {
+				std::memcpy(abl->mBuffers[0].mData, sv,
+				            size_t(need_samples) * sizeof(s16));
+				ok = true;
 			}
 			if (ok) {
 				// nothing to undo
@@ -245,7 +287,7 @@ bool apple_audio_out::start(const request &r, fill_fn fill, std::string &err)
 			const u64 t1 = mach_absolute_time();
 			const u64 busy = t1 - t0;
 			im->busy_ticks.fetch_add(busy, std::memory_order_relaxed);
-			im->meter.add(double(busy) / mach_tps(), double(n) / double(AUDIO_RATE));
+			im->meter.add(double(busy) / mach_tps(), double(n) / block_rate);
 			const u64 index = im->callbacks.fetch_add(1, std::memory_order_relaxed) + 1;
 			if (const double ms = 1000.0 * double(busy) / mach_tps(); ms > 20.0)
 				im->spikes.fetch_add(1, std::memory_order_relaxed);
@@ -266,11 +308,11 @@ bool apple_audio_out::start(const request &r, fill_fn fill, std::string &err)
 				    std::memory_order_relaxed);
 			}
 			// The overrun proxy CoreAudio has no better name for: we took longer
-			// to make the block than the block is worth. Against AUDIO_RATE,
-			// because the block is 44100 frames whatever the device runs at -
-			// that is what the overrun has to be measured against, and the
-			// device's rate is not ours to know on this path any more.
-			if (double(busy) / mach_tps() > double(n) / double(AUDIO_RATE))
+			// to make the block than the block is worth, measured against the rate
+			// the block is called at - which is the machine's own unless a custom
+			// format asked for another, and the device's rate is not ours to know
+			// on this path either way.
+			if (double(busy) / mach_tps() > double(n) / block_rate)
 				im->starved.fetch_add(1, std::memory_order_relaxed);
 			// What the machine made, before any conversion, which is what a
 			// capture means on both platforms. The only allocation on this
@@ -278,11 +320,12 @@ bool apple_audio_out::start(const request &r, fill_fn fill, std::string &err)
 			if (im->cap)
 				im->cap->insert(im->cap->end(), im->scratch.data(),
 				                im->scratch.data() + size_t(n) * 2);
-			// n, and it needs no thought: the node is connected at AUDIO_RATE,
-			// so n is already the machine's frame count - which is the unit every
-			// consumer divides by AUDIO_RATE to get seconds. This used to be the
+			// The machine's frame count, which is the unit every consumer divides
+			// by AUDIO_RATE to get seconds. Normally n itself, because the
+			// connection is at AUDIO_RATE; with a custom format the block is called
+			// at that rate instead, so n is converted back. This used to be the
 			// device's frame count, which on a 48 kHz output read 8.9% long.
-			im->produced.fetch_add(n, std::memory_order_relaxed);
+			im->produced.fetch_add(machine_frames, std::memory_order_relaxed);
 			if (isSilence)
 				*isSilence = NO;
 			return noErr;
@@ -301,9 +344,13 @@ bool apple_audio_out::start(const request &r, fill_fn fill, std::string &err)
 	// only difference and the engine has only the rate to convert. Asking for
 	// anything else has it convert the layout too.
 	//
-	// Two channels whatever the device has: the machine is stereo, and a device
-	// with more gets the graph's own downmix. A sample format that is neither
-	// float32 nor int16 gets float32 and the graph's conversion after all.
+	// The rate being produced, which is AUDIO_RATE unless a custom format asked
+	// for another: this is where that rate enters the graph, and the engine
+	// converts from here to the hardware. The channel count is the device's own
+	// when a custom request is being honoured and two otherwise, because the
+	// machine is stereo and a device with more gets the graph's own downmix. A
+	// sample format that is neither float32 nor int16 gets float32 and the
+	// graph's conversion after all.
 	AVAudioFormat *hw_fmt = [out_node outputFormatForBus:0];
 	const bool hw_int16 = hw_fmt.commonFormat == AVAudioPCMFormatInt16;
 	const bool hw_planar = hw_fmt.channelCount < 1 ? true : !hw_fmt.isInterleaved;
@@ -311,11 +358,12 @@ bool apple_audio_out::start(const request &r, fill_fn fill, std::string &err)
 	im->conn_planar = hw_planar;
 	AVAudioFormat *fmt = [[AVAudioFormat alloc] initWithCommonFormat:
 	    hw_int16 ? AVAudioPCMFormatInt16 : AVAudioPCMFormatFloat32
-	                                                       sampleRate:double(AUDIO_RATE)
-	                                                         channels:2
+	                                                       sampleRate:m->out_rate
+	                                                         channels:m->out_channels
 	                                                      interleaved:!hw_planar];
 	if (!fmt) {
-		err = "cannot describe the device's stereo format at 44100";
+		err = "cannot describe the device's output format at " +
+		      std::to_string(int(m->out_rate)) + " Hz";
 		return false;
 	}
 	[engine connect:src to:out_node fromBus:0 toBus:0 format:fmt];
@@ -333,6 +381,7 @@ bool apple_audio_out::start(const request &r, fill_fn fill, std::string &err)
 	// converting; nothing computes with it.
 	const double rate = [[out_node outputFormatForBus:0] sampleRate];
 	m->dev_name = apple::output_label(m->dev, rate);   // the device's, not ours
+	m->dev_rate.store(u32(rate > 0.0 ? rate + 0.5 : 0.0), std::memory_order_relaxed);
 	if (rate > 0.0 && rate != double(AUDIO_RATE))
 		std::fprintf(stderr, "[audio] device runs %.0f Hz, the engine converts\n", rate);
 	m->running.store(true, std::memory_order_release);
@@ -490,6 +539,16 @@ void apple_audio_out::stop()
 bool apple_audio_out::running() const
 {
 	return m->running.load(std::memory_order_relaxed);
+}
+
+u32 apple_audio_out::device_rate() const
+{
+	return m->dev_rate.load(std::memory_order_relaxed);
+}
+
+u32 apple_audio_out::stream_rate() const
+{
+	return u32(m->out_rate + 0.5);
 }
 
 const std::string &apple_audio_out::device_name() const
@@ -1184,9 +1243,21 @@ std::vector<std::string> audio_out::list()
 	return apple::output_list();
 }
 
+std::string audio_out::default_device_name()
+{
+	const auto names = apple::output_list();
+	return names.empty() ? std::string() : names.front();
+}
+
+bool audio_out::running() const { return m_impl->core->running(); }
+
 bool audio_out::start(int latency_ms, fill_fn fill, std::string &err, bool exclusive,
                       const std::string &device, bool raw, bool exact)
 {
+	if (!valid_audio_request(m_stream)) {
+		err = CLI_T("Invalid audio stream settings", "音声の設定が不正");
+		return false;
+	}
 	// raw bypasses the system mixer, and there is nothing to bypass on either
 	// platform: the system does the format conversion rather than a driver
 	// mixer. It is in the signature only so both take the same call.
@@ -1195,6 +1266,7 @@ bool audio_out::start(int latency_ms, fill_fn fill, std::string &err, bool exclu
 	r.latency_ms = latency_ms;
 	r.device = device;
 	r.exact = exact;
+	r.stream = m_stream;
 	// exclusive asks for the device outright. macOS has hog mode and the core
 	// takes it through this file's take_output(); iOS has one route that is
 	// always mixed and its answer says so, so the request is simply ignored
@@ -1206,6 +1278,17 @@ bool audio_out::start(int latency_ms, fill_fn fill, std::string &err, bool exclu
 	// Watch the session while we are running (see watch_output_session): the
 	// engine stops itself when headphones appear or a call arrives.
 	apple::watch_output_session([core = m_impl->core.get()] { core->restart(); });
+	// What the settings window shows and offers: the rates and channels this
+	// device can run, and the rate it is running at now, which is the one we
+	// connected to. Its buffer size we ask the device for rather than impose, so
+	// the window does not pretend to set it.
+	m_info = apple::output_capabilities(apple::resolve_output(device, exact),
+	                                    double(m_impl->core->device_rate()));
+	// The rate reported as running is the one we produce, which is the device's
+	// own unless a custom format asked for another; buffer_rate stays the device's
+	// clock, which is what the window needs to show alongside it.
+	m_info.rate = int(m_impl->core->stream_rate());
+	m_info.buffer_rate = int(m_impl->core->device_rate());
 	return true;
 }
 

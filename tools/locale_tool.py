@@ -40,6 +40,7 @@ TEXTS_H = UI / "texts.h"
 # Which file a key goes to, by its prefix. Only for people: the program and the
 # generator read every file of a language and do not care which one a key is in.
 GROUPS = [
+    ("settings", ["settings_"]),
     ("panel",    ["tab_", "hint_", "editor_", "effects_", "layout_", "engine_", "bootcache_", "status_", "help_", "audio_"]),
     ("menus",    ["bar_", "menu_", "dlg_", "note_"]),
     ("editor",   ["xgui_", "fxe_", "fxcat_", "fx_", "sys_", "ed_", "sxd_", "drum_", "cap_"]),

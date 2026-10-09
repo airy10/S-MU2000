@@ -116,6 +116,7 @@ inline void sdl_stop(sdl_state &st)
 inline void sdl_begin(ImGuiContext *ctx)
 {
 	ImGui::SetCurrentContext(ctx);
+	ensure_cjk_ui_fonts(ImGui::GetIO().Fonts);
 	ImGui_ImplSDLGPU3_NewFrame();
 	ImGui_ImplSDL3_NewFrame();
 	ImGui::NewFrame();

@@ -27,6 +27,7 @@
 #include "ui/session_ios.h"
 #include "ui/audio_apple.h"
 #include "ui/audio_out.h"
+#include "compat/cli_text.h"
 
 #include <cstdio>
 #include <memory>
@@ -96,6 +97,32 @@ void release_output(const device_claim &)
 u32 request_buffer_frames(const device_ref &, int)
 {
 	return 0;
+}
+
+bool custom_output_format(const device_ref &, const audio_stream_options &,
+                          std::string &err)
+{
+	// One route, one rate, and the session decides both, so there is nothing to
+	// convert into: the machine's 44100 goes to the session and the session
+	// hands the device whatever the device runs at.
+	err = CLI_T("iOS controls the output format, buffer and access mode",
+	            "出力の形式・バッファ・排他は iOS 側が決める");
+	return false;
+}
+
+u32 output_channels(const device_ref &) { return 2; }
+
+audio_stream_info output_capabilities(const device_ref &, double rate)
+{
+	// One route and one rate: the session decides both, and it can be asked for
+	// neither. The window shows what is running and offers nothing else.
+	audio_stream_info info;
+	info.rate = int(rate > 0.0 ? rate : 0.0);
+	info.rates.push_back(info.rate);
+	info.channels.push_back("Output 1");
+	info.channels.push_back("Output 2");
+	info.manual_buffer = false;
+	return info;
 }
 
 std::string output_label(const device_ref &, double rate)

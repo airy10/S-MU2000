@@ -105,6 +105,9 @@ struct audio_out::impl
 {
 	snd_pcm_t *pcm = nullptr;
 	fill_fn    fill;
+	audio_stream_renderer renderer;
+	audio_stream_options stream;
+	u32 rate = AUDIO_RATE, channels = 2;
 	std::string name;
 
 	// 書き出し（--dump-dev）。audio_out が持つものを指す。stop() より長生きする
@@ -134,12 +137,12 @@ struct audio_out::impl
 		while (!quit.load(std::memory_order_acquire)) {
 			const double t0 = now_sec();
 			if (fill)
-				fill(block.data(), period);
+				renderer.render(block.data(), period, channels, stream.left, stream.right, fill, audio_stream_renderer::pcm16);
 			if (cap)
-				cap->insert(cap->end(), block.begin(), block.begin() + size_t(period) * 2);
+				cap->insert(cap->end(), block.begin(), block.begin() + size_t(period) * channels);
 			const double took = now_sec() - t0;
 			busy_sec.store(busy_sec.load() + took);
-			meter.add(took, double(period) / AUDIO_RATE);
+			meter.add(took, double(period) / rate);
 			if (took > worst_sec.load())
 				worst_sec.store(took);
 
@@ -180,6 +183,7 @@ audio_out::~audio_out()
 bool audio_out::start(int latency_ms, fill_fn fill, std::string &err, bool exclusive,
                       const std::string &device, bool raw, bool exact)
 {
+	if (!valid_audio_request(m_stream)) { err = "Invalid audio stream settings"; return false; }
 	(void)raw;          // ALSA には「エンジンを飛ばす」に当たるものが無い
 	hush_alsa();
 	stop();
@@ -217,44 +221,73 @@ bool audio_out::start(int latency_ms, fill_fn fill, std::string &err, bool exclu
 		return false;
 	}
 
-	unsigned rate = AUDIO_RATE;
+	unsigned rate = m_stream.sample_rate ? unsigned(m_stream.sample_rate) : AUDIO_RATE;
+	up->stream = m_stream;
+	up->channels = unsigned(std::max(m_stream.left, m_stream.right) + 1);
+	up->channels = std::max(up->channels, 2u);
 	// 溜める目標。0 以下なら 40ms（ALSA の既定の溜めに近い）
 	unsigned buffer_us = unsigned((latency_ms > 0 ? latency_ms : 40) * 1000);
 	if (buffer_us < 8000)
 		buffer_us = 8000;
+	if (m_stream.buffer_frames)
+		buffer_us = std::max(buffer_us, unsigned(4000000ULL * m_stream.buffer_frames / rate));
 	unsigned period_us = buffer_us / 4;
+	snd_pcm_uframes_t requested_frames = snd_pcm_uframes_t(m_stream.buffer_frames);
 
 	snd_pcm_hw_params_t *hw = nullptr;
 	snd_pcm_hw_params_alloca(&hw);
 	int dir = 0;
+	snd_pcm_hw_params_t *capabilities = nullptr;
+	snd_pcm_hw_params_alloca(&capabilities);
+	if (snd_pcm_hw_params_any(up->pcm, capabilities) >= 0) {
+		unsigned min_channels = 2;
+		unsigned max_channels = 2;
+		snd_pcm_hw_params_get_channels_min(capabilities, &min_channels);
+		snd_pcm_hw_params_get_channels_max(capabilities, &max_channels);
+		up->channels = std::max(up->channels, min_channels);
+		if (max_channels == 1 && valid_audio_route(m_stream, 1)) up->channels = 1;
+	}
 	if (snd_pcm_hw_params_any(up->pcm, hw) < 0 ||
 	    snd_pcm_hw_params_set_access(up->pcm, hw, SND_PCM_ACCESS_RW_INTERLEAVED) < 0 ||
 	    snd_pcm_hw_params_set_format(up->pcm, hw, SND_PCM_FORMAT_S16_LE) < 0 ||
-	    snd_pcm_hw_params_set_channels(up->pcm, hw, 2) < 0 ||
+	    snd_pcm_hw_params_set_channels(up->pcm, hw, up->channels) < 0 ||
 	    snd_pcm_hw_params_set_rate_near(up->pcm, hw, &rate, &dir) < 0 ||
 	    snd_pcm_hw_params_set_buffer_time_near(up->pcm, hw, &buffer_us, &dir) < 0 ||
-	    snd_pcm_hw_params_set_period_time_near(up->pcm, hw, &period_us, &dir) < 0 ||
+	    (m_stream.buffer_frames
+	        ? snd_pcm_hw_params_set_period_size_near(up->pcm, hw, &requested_frames, &dir)
+	        : snd_pcm_hw_params_set_period_time_near(up->pcm, hw, &period_us, &dir)) < 0 ||
 	    snd_pcm_hw_params(up->pcm, hw) < 0) {
 		err = std::string(CLI_T("Cannot set the audio format (", "音声の形式を決められない（")) + dev + CLI_T(")", "）");
 		snd_pcm_close(up->pcm);
 		return false;
 	}
-	if (rate != AUDIO_RATE) {
-		// MU2000 は 44100Hz でしか動かない。plug の付いた口（default など）なら
-		// ALSA が直してくれるので、ここへは来ない
-		char buf[128];
-		std::snprintf(buf, sizeof(buf), CLI_T("This device only opens at %u Hz (44100 is needed; use \"default\")", "この口は %u Hz でしか開けない（44100 が要る。default を使う）"), rate);
-		err = buf;
+	if (m_stream.sample_rate && rate != unsigned(m_stream.sample_rate)) {
+		err = "The requested sample rate is unavailable";
 		snd_pcm_close(up->pcm);
 		return false;
 	}
-
+	m_info = {};
+	// Probe capabilities with unconstrained parameters on the already opened PCM.
+	snd_pcm_hw_params_t *caps = nullptr;
+	snd_pcm_hw_params_alloca(&caps);
+	snd_pcm_hw_params_any(up->pcm, caps);
+	for (int candidate : { 8000, 11025, 16000, 22050, 32000, 44100, 48000, 88200, 96000, 176400, 192000 })
+		if (!snd_pcm_hw_params_test_rate(up->pcm, caps, unsigned(candidate), 0)) m_info.rates.push_back(candidate);
+	unsigned max_channels = 2;
+	snd_pcm_hw_params_get_channels_max(caps, &max_channels);
+	for (unsigned c = 0; c < std::min(max_channels, 64u); c++)
+		m_info.channels.push_back("Output " + std::to_string(c + 1));
+	up->rate = rate;
+	up->renderer.configure(int(rate), m_stream.quality);
+	m_info.rate = int(rate);
+	m_capture_rate = rate;
+	m_capture_channels = up->channels;
 	snd_pcm_uframes_t frames = 0;
 	snd_pcm_hw_params_get_period_size(hw, &frames, &dir);
 	if (!frames)
 		frames = 512;
 	up->period = u32(frames);
-	up->block.assign(size_t(up->period) * 2, 0);
+	up->block.assign(size_t(up->period) * up->channels, 0);
 	up->buffer_frames.store(up->period);
 
 	if ((rc = snd_pcm_prepare(up->pcm)) < 0) {
@@ -271,6 +304,10 @@ bool audio_out::start(int latency_ms, fill_fn fill, std::string &err, bool exclu
 	(void)exclusive;
 	return true;
 }
+
+std::string audio_out::default_device_name() { return "default"; }
+
+bool audio_out::running() const { return m_impl && m_impl->running.load(); }
 
 void audio_out::stop()
 {
@@ -308,7 +345,7 @@ void audio_out::set_capture(const std::string &path)
 
 u64 audio_out::capture_frames() const
 {
-	return u64(m_cap.size() / 2);
+	return u64(m_cap.size() / m_capture_channels);
 }
 
 bool audio_out::write_capture(std::string &err)
@@ -322,7 +359,11 @@ bool audio_out::write_capture(std::string &err)
 		err = CLI_T("Cannot write: ", "書けない: ") + m_cap_path;
 		return false;
 	}
-	ui::write_wav_header(f, u32(m_cap.size() / 2), AUDIO_RATE);
+	// The capture's own rate and channel count, not AUDIO_RATE: #173 lets the
+	// recording format be chosen, so what was captured is not necessarily 44100
+	// stereo. The writer is the shared one in wav.h, as everywhere else.
+	ui::write_wav_header(f, u32(m_cap.size() / m_capture_channels), m_capture_rate,
+	                     m_capture_channels);
 	const std::size_t wrote = m_cap.empty()
 	    ? 0 : std::fwrite(m_cap.data(), sizeof(s16), m_cap.size(), f);
 	const bool ok = std::fclose(f) == 0 && wrote == m_cap.size();
@@ -343,7 +384,7 @@ double audio_out::cpu_percent() const
 	const u64 done = m_impl->produced.load();
 	if (!done)
 		return 0.0;
-	const double audio = double(done) / AUDIO_RATE;
+	const double audio = double(done) / m_impl->rate;
 	return 100.0 * m_impl->busy_sec.load() / audio;
 }
 

@@ -44,6 +44,7 @@ enum bar_window {
 	BAR_MASTER = 4, // マスター
 	BAR_SAMPLING = 5, // サンプリング
 	BAR_PLAYER = 6, // MIDI プレイヤー（gui だけ。プラグインの帯には出さない）
+	BAR_SETTINGS = 8, // standalone device/emulation settings
 	BAR_BOARD = 7,  // プラグインボード（gui だけ）
 };
 
@@ -62,6 +63,7 @@ inline std::vector<tool_item> window_bar_items(bool with_player = false)
 	if (with_player) {
 		items.push_back({ UI_TEXT(bar_board, "Boards"), BAR_BOARD });
 		items.push_back({ UI_TEXT(bar_player, "Player"), BAR_PLAYER });
+		items.push_back({ UI_TEXT(settings_title, "Settings..."), BAR_SETTINGS });
 	}
 	return items;
 }

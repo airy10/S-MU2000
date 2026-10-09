@@ -31,20 +31,23 @@
 
 namespace ui {
 
+enum class resampler_quality { sinc, linear, nearest };
+
 class resampler
 {
 public:
 	// in から out へ。同じなら direct() が真になり、畳み込みを丸ごと省く
-	void configure(double in_rate, double out_rate)
+	void configure(double in_rate, double out_rate, resampler_quality quality = resampler_quality::sinc)
 	{
 		if (in_rate <= 0.0)  in_rate = 44100.0;
 		if (out_rate <= 0.0) out_rate = in_rate;
+		m_quality = quality;
 		m_direct = std::fabs(in_rate - out_rate) < 1e-6;
 		m_step   = in_rate / out_rate;
 		// 上へ変換するときは入力のナイキストまで通す。
 		// 下へ変換するときは出力のナイキストで切らないと折り返す
 		m_cutoff = std::min(1.0, out_rate / in_rate) * 0.955;
-		if (m_tab.empty())
+		if (quality == resampler_quality::sinc && m_tab.empty())
 			build_table();
 		reset();
 	}
@@ -69,7 +72,7 @@ public:
 			return 0;
 		// 最後の 1 フレームの畳み込みに要る、いちばん先のサンプル
 		const double last = m_pos + m_step * double(out_frames - 1);
-		const s64 need = s64(std::floor(last)) + HALF + 1;
+		const s64 need = s64(std::floor(last)) + lookahead() + 1;
 		return int(std::max<s64>(0, need - m_written));
 	}
 
@@ -78,7 +81,7 @@ public:
 	{
 		if (m_direct)
 			return int(std::max<s64>(0, m_written - s64(m_pos)));
-		const double room = double(m_written - HALF - 1) - m_pos;
+		const double room = double(m_written - lookahead() - 1) - m_pos;
 		if (room < 0.0)
 			return 0;
 		return int(std::floor(room / m_step)) + 1;
@@ -132,6 +135,8 @@ private:
 		}
 	}
 
+	int lookahead() const { return m_quality == resampler_quality::sinc ? HALF : 1; }
+
 	void one(float &l, float &r)
 	{
 		const s64 centre = s64(std::floor(m_pos));
@@ -140,6 +145,18 @@ private:
 			l = m_ring_l[idx & RMASK];
 			r = m_ring_r[idx & RMASK];
 			m_pos += 1.0;
+			return;
+		}
+		if (m_quality != resampler_quality::sinc) {
+			if (m_quality == resampler_quality::nearest) {
+				const s64 index = s64(std::floor(m_pos + 0.5));
+				l = m_ring_l[index & RMASK]; r = m_ring_r[index & RMASK];
+			} else {
+				const float fraction = float(m_pos - double(centre));
+				l = std::lerp(m_ring_l[centre & RMASK], m_ring_l[(centre + 1) & RMASK], fraction);
+				r = std::lerp(m_ring_r[centre & RMASK], m_ring_r[(centre + 1) & RMASK], fraction);
+			}
+			m_pos += m_step;
 			return;
 		}
 		double al = 0.0, ar = 0.0, sum = 0.0;
@@ -175,6 +192,7 @@ private:
 	double  m_step = 1.0;
 	double  m_cutoff = 1.0;
 	bool    m_direct = true;
+	resampler_quality m_quality = resampler_quality::sinc;
 };
 
 } // namespace ui

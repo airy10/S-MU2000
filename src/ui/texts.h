@@ -43,8 +43,8 @@ struct ui_texts {
 	const char *tab_panel;
 	const char *tab_editor;
 	const char *tab_effects;
-	// Front page hint (panel.cpp)
 	const char *hint_front;
+	// Front page hint (panel.cpp)
 	// Editor page (editor.cpp)
 	const char *editor_hint;         // may contain \n
 	const char *editor_xg_reset;
@@ -1130,6 +1130,31 @@ struct ui_texts {
 	const char *smp_card_m2a_tip;
 	const char *smp_card_m2a_warn;
 	const char *dlg_card_or_m2a_desc;
+	const char *settings_general;
+	const char *settings_language;
+	const char *settings_resampler;
+	const char *settings_sinc;
+	const char *settings_nearest;
+	const char *settings_title;
+	const char *settings_audio;
+	const char *settings_emulation;
+	const char *settings_native_fx;
+	const char *settings_thin_bends;
+	const char *settings_native_engine;
+	const char *settings_native_fx_tip;
+	const char *settings_thin_bends_tip;
+	const char *settings_native_engine_tip;
+	const char *settings_exclusive;
+	const char *settings_rate;
+	const char *settings_auto;
+	const char *settings_left;
+	const char *settings_right;
+	const char *settings_buffer;
+	const char *settings_latency;
+	const char *settings_opening;
+	const char *settings_volume;
+	const char *settings_dc;
+	const char *settings_limiter;
 };
 
 // Each language has one table function, <code>_texts(), in ui/texts_<code>.h.
