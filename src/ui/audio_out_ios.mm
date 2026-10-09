@@ -1,31 +1,31 @@
 // license:BSD-3-Clause
 //
-// The iOS half of the audio back end, playback: the questions the engine cannot
+// The iOS half of Apple audio, playback: the questions the engine cannot
 // answer, and nothing else.
 //
 // The render path - engine, source node, render block, resampler, meters,
-// capture, workgroup - is audio_core_ios.mm, which both directions share. What is
-// left is what only iOS can answer, and the answer to most of it is short: the
-// route is the system's, one route at a time, described by
-// AVAudioSession.currentRoute, so there is no device to enumerate (list() reports
-// the route, which is what the picker shows), none to pin, none to hog and no
-// buffer size to write - a hand-written AudioUnit would have to get the last
-// three right itself, and getting one wrong means silence. The session itself
-// lives in ui/session_ios.{h,mm}, which the recording half uses too.
+// capture, workgroup - is audio_apple.mm, shared with macOS. What is left is
+// what only iOS can answer, and the answer to most of it is short: the route is
+// the system's, one route at a time, described by AVAudioSession.currentRoute,
+// so there is no device to enumerate (list() reports the route, which is what
+// the picker shows), none to pin, none to hog and no buffer size to write - a
+// hand-written AudioUnit would have to get the last three right itself, and
+// getting one wrong means silence. The session itself lives in
+// ui/session_ios.{h,mm}, which the recording half uses too; its counterpart on
+// the macOS side is ui/session_mac.cpp, which has no session to watch.
 //
 // iOS ships no public AudioHardware HAL: AudioObject* appears in no header,
-// only in CoreAudio.tbd, so src/ui/audio_out_mac.cpp does not compile there at
-// all. That is why this back end is written from scratch rather than shared with
-// the macOS one.
+// only in CoreAudio.tbd, so the macOS half does not compile there at all.
 //
 // The engine's nodes hand out the very AudioUnit a hand-written backend would
-// own, so the workgroup read is the same property the macOS back end reads.
+// own, so device, buffer size, stream format and workgroup are the same
+// properties on both systems.
 
 #import <AVFAudio/AVFAudio.h>
 #import <Foundation/Foundation.h>
 
 #include "ui/session_ios.h"
-#include "ui/audio_core_ios.h"
+#include "ui/audio_apple.h"
 #include "ui/audio_out.h"
 
 #include <cstdio>
@@ -37,13 +37,13 @@ namespace ui {
 
 // ---- The answers, and nothing else -----------------------------------------
 //
-// audio_out's and audio_in's own methods are in audio_core_ios.mm, beside the
-// code they forward to. What this file holds is the answers to the questions in
-// ui/audio_core_ios.h.
+// audio_out's and audio_in's own methods are in audio_apple.mm, beside the code
+// they forward to. What this file holds is the answers to the questions in
+// ui/audio_apple.h that only this platform can answer.
 
-// ---- The iOS answers (see ui/audio_core_ios.h) ------------------------------
+// ---- The iOS answers to the shared core (see ui/audio_apple.h) --------------
 
-namespace ios_audio {
+namespace apple {
 
 bool session_open(int latency_ms, std::string &err)
 {
@@ -105,6 +105,6 @@ std::string output_label(const device_ref &, double rate)
 	return name;
 }
 
-} // namespace ios_audio
+} // namespace apple
 
 } // namespace ui

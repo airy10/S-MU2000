@@ -14,6 +14,7 @@
 
 #include "audio_out.h"
 #include "compat/cli_text.h"
+#include "wav.h"
 
 #include <alsa/asoundlib.h>
 #include <pthread.h>
@@ -60,36 +61,6 @@ std::string lowered(const std::string &s)
 	for (char c : s)
 		out.push_back(char(std::tolower((unsigned char)c)));
 	return out;
-}
-
-void put_u32(std::FILE *f, u32 v)
-{
-	const u8 b[4] = { u8(v), u8(v >> 8), u8(v >> 16), u8(v >> 24) };
-	std::fwrite(b, 1, 4, f);
-}
-
-void put_u16(std::FILE *f, u16 v)
-{
-	const u8 b[2] = { u8(v), u8(v >> 8) };
-	std::fwrite(b, 1, 2, f);
-}
-
-// 44100Hz・16bit・2ch の WAV の頭
-void write_wav_header(std::FILE *f, u32 frames)
-{
-	const u32 data = frames * 4;
-	std::fwrite("RIFF", 1, 4, f);
-	put_u32(f, 36 + data);
-	std::fwrite("WAVEfmt ", 1, 8, f);
-	put_u32(f, 16);
-	put_u16(f, 1);
-	put_u16(f, 2);
-	put_u32(f, AUDIO_RATE);
-	put_u32(f, AUDIO_RATE * 4);
-	put_u16(f, 4);
-	put_u16(f, 16);
-	std::fwrite("data", 1, 4, f);
-	put_u32(f, data);
 }
 
 } // namespace
@@ -351,7 +322,7 @@ bool audio_out::write_capture(std::string &err)
 		err = CLI_T("Cannot write: ", "書けない: ") + m_cap_path;
 		return false;
 	}
-	write_wav_header(f, u32(m_cap.size() / 2));
+	ui::write_wav_header(f, u32(m_cap.size() / 2), AUDIO_RATE);
 	const std::size_t wrote = m_cap.empty()
 	    ? 0 : std::fwrite(m_cap.data(), sizeof(s16), m_cap.size(), f);
 	const bool ok = std::fclose(f) == 0 && wrote == m_cap.size();

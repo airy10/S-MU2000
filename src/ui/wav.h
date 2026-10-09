@@ -2,10 +2,11 @@
 //
 // One WAV header, written once.
 //
-// What the iOS capture and the AU probe write. Both want a 44-byte RIFF/WAVE
-// header in front of s16 stereo, and both were writing it out by hand - the
-// probe's copy in host byte order, which works here and would not survive a
-// big-endian port. One function does it, explicitly little-endian.
+// This tree grew five copies of the same 44 bytes - the Apple and Linux output
+// backends, the AU probe, live --wav and render - each of them looking local to
+// whatever needed a file written. Two of them wrote the sizes in host byte
+// order, which works here and would not survive a big-endian port. They all
+// agree on the bytes, so one function does, explicitly little-endian.
 //
 // Nothing platform-specific lives here: the rate is an argument rather than a
 // constant pulled from the audio interface, because a file format does not care

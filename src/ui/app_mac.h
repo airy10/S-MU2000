@@ -99,8 +99,14 @@ public:
 	// (start_audio, on the boot thread)
 	void make_audio() override
 	{
+		// Both devices, like app_ios.h and the other front ends: without the
+		// input object choose_ain() returned on its first line and the A/D INPUT
+		// menu did nothing at all on macOS. Static for the same reason dev_out
+		// is - the render block and the input tap hold their impl raw.
 		static audio_out dev_out;
+		static audio_in dev_in;
 		out = &dev_out;
+		ain = &dev_in;
 	}
 	void say_audio_opened(bool exclusive) override
 	{

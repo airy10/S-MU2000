@@ -24,6 +24,7 @@
 #include "voicecache.h"
 #include "nvram.h"
 #include "ui/audio_out.h"
+#include "ui/wav.h"
 #include "ui/midi_in.h"
 #include "ui/options.h"
 #include "compat/console.h"
@@ -409,19 +410,13 @@ int run_coreaudio(mu2000 &mu, double seconds, int latency_ms, std::vector<s16> *
 
 void write_wav(const char *path, const std::vector<s16> &pcm)
 {
-	std::FILE *f = std::fopen(path, "wb");
-	if (!f)
+	// The header is ui/wav.h's, shared with the Apple and Linux backends and
+	// with render; only the message after it is this tool's.
+	std::string err;
+	if (!ui::write_wav(path, pcm, err, RATE)) {
+		std::fprintf(stderr, "%s\n", err.c_str());
 		return;
-	const u32 bytes = u32(pcm.size() * 2);
-	auto w32 = [&](u32 v) { u8 b[4] = { u8(v), u8(v >> 8), u8(v >> 16), u8(v >> 24) };
-	                        std::fwrite(b, 1, 4, f); };
-	auto w16 = [&](u16 v) { u8 b[2] = { u8(v), u8(v >> 8) }; std::fwrite(b, 1, 2, f); };
-	std::fwrite("RIFF", 1, 4, f); w32(36 + bytes); std::fwrite("WAVE", 1, 4, f);
-	std::fwrite("fmt ", 1, 4, f); w32(16); w16(1); w16(2);
-	w32(RATE); w32(RATE * 4); w16(4); w16(16);
-	std::fwrite("data", 1, 4, f); w32(bytes);
-	std::fwrite(pcm.data(), 1, bytes, f);
-	std::fclose(f);
+	}
 	std::printf(CLI_T("Wrote the recording: %s\n", "録音を書き出した: %s\n"), path);
 }
 
