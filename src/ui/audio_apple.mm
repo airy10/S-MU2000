@@ -650,6 +650,18 @@ bool apple_audio_in::start(const std::string &device, std::string &err)
 	if (!apple::pin_input([node audioUnit], dev, err))
 		return false;
 
+	// The rate here is the device's own and AUDIO_RATE is not negotiable, which
+	// is the opposite of the output side: that one connects its source at
+	// AUDIO_RATE and lets the graph convert, because the output node supports
+	// rate conversion. Nothing goes ahead of the input node - it is the thing
+	// that reads the IO unit - so a connection here asking for a rate other
+	// than the hardware's is accepted, starts, and delivers nothing. Measured
+	// on macOS with the hardware at 96000, one engine, 600 ms each: a mixer fed
+	// a 44100 source node gave 6 buffers, and the same mixer fed the input node
+	// at 44100 gave 0; the input node at 96000 gave 6. The channel count is not
+	// the constraint - the input node asked for 2ch against a 1ch device gave 6,
+	// folded - so ui::resampler below exists for the rate and only the rate.
+	//
 	// The tap asks for the device's own format, whatever that is. Asking for
 	// 2ch interleaved instead looks harmless - the tap is accepted and the
 	// engine starts - but on a mono device the block is then never called at
