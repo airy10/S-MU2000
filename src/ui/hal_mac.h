@@ -136,6 +136,22 @@ inline std::vector<int> available_rates(AudioDeviceID dev)
 	return out;
 }
 
+// The device's own channel layout, which is the only way to describe more than
+// two channels: AudioStreamBasicDescription carries no layout on this SDK, and
+// both AVAudioFormat initialisers that take a bare channel count answer nil above
+// two. Fills the caller's AudioChannelLayout.
+inline bool preferred_channel_layout(AudioDeviceID dev, AudioChannelLayout &out)
+{
+	AudioObjectPropertyAddress addr = {
+		kAudioDevicePropertyPreferredChannelLayout,
+		kAudioDevicePropertyScopeOutput, kAudioObjectPropertyElementMain
+	};
+	UInt32 size = sizeof(out);
+	if (AudioObjectGetPropertyData(dev, &addr, 0, nullptr, &size, &out) != noErr)
+		return false;
+	return out.mNumberChannelDescriptions > 0 || out.mChannelLayoutTag != 0;
+}
+
 // How many channels the device has in that direction, 0 when it will not say.
 // Read from the stream format, not from kAudioDevicePropertyStreamConfiguration:
 // that one answers with the list of streams, whose count is not a channel count.
@@ -252,9 +268,35 @@ inline u32 buffer_frames(AudioDeviceID dev)
 // Best effort: ask a device for a buffer matching the requested latency, and
 // report what it took. Zero means the write failed, and the caller falls back
 // to whatever the first block turns out to be.
-inline u32 set_buffer_frames(AudioDeviceID dev, int latency_ms)
+inline u32 set_buffer_frames(AudioDeviceID dev, int latency_ms, u32 requested = 0)
 {
-	u32 wanted = u32(AUDIO_RATE) * u32(std::max(latency_ms, 0)) / 1000;
+	AudioObjectPropertyAddress buffer = {
+		kAudioDevicePropertyBufferFrameSize,
+		kAudioObjectPropertyScopeGlobal,
+		kAudioObjectPropertyElementMain
+	};
+	// Neither a frame count nor a latency means "leave the device's own alone",
+	// and say what it is. main read the current size back here; writing the
+	// 32-frame minimum instead is how a "0" quietly became a change.
+	if (!requested && latency_ms <= 0) {
+		UInt32 have = 0, have_size = sizeof(have);
+		return AudioObjectGetPropertyData(dev, &buffer, 0, nullptr, &have_size, &have) == noErr
+		           ? have : 0;
+	}
+	// A latency target is a number of milliseconds, so it is worked out at the
+	// rate the device runs at. AUDIO_RATE here would ask a 96 kHz device for
+	// 9.2 ms of buffer and call it 20 ms.
+	AudioObjectPropertyAddress rate_addr = {
+		kAudioDevicePropertyNominalSampleRate,
+		kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain
+	};
+	Float64 rate = 0;
+	UInt32 rate_size = sizeof(rate);
+	if (AudioObjectGetPropertyData(dev, &rate_addr, 0, nullptr, &rate_size, &rate) != noErr ||
+	    rate <= 0.0)
+		rate = double(AUDIO_RATE);
+	u32 wanted = requested ? requested
+	                       : u32(rate * double(std::max(latency_ms, 0)) / 1000.0 + 0.5);
 	if (wanted < 32)
 		wanted = 32;
 	// Never outside what the driver says it can do

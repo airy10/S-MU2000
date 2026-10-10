@@ -41,6 +41,7 @@
 
 #if defined(__APPLE__) || defined(__linux__)
 #include <memory>
+#include <mutex>
 #include <vector>
 #else
 #include <thread>
@@ -75,7 +76,13 @@ public:
 	static std::string default_device_name();
 	// Set only while stopped; read stream_info() after start() completes.
 	void set_stream_options(const audio_stream_options &s) { m_stream = s; }
-	const audio_stream_info &stream_info() const { return m_info; }
+	// By value, and behind a lock: a recovery can move the device, and the
+	// wrapper rewrites this from the watchdog's thread while the window reads it.
+	audio_stream_info stream_info() const
+	{
+		const std::lock_guard<std::mutex> lock(m_info_lock);
+		return m_info;
+	}
 
 	// latency_ms is the target amount to keep queued (0 or less leaves the
 	// device's own buffer size alone). exclusive asks for hog mode, which is this
@@ -145,6 +152,9 @@ public:
 private:
 	audio_stream_options m_stream;
 	audio_stream_info m_info;
+	// Held while either is copied: a device recovery rewrites m_info from the
+	// watchdog's thread, and the window reads it from its own.
+	mutable std::mutex m_info_lock;
 	struct impl;
 	std::unique_ptr<impl> m_impl;
 

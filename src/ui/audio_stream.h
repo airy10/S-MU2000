@@ -25,6 +25,10 @@ struct audio_stream_info {
 	std::vector<int> buffers;
 	int buffer_rate = 0; // 0: stream rate; CoreAudio periods use the hardware clock
 	bool manual_buffer = true;
+	// Whether the stream's rate and channel pair are ours to choose at all. False
+	// where the platform decides both and refuses a request otherwise (iOS), so
+	// the window offers nothing rather than offering something that is refused.
+	bool manual_format = true;
 };
 
 inline bool custom_audio_format(const audio_stream_options &s)

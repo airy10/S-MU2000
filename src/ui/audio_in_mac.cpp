@@ -34,8 +34,13 @@ namespace ui {
 
 namespace apple {
 
-// Nothing to ask: macOS has no per-app microphone permission, and no session to
-// move into a recording category.
+// Nothing to ask, and nothing that could be asked. macOS has no permission call
+// for the microphone, but it does have per-app microphone access control: since
+// macOS 14 the answer comes from the bundle's Info.plist, which is why
+// packaging/auv3-app-Info.plist carries NSMicrophoneUsageDescription for the
+// container this app and the AUv3 inside it run as. A bundle without the key is
+// refused, and a command line tool has no bundle to carry one - so `live` records
+// under whatever the terminal running it has been granted.
 bool input_permission(std::string &)
 {
 	return true;

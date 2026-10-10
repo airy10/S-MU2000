@@ -94,21 +94,38 @@ void release_output(const device_claim &)
 
 // The IO buffer duration was asked of the session in session_open(), and the
 // device under the unit is not ours to resize. Zero says so.
-u32 request_buffer_frames(const device_ref &, int)
+u32 request_buffer_frames(const device_ref &, int, u32)
 {
 	return 0;
 }
 
-bool custom_output_format(const device_ref &, const audio_stream_options &,
-                          std::string &err)
+bool custom_output_format(const device_ref &, const audio_stream_options &want,
+                          std::string &err, bool exclusive)
 {
 	// One route, one rate, and the session decides both, so there is nothing to
-	// convert into: the machine's 44100 goes to the session and the session
-	// hands the device whatever the device runs at.
-	err = CLI_T("iOS controls the output format, buffer and access mode",
-	            "出力の形式・バッファ・排他は iOS 側が決める");
-	return false;
+	// convert into: the machine's 44100 goes to the session and the session hands
+	// the device whatever the device runs at. The buffer and the access mode are
+	// the session's too - main refused both of these with a reason, and losing them
+	// would leave the window showing a setting that is not what is playing.
+	if (want.buffer_frames) {
+		err = CLI_T("iOS sets the output buffer, not the application",
+		            "出力バッファは iOS 側が決める");
+		return false;
+	}
+	if (exclusive && want.strict) {
+		err = CLI_T("iOS has no exclusive mode to fall back from",
+		            "iOS には排他がない");
+		return false;
+	}
+	if (custom_audio_format(want)) {
+		err = CLI_T("iOS controls the output sample rate and channels",
+		            "出力の周波数とチャンネルは iOS 側が決める");
+		return false;
+	}
+	return true;
 }
+
+bool output_channel_layout(const device_ref &, AudioChannelLayout &) { return false; }
 
 u32 output_channels(const device_ref &) { return 2; }
 
@@ -121,7 +138,8 @@ audio_stream_info output_capabilities(const device_ref &, double rate)
 	info.rates.push_back(info.rate);
 	info.channels.push_back("Output 1");
 	info.channels.push_back("Output 2");
-	info.manual_buffer = false;
+	info.manual_buffer = false;  // the session owns the IO period
+	info.manual_format = false;  // and the rate and the channels with it
 	return info;
 }
 

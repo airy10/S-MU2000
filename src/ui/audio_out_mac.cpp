@@ -70,11 +70,11 @@ device_ref resolve_output(const std::string &name, bool exact)
 // Best effort, as it always was: ask for a buffer matching the requested latency
 // and report what the driver took. Zero means the write failed and the core
 // falls back to whatever the first block turns out to be.
-u32 request_buffer_frames(const device_ref &dev, int latency_ms)
+u32 request_buffer_frames(const device_ref &dev, int latency_ms, u32 requested)
 {
 	if (dev.id == kAudioObjectUnknown)
 		return 0;
-	return hal::set_buffer_frames(dev.id, latency_ms);
+	return hal::set_buffer_frames(dev.id, latency_ms, requested);
 }
 
 // The same property this file set on a unit of its own, now set on the unit the
@@ -136,8 +136,9 @@ void release_output(const device_claim &claim)
 // The device's own name, which is what the status line and the menu compare
 // against. A device with no name (should not happen) falls back to the rate.
 bool custom_output_format(const device_ref &dev, const audio_stream_options &want,
-                          std::string &err)
+                          std::string &err, bool exclusive)
 {
+	(void)exclusive;   // strict is answered by the core, which knows if the hog was taken
 	if (dev.id == kAudioObjectUnknown)
 		return true;   // nothing to check against; the core will say if it cannot
 	const u32 channels = hal::stream_channels(dev.id, hal::direction::output);
@@ -145,6 +146,19 @@ bool custom_output_format(const device_ref &dev, const audio_stream_options &wan
 		err = CLI_T("The selected output channels are unavailable",
 		            "選んだ出力チャンネルは使えない");
 		return false;
+	}
+	// A route past the first pair needs a connection as wide as the device, and
+	// that has to be described from a channel layout - see output_channel_layout.
+	// Without one the connection would be the stereo pair while the block wrote
+	// the device's own count into it, which is silence rather than an error, so
+	// the request is refused instead.
+	if (channels > 2 && (u32(want.left) >= 2 || u32(want.right) >= 2)) {
+		AudioChannelLayout layout = {};
+		if (!output_channel_layout(dev, layout)) {
+			err = CLI_T("This device does not say which of its outputs are which",
+			            "この端末はどの出力がどれかを教えてくれない");
+			return false;
+		}
 	}
 	if (want.sample_rate) {
 		const std::vector<int> rates = hal::available_rates(dev.id);
@@ -155,6 +169,13 @@ bool custom_output_format(const device_ref &dev, const audio_stream_options &wan
 		}
 	}
 	return true;
+}
+
+// The device's channel layout, for a connection wide enough to route to any of
+// its outputs. False when it has none to give.
+bool output_channel_layout(const device_ref &dev, AudioChannelLayout &out)
+{
+	return dev.id != kAudioObjectUnknown && hal::preferred_channel_layout(dev.id, out);
 }
 
 u32 output_channels(const device_ref &dev)
@@ -175,7 +196,8 @@ audio_stream_info output_capabilities(const device_ref &dev, double rate)
 	const u32 ch = hal::stream_channels(dev.id, hal::direction::output);
 	for (u32 c = 0; c < ch; c++)
 		info.channels.push_back("Output " + std::to_string(c + 1));
-	info.manual_buffer = false;   // the device's buffer is asked for, not imposed
+	info.manual_buffer = true;    // the window may set it, and we honour it
+	info.manual_format = true;    // as it may the rate and the channel pair
 	return info;
 }
 

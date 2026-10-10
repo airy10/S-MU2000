@@ -15,6 +15,8 @@
 #ifndef S_MU2000_UI_WAV_H
 #define S_MU2000_UI_WAV_H
 
+#include "compat/cli_text.h"
+
 #include <cstdint>
 #include <cstdio>
 #include <string>
@@ -67,14 +69,14 @@ inline bool write_wav(const std::string &path, const std::vector<int16_t> &pcm,
 {
 	std::FILE *f = std::fopen(path.c_str(), "wb");
 	if (!f) {
-		err = "書けない: " + path;
+		err = CLI_T("Cannot write: ", "書けない: ") + path;
 		return false;
 	}
 	write_wav_header(f, uint32_t(pcm.size() / (channels ? channels : 1)), rate, channels);
 	if (!pcm.empty())
 		std::fwrite(pcm.data(), sizeof(int16_t), pcm.size(), f);
 	if (std::fclose(f) != 0) {
-		err = "書き込みが途中で終わった: " + path;
+		err = CLI_T("The writing stopped part way: ", "書き込みが途中で終わった: ") + path;
 		return false;
 	}
 	return true;
@@ -86,14 +88,14 @@ inline bool write_wav_float(const std::string &path, const std::vector<float> &p
 {
 	std::FILE *f = std::fopen(path.c_str(), "wb");
 	if (!f) {
-		err = "書けない: " + path;
+		err = CLI_T("Cannot write: ", "書けない: ") + path;
 		return false;
 	}
 	write_wav_header(f, uint32_t(pcm.size() / (channels ? channels : 1)), rate, channels, 3, 32);
 	if (!pcm.empty())
 		std::fwrite(pcm.data(), sizeof(float), pcm.size(), f);
 	if (std::fclose(f) != 0) {
-		err = "書き込みが途中で終わった: " + path;
+		err = CLI_T("The writing stopped part way: ", "書き込みが途中で終わった: ") + path;
 		return false;
 	}
 	return true;

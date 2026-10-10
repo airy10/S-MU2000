@@ -367,8 +367,24 @@ int run_coreaudio(mu2000 &mu, double seconds, int latency_ms, std::vector<s16> *
 	// may be holding the device
 	if (exclusive)
 		std::printf(CLI_T("Exclusive use: %s\n", "独り占め: %s\n"), out.exclusive() ? CLI_T("got it", "取れた") : CLI_T("not available", "取れなかった"));
+	// buffer_frames() is the last block, and the first blocks are not the ones
+	// that follow: the engine opens the device at its own rate and inserts its
+	// converter a moment later, so read straight after start() a 96 kHz device
+	// reported its 1920 frames against the machine's 44100 - 43.5 ms of a buffer
+	// that is 20 ms. Wait for the audio to be running, then for the block size to
+	// stop moving. A second and a bit in the worst case, and nothing at all once
+	// the converter is in.
+	for (int i = 0; i < 20 && out.produced() == 0; ++i)
+		std::this_thread::sleep_for(std::chrono::milliseconds(50));
+	u32 block = out.buffer_frames();
+	for (int i = 0; i < 4; ++i) {
+		std::this_thread::sleep_for(std::chrono::milliseconds(50));
+		if (out.buffer_frames() == block)
+			break;
+		block = out.buffer_frames();
+	}
 	std::printf(CLI_T("CoreAudio  latency %.1f ms (%u samples)\n", "CoreAudio  待ち時間 %.1f ms（%u サンプル）\n"),
-	            1000.0 * out.buffer_frames() / RATE, out.buffer_frames());
+	            1000.0 * block / RATE, block);
 	if (seconds > 0.0)
 		std::printf(CLI_T("Stops after %.1f s\n", "%.1f 秒で終了\n"), seconds);
 	else
