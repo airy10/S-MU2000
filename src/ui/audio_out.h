@@ -76,8 +76,8 @@ public:
 	static std::string default_device_name();
 	// Set only while stopped; read stream_info() after start() completes.
 	void set_stream_options(const audio_stream_options &s) { m_stream = s; }
-	// By value, and behind a lock: a recovery can move the device, and the
-	// wrapper rewrites this from the watchdog's thread while the window reads it.
+	// By value, behind a lock: a recovery can move the device and rewrites this
+	// from the watchdog's thread.
 	audio_stream_info stream_info() const
 	{
 		const std::lock_guard<std::mutex> lock(m_info_lock);
@@ -152,19 +152,22 @@ public:
 private:
 	audio_stream_options m_stream;
 	audio_stream_info m_info;
-	// Held while either is copied: a device recovery rewrites m_info from the
-	// watchdog's thread, and the window reads it from its own.
-	mutable std::mutex m_info_lock;
+	mutable std::mutex m_info_lock;   // guards m_info against the watchdog
 	struct impl;
 	std::unique_ptr<impl> m_impl;
 
-	// Outside impl on purpose: stop() throws impl away, and what was captured
-	// has to outlive it to be written out afterwards. The render callback appends
-	// through a pointer held in impl, so it stays the only writer
+	// Outside impl: stop() throws impl away and the capture has to outlive it. The
+	// render callback appends through a pointer in impl, so it stays the only
+	// writer.
 	std::vector<s16> m_cap;
-	bool             m_capturing = false;
 	std::string      m_cap_path;
+	// What the capture holds, for the header write_wav puts at the front of it.
+	// Linux records at whatever the device opened at; the Apple back ends know it
+	// in the render core, so these are declared for Linux alone.
+#if defined(__linux__)
+	bool             m_capturing = false;
 	u32 m_capture_rate = AUDIO_RATE, m_capture_channels = 2;
+#endif
 };
 
 #else

@@ -40,10 +40,9 @@
 
 namespace ui {
 
-// How long the output block may produce nothing before the watchdog treats the
-// engine as stopped. Three polls of watch_loop at most: a healthy engine is
-// called every buffer, measured here at 16 to 20 ms on a 512-frame buffer, and
-// every extra poll is silence.
+// How long the block may produce nothing before the engine is treated as stopped.
+// Measured at 16 to 20 ms per callback on a 512-frame buffer, so two or three
+// polls is silence and not a slow device.
 static constexpr double STALL_SECONDS = 0.5;
 
 // Mach ticks per second, for the cpu_percent/worst_ms the status line reads.
@@ -79,17 +78,15 @@ struct apple_audio_out::impl {
 
 	std::vector<s16> scratch;   // fill target at 44100 Hz; grown, never shrunk
 	std::vector<s16> *cap = nullptr;   // set_capture()'s buffer, or null
-	// What a capture holds once a custom output format is in play: the rate the
-	// block produced into the connection at, and that connection's channel count.
-	// Automatic is the machine's own, and two channels, which is what this file
-	// assumed before a custom format could move either.
+	// What a capture holds: the connection's rate and channel count, which a
+	// custom output format can move and the WAV header then has to say.
 	u32 cap_rate = AUDIO_RATE;
 	u16 cap_channels = 2;
 
 	std::string dev_name;
 	std::string want_name;        // what the request asked for; "" means system default
 	bool want_exact = false;      // and whether a menu name had to match wholly
-	bool pin_default = false;     // exclusive: hold the device instead of following it
+	bool pin_default = false;     // exclusive: hold this device, do not follow the default
 
 	std::atomic<bool> running{false};
 	std::atomic<bool> taken{false};   // macOS: exclusive asked for, and the device is ours
@@ -123,21 +120,20 @@ struct apple_audio_out::impl {
 	std::atomic<u64> recoveries{0};
 	std::atomic<bool> watch_run{false};
 	std::atomic<bool> recovering{false};  // a recovery is failing; said once
-	// Raised by the engine's own configuration-change notification and acted on
-	// by watch_loop, which treats it as a reason to look now rather than as a
-	// reason to rebuild. A flag, because the notification is delivered on an
-	// internal queue Apple's header says not to tear the engine down inside.
+	// Raised by the engine's configuration-change notification, which prompts
+	// watch_loop to look rather than asking for a rebuild: the HAL posts one
+	// whenever it rebuilds a device's IO proc, including on the open that just
+	// succeeded. A flag, because Apple's header says not to tear the engine down
+	// inside the notification.
 	std::atomic<bool> reconfigure{false};
-	// recover()'s back-off, in mach ticks. A streak of failures waits half a
-	// second and doubles to eight; a success clears both.
+	// recover()'s back-off, in mach ticks, and the streak that sets it.
 	std::atomic<u64> retry_after_ticks{0};
 	std::atomic<u32> fail_streak{0};
-	// Set by the wrapper, called by recover() on success: the capabilities the
-	// settings window offers belong to the device we are on, and a recovery can
-	// put us on a different one.
+	// The wrapper's, called after a successful recovery with the device we ended
+	// up on: its capabilities belong to that device, not the one we left.
 	std::function<void(const apple::device_ref &)> on_device_change;
-	// The block above, removed in stop() before the engine goes. Held by token
-	// because a block-based observer is not unregistered by removing the object.
+	// Held by token: a block-based observer is not unregistered by dropping the
+	// object. Removed in stop() before the engine goes.
 	id reconfigure_observer = nil;
 	std::atomic<bool> warned{false};       // the block guard below, said once
 	// A custom output format: what the settings window asked for, and the
@@ -187,10 +183,9 @@ bool apple_audio_out::start(const request &r, fill_fn fill, std::string &err)
 	m->want_name = r.device;   // the ask, not the answer: see recover()
 	m->want_exact = r.exact;
 	m->dev = apple::resolve_output(r.device, r.exact);
-	// An unnamed request follows the system default - except when exclusive was
-	// asked for. A hogged device cannot be mixed, so a unit left following the
-	// default would move off the device we hold while we still hold it, and
-	// recover() needs the same rule to put it back where it was.
+	// An unnamed request follows the system default, except when exclusive was
+	// asked for: a hogged device cannot be mixed, so a unit following the default
+	// would move off the device we hold. recover() applies the same rule.
 	m->pin_default = r.exclusive;
 	if (r.exclusive)
 		m->dev.follow = false;
@@ -200,10 +195,8 @@ bool apple_audio_out::start(const request &r, fill_fn fill, std::string &err)
 	m->custom = ui::custom_audio_format(r.stream);
 	if (!apple::custom_output_format(m->dev, r.stream, err, r.exclusive))
 		return false;
-	// Configure the renderer now. Without this it sits in direct mode - an
-	// unconfigured ui::resampler is the cheap path - and a requested 48000 would
-	// be handed 44100's worth of machine frames as though they were 48000's:
-	// 8.8% fast, about 147 cents sharp, with start() returning true.
+	// Unconfigured, the renderer is in direct mode and 48000 would be handed
+	// 44100's worth of machine frames: 8.8% fast, with start() returning true.
 	if (m->custom)
 		m->renderer.configure(int((m->custom && r.stream.sample_rate)
 		                              ? r.stream.sample_rate : AUDIO_RATE),
@@ -225,14 +218,10 @@ bool apple_audio_out::start(const request &r, fill_fn fill, std::string &err)
 	}
 	m->granted_frames = apple::request_buffer_frames(m->dev, r.latency_ms,
 	                                                u32(r.stream.buffer_frames));
-	// The block's own buffer, sized here rather than in the block. The engine
-	// never hands out more frames than the device's IO buffer holds, which is what
-	// was just negotiated, times the channels the connection has - and scratch is
-	// where the machine's samples land before the layout below is applied. Four
-	// times the negotiated size, because taking it again costs an allocation on
-	// the thread that has none: a device whose IO proc the HAL rebuilds (the first
-	// open of one, or the restart after taking it exclusively) comes back with a
-	// buffer of its own choosing.
+	// The block's buffer, sized here because growing it in the block allocates on
+	// the thread that has none. Four times the negotiated buffer: a device whose
+	// IO proc the HAL rebuilds (the first open, or the restart after taking it
+	// exclusively) comes back with a buffer of its own choosing.
 	const size_t want_scratch = size_t(std::max(m->granted_frames, 512u) * 4) * m->out_channels;
 	if (m->scratch.size() < want_scratch)
 		m->scratch.resize(want_scratch);
@@ -258,11 +247,10 @@ bool apple_audio_out::start(const request &r, fill_fn fill, std::string &err)
 			// the machine's own frames. Both AUDIO_RATE unless a custom output
 			// format moved the connection, which is the only thing that can.
 			const double block_rate = im->custom ? im->out_rate : double(AUDIO_RATE);
-			// What the machine was actually asked for. Automatic needs no thought,
-			// one fill() per block; a custom rate goes through the renderer, which
-			// asks for as much as each chunk needs and not always n of it, so this
-			// is counted rather than worked out - and counting is what makes a
-			// renderer that is not converting visible instead of silent.
+			// What the machine was actually asked for: a custom rate goes through
+			// the renderer, which asks for as much as each chunk needs rather than n
+			// of it, so this is counted. Worked out from n it agreed with itself
+			// even while the renderer did nothing.
 			u64 machine_frames = u64(n);
 			const u64 t0 = mach_absolute_time();
 			// n frames at the connection's rate: one fill() covers the callback
@@ -276,8 +264,8 @@ bool apple_audio_out::start(const request &r, fill_fn fill, std::string &err)
 				// here to the rate and channel pair that was requested, and the
 				// engine converts from there to the hardware. The renderer asks
 				// fill() for as much as each chunk needs, so nothing is kept back.
-				// Sized in start(); this only fires if the device handed out a
-				// buffer four times the one it had already told us about.
+				// Sized in start(); only a device that hands out a buffer four
+				// times the one it reported gets here.
 				if (im->scratch.size() < size_t(n) * chans)
 					im->scratch.resize(size_t(n) * chans);
 				machine_frames = 0;
@@ -382,12 +370,10 @@ bool apple_audio_out::start(const request &r, fill_fn fill, std::string &err)
 			// on this path either way.
 			if (double(busy) / mach_tps() > double(n) / block_rate)
 				im->starved.fetch_add(1, std::memory_order_relaxed);
-			// What was handed to the connection: the machine's own signal
-			// in the automatic case, and what a custom format converted it to
-			// otherwise - the stream's own rate and channel count, which is what the
-			// header then says. Only the samples the connection carries, n of every
-			// one of chans. The only allocation on this path, and only while a
-			// capture was asked for.
+			// What went into the connection: the machine's own signal, or what a
+			// custom format converted it to. n of every one of chans, at the rate
+			// and width the header in write_capture names. The only allocation on
+			// this path, and only while a capture was asked for.
 			if (im->cap)
 				im->cap->insert(im->cap->end(), im->scratch.data(),
 				                im->scratch.data() + size_t(n) * chans);
@@ -440,16 +426,13 @@ bool apple_audio_out::start(const request &r, fill_fn fill, std::string &err)
 	const bool hw_planar = hw_fmt.channelCount < 1 ? true : !hw_fmt.isInterleaved;
 	im->conn_float = !hw_int16;
 	im->conn_planar = hw_planar;
-	// The machine is stereo, so the automatic connection is two channels and a
-	// device with more gets the graph's own downmix. A custom route can name any
-	// of the device's outputs, so then the connection is as wide as the device and
-	// the unused channels are written as silence.
+	// Automatic is two channels - the machine is stereo and the graph downmixes a
+	// wider device. A custom route can name any of the device's outputs, so then
+	// the connection is as wide as the device, and the unused channels get silence.
 	//
-	// A format wider than two channels can only be described from a channel
-	// layout: AudioStreamBasicDescription carries none on this SDK, and both
-	// AVAudioFormat initialisers that take a bare channel count answer nil above
-	// two - measured, 1 and 2 give a format and 3 to 8 do not. The layout comes
-	// from the device's own preferred layout.
+	// Wider than two needs a channel layout: AudioStreamBasicDescription carries
+	// none on this SDK, and both initialisers that take a bare channel count answer
+	// nil above two (1 and 2 give a format, 3 to 8 do not).
 	AVAudioFormat *fmt = nil;
 	AVAudioChannelLayout *layout = nil;
 	if (m->out_channels > 2) {
@@ -474,10 +457,9 @@ bool apple_audio_out::start(const request &r, fill_fn fill, std::string &err)
 		      std::to_string(int(m->out_rate)) + " Hz";
 		return false;
 	}
-	// The layout and the sample type come from the format we connected with, not
-	// from the query of the node above: when the two disagreed the engine handed
-	// one buffer where two were expected and the block silenced itself, which
-	// looks exactly like a mute and is invisible in produced().
+	// From the format we connected with, not from the query above: when the two
+	// disagreed the engine handed one buffer where two were expected and the block
+	// silenced itself, which is invisible in produced().
 	im->conn_float = fmt.commonFormat == AVAudioPCMFormatFloat32;
 	im->conn_planar = !fmt.isInterleaved;
 	[engine connect:src to:out_node fromBus:0 toBus:0 format:fmt];
@@ -500,10 +482,9 @@ bool apple_audio_out::start(const request &r, fill_fn fill, std::string &err)
 		std::fprintf(stderr, "[audio] device runs %.0f Hz, the engine converts\n", rate);
 	m->running.store(true, std::memory_order_release);
 	// The watchdog starts with the engine and stops with it (see watch_loop).
-	// Its first sight has to be the count we are about to have, not zero, or the
-	// first tick would call a fresh engine a stall. The rest of its state starts
-	// clean: an open posts a configuration change of its own, which the watchdog
-	// would otherwise act on as if something had happened since.
+	// Its first sight has to be the count we are about to have, or the first tick
+	// calls a fresh engine a stall. The flag is cleared too: an open posts a
+	// configuration change of its own.
 	m->reconfigure.store(false, std::memory_order_relaxed);
 	m->fail_streak.store(0, std::memory_order_relaxed);
 	m->retry_after_ticks.store(0, std::memory_order_relaxed);
@@ -575,13 +556,9 @@ void apple_audio_out::watch_loop()
 		std::this_thread::sleep_for(std::chrono::milliseconds(250));
 		if (!m->running.load(std::memory_order_acquire) || !m->engine)
 			continue;
-		// AVAudioEngineConfigurationChangeNotification posts when the graph has
-		// been reconfigured underneath us - a device change, a format change, a
-		// sample-rate change. It restarts the stall countdown below and nothing
-		// else: the HAL posts one whenever it rebuilds a device's IO proc, which
-		// includes the open that has just succeeded, so treating the notification
-		// itself as a reason to rebuild means stopping the engine that is already
-		// playing. As a prompt it only makes the decision below come sooner.
+		// The configuration-change notification makes the stall decision below come
+		// now instead of within a poll, and is not itself a reason to rebuild: the
+		// HAL posts one for every IO proc it rebuilds, the successful open included.
 		const u64 seen = uint64_t(mach_absolute_time());
 		const bool reconfigured = m->reconfigure.exchange(false, std::memory_order_acq_rel);
 		const u64 produced = m->produced.load(std::memory_order_acquire);
@@ -590,12 +567,9 @@ void apple_audio_out::watch_loop()
 			m->last_seen_ticks.store(seen, std::memory_order_relaxed);
 			continue;
 		}
-		// A healthy engine is called every buffer, tens of milliseconds; measured
-		// here at 16 to 20 ms on a 512-frame buffer. Three polls of silence - at
-		// most 750 ms, at least 500 - is well past what a slow device can explain,
-		// and every extra poll is a gap in the sound. This was a full second, which
-		// is also why the first open of a device whose IO proc the HAL rebuilds
-		// took a second of silence before the watchdog noticed.
+		// Two or three polls of silence is a stopped engine, and every poll past
+		// that is a gap in the sound. A second used to mean a second of silence on
+		// the first open of a device whose IO proc the HAL rebuilds.
 		if (!reconfigured &&
 		    (seen - m->last_seen_ticks.load(std::memory_order_relaxed)) / mach_tps() < STALL_SECONDS)
 			continue;
@@ -611,10 +585,9 @@ bool apple_audio_out::recover(const std::string &why)
 	AVAudioEngine *engine = m->engine;
 	if (!engine)
 		return false;
-	// A streak of failures backs off, here rather than in the callers. The header
-	// used to say the caller would do it and none of them did, so a device that
-	// had gone to another application was rebuilt and reported once a second
-	// until the program ended.
+	// The back-off lives here rather than in the callers, which is what the header
+	// claimed and none of them did: a device that has gone elsewhere was otherwise
+	// rebuilt and reported once a second until the program ended.
 	const u64 now = uint64_t(mach_absolute_time());
 	if (now < m->retry_after_ticks.load(std::memory_order_relaxed))
 		return false;
@@ -623,16 +596,14 @@ bool apple_audio_out::recover(const std::string &why)
 	// Apple's header warns against tearing the engine down inside it.
 	//
 	// Re-resolve and re-pin first: the device that went away may be a different
-	// one now, and a pin onto a device that is gone is what we are recovering
-	// from. The connection stays at AUDIO_RATE, so a rate change needs no rebuild.
-	// From the *request* rather than from the device we ended up on, so a request
-	// for the system default follows it - with the same exception start() makes:
-	// an exclusive session names the device it holds, not the default. Resolving
-	// the request again here would follow the default, and taking a device
-	// exclusively makes the system move the default away from it, so by the time
-	// anything recovers the device we hold and the one the request resolves to
-	// are different devices. Re-resolved by that name and wholly, so a device
-	// that has actually gone still comes back not-found.
+	// one now. The connection stays at AUDIO_RATE, so a rate change needs no
+	// rebuild.
+	//
+	// From the request, so an unnamed one follows the default - except that an
+	// exclusive session names the device it holds: taking one moves the default
+	// away from it, so resolving the request here would re-pin us to another
+	// device. By name and wholly, so a device that has gone still comes back
+	// not-found.
 	apple::device_ref again = (m->pin_default && m->dev.found)
 	                              ? apple::resolve_output(m->dev.name, true)
 	                              : apple::resolve_output(m->want_name, m->want_exact);
@@ -645,10 +616,9 @@ bool apple_audio_out::recover(const std::string &why)
 	NSError *e = nil;
 	if ([engine startAndReturnError:&e]) {
 		const u64 n = m->recoveries.fetch_add(1, std::memory_order_relaxed) + 1;
-		// Read after the restart, off the node that is running now: after a
-		// recovery the unit may be on a different device, at a different rate, and
-		// both of these are what the settings window shows. Reading them before
-		// left the window describing the device we were taken away from.
+		// Read after the restart, off the node that is running now: a recovery can
+		// leave us on another device at another rate, and both are what the
+		// settings window shows.
 		const double rate = [[engine outputNode] outputFormatForBus:0].sampleRate;
 		m->dev_name = apple::output_label(m->dev, rate);
 		m->dev_rate.store(u32(rate > 0.0 ? rate + 0.5 : 0.0), std::memory_order_relaxed);
@@ -660,21 +630,18 @@ bool apple_audio_out::recover(const std::string &why)
 		m->recovering.store(false, std::memory_order_relaxed);
 		m->fail_streak.store(0, std::memory_order_relaxed);
 		m->retry_after_ticks.store(0, std::memory_order_relaxed);
-		// What else the window shows - the rates and channels this device can run,
-		// and whether its buffer is ours to set - is the wrapper's, so it is told.
+		// What else the window shows belongs to the device too, and is the
+		// wrapper's to hold.
 		if (m->on_device_change)
 			m->on_device_change(m->dev);
 		return true;
 	}
-	// Said once per streak. A recovery that keeps failing is usually a device that
-	// has gone to another application, and that is not going to be fixed by
-	// saying it again until the program ends - or by rebuilding the graph once a
-	// second, which is the other half of the same streak.
+	// Said once per streak: a device that has gone to another application is not
+	// coming back by being retried faster.
 	if (!m->recovering.exchange(true, std::memory_order_relaxed))
 		std::fprintf(stderr, "[audio] could not recover (%s): %s\n", why.c_str(),
 		             e ? [[e localizedDescription] UTF8String] : "?");
-	// A second, then double up to eight: a device that has gone elsewhere stays
-	// gone, and eleven attempts inside ten seconds is not persistence.
+	// A second, doubling to eight.
 	const u32 streak = m->fail_streak.fetch_add(1, std::memory_order_relaxed) + 1;
 	const double wait = std::min(8.0, 0.5 * double(1u << std::min<u32>(streak, 4)));
 	m->retry_after_ticks.store(now + u64(wait * mach_tps()), std::memory_order_relaxed);
@@ -695,9 +662,7 @@ void apple_audio_out::stop()
 	// this object in a static and never destroys it mid-render, so the window
 	// is theoretical - but stop-before-release is what keeps it so.
 	AVAudioEngine *engine = m->engine;
-	// The observer first: it is the last thing that can raise the flag, and a flag
-	// raised while the engine goes would send the watchdog after an engine that no
-	// longer exists.
+	// The observer first, so nothing raises the flag on an engine that is going.
 	if (m->reconfigure_observer) {
 		[[NSNotificationCenter defaultCenter] removeObserver:m->reconfigure_observer];
 		m->reconfigure_observer = nil;
@@ -802,10 +767,8 @@ bool apple_audio_out::write_capture(std::string &err)
 		err = CLI_T("No output file was given", "書き出す先が決まっていない");
 		return false;
 	}
-	// The WAV header is ui/wav.h's, the same one live --wav and render write:
-	// five copies of the same 44 bytes was one too many. The rate and the channel
-	// count are the stream's own, not AUDIO_RATE and two, which are only what the
-	// automatic case produces.
+	// ui/wav.h's header, at the rate and width the capture holds - which a custom
+	// output format can move off AUDIO_RATE and two.
 	return write_wav(m_cap_path, m_cap, err, m->cap_rate, m->cap_channels);
 }
 
@@ -855,22 +818,6 @@ double apple_audio_out::worst_ms() const
 double apple_audio_out::cpu_recent() const
 {
 	return m->meter.value();
-}
-
-// One sample out of a tap buffer, whichever layout the device hands us.
-// floatChannelData is the right accessor either way, but an interleaved buffer
-// keeps every channel in entry 0 while a non-interleaved one points each entry
-// at its own channel. A request past the last channel folds back to the first,
-// so a mono device feeds both stereo sides and a 5-channel interface feeds the
-// first two - the rule the Windows and Linux backends use.
-static inline float tap_sample(const float *const *chans, AVAudioFormat *fmt,
-                               AVAudioFrameCount i, AVAudioChannelCount want)
-{
-	const AVAudioChannelCount ch = fmt.channelCount;
-	if (!ch || !chans[0])
-		return 0.0f;
-	const AVAudioChannelCount c = want < ch ? want : AVAudioChannelCount(0);
-	return fmt.isInterleaved ? chans[0][size_t(i) * ch + c] : chans[c][i];
 }
 
 // A sample type as a small number, so the tap can publish what it was given in
@@ -1439,8 +1386,7 @@ std::vector<std::string> audio_out::list()
 
 std::string audio_out::default_device_name()
 {
-	const auto names = apple::output_list();
-	return names.empty() ? std::string() : names.front();
+	return apple::default_output_name();
 }
 
 bool audio_out::running() const { return m_impl->core->running(); }
@@ -1474,8 +1420,7 @@ bool audio_out::start(int latency_ms, fill_fn fill, std::string &err, bool exclu
 	apple::watch_output_session([core = m_impl->core.get()] { core->restart(); });
 	// What the settings window shows and offers: the rates and channels this
 	// device can run, and the rate it is running at now, which is the one we
-	// connected to. Its buffer size we ask the device for rather than impose, so
-	// the window does not pretend to set it.
+	// connected to.
 	auto describe = [this](const apple::device_ref &dev) {
 		audio_stream_info info = apple::output_capabilities(dev, double(m_impl->core->device_rate()));
 		// The rate reported as running is the one we produce, which is the device's
@@ -1486,9 +1431,9 @@ bool audio_out::start(int latency_ms, fill_fn fill, std::string &err, bool exclu
 		return info;
 	};
 	m_info = describe(apple::resolve_output(device, exact));
-	// A recovery can leave us on another device, and the capabilities on screen
-	// are then the ones of the device we were taken away from. The core says so
-	// after each recovery, on its own thread, with the device it ended up on.
+	// Re-described after a recovery, which can leave us on another device, so the
+	// window stops offering the one we were taken away from. That call is on the
+	// watchdog's thread.
 	m_impl->core->set_device_change_hook([this, describe](const apple::device_ref &dev) {
 		const std::lock_guard<std::mutex> lock(m_info_lock);
 		m_info = describe(dev);
@@ -1499,10 +1444,9 @@ bool audio_out::start(int latency_ms, fill_fn fill, std::string &err, bool exclu
 void audio_out::stop()
 {
 	// In this order, because each step is what makes the next one safe: the
-	// watcher goes first so nothing calls restart() into this object, then the
-	// core stops and joins the watchdog thread, and only then is the hook - which
-	// that thread called into - dropped. Clearing it earlier would be the
-	// watchdog reading a std::function while it is being written.
+	// watcher first, then the watchdog joined inside stop(), and only then the hook
+	// that thread calls into. Clearing it earlier is a std::function being written
+	// while the watchdog reads it.
 	apple::watch_output_session(nullptr);
 	m_impl->core->stop();
 	m_impl->core->set_device_change_hook(nullptr);
@@ -1525,12 +1469,11 @@ void *audio_out::realtime_workgroup()
 
 void audio_out::set_capture(const std::string &path)
 {
-	// The class carries the flag and the path outside impl on purpose (stop()
-	// throws impl away, and what was captured has to outlive it), so both are
-	// set here as the Linux backend sets them - and the core keeps its own pair,
-	// which is the one the render block reads.
+	// The path is outside impl on purpose (stop() throws impl away, and what was
+	// captured has to outlive it), so it is set here as the Linux backend sets
+	// it. The flag is Linux's own, and the core keeps its own pair - which is the
+	// one the render block reads.
 	m_cap_path = path;
-	m_capturing = !path.empty();
 	m_impl->core->set_capture(path);
 }
 

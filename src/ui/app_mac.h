@@ -13,6 +13,7 @@
 #pragma once
 
 #include <cstdio>
+#include <dispatch/dispatch.h>
 #include <string>
 
 #include "app.h"
@@ -30,6 +31,24 @@ public:
 	gui_app(bridge &b, midi_in *mi,
 	        midi_out &tha, midi_out &thb, midi_out &muo)
 	    : app(b, mi, tha, thb, muo) {}
+
+	// Work the frame asked for, answered once the turn that drew has finished.
+	// The base class drains its queue at the top of paint_main(), which is between
+	// the panel's NewFrame() and Render(): a nested modal there ([alert runModal]
+	// pumps the run loop) has the timer paint again inside it, and the next
+	// NewFrame() then finds the previous frame unended and asserts "Forgot to call
+	// Render() or EndFrame()". Windows posts a message for the same reason, and the
+	// main queue is its equivalent here.
+	void defer_outside_paint(std::function<void()> f) override
+	{
+		auto *work = new std::function<void()>(std::move(f));
+		dispatch_async_f(dispatch_get_main_queue(), work, [](void *p) {
+			std::function<void()> *fn = static_cast<std::function<void()> *>(p);
+			auto call = std::move(*fn);
+			delete fn;
+			call();
+		});
+	}
 
 	// ---- ui::app hooks: file dialogs, confirmations and error display are
 	// AppKit's business, everything they decide is shared

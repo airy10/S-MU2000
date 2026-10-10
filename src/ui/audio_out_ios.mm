@@ -103,10 +103,10 @@ bool custom_output_format(const device_ref &, const audio_stream_options &want,
                           std::string &err, bool exclusive)
 {
 	// One route, one rate, and the session decides both, so there is nothing to
-	// convert into: the machine's 44100 goes to the session and the session hands
-	// the device whatever the device runs at. The buffer and the access mode are
-	// the session's too - main refused both of these with a reason, and losing them
-	// would leave the window showing a setting that is not what is playing.
+	// convert into: the machine's 44100 goes to the session and it hands the device
+	// whatever the device runs at. The buffer and the access mode are the session's
+	// too, and main refused both with a reason - losing them would leave the window
+	// showing a setting that is not what is playing.
 	if (want.buffer_frames) {
 		err = CLI_T("iOS sets the output buffer, not the application",
 		            "出力バッファは iOS 側が決める");
@@ -126,6 +126,14 @@ bool custom_output_format(const device_ref &, const audio_stream_options &want,
 }
 
 bool output_channel_layout(const device_ref &, AudioChannelLayout &) { return false; }
+
+// One route, so its name is both the whole list and the default - nothing here
+// to confuse one with the other.
+std::string default_output_name()
+{
+	const auto names = output_list();
+	return names.empty() ? std::string() : names.front();
+}
 
 u32 output_channels(const device_ref &) { return 2; }
 

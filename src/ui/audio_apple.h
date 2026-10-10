@@ -35,8 +35,7 @@
 namespace ui {
 
 namespace apple {
-// Defined below, after the class that refers to it. A reference is all that is
-// needed for the hook that hands one back.
+// Defined below; only the hook needs it before then, by reference.
 struct device_ref;
 } // namespace apple
 
@@ -74,12 +73,10 @@ public:
 	// survive, so this is a restart and not a rebuild.
 	void restart();
 
-	// The watchdog loop, on its own thread for as long as the engine runs. It
-	// exists rather than the app's tick because not every front end has one:
-	// `live` waits on produced() in a plain loop, and that is the case that
-	// wedges - the run never reaches its own end, so a tick-driven recovery would
-	// never arrive either. It also acts on the engine's own configuration-change
-	// notification, which is the prompt signal for the same recovery.
+	// The watchdog loop, on its own thread for as long as the engine runs. Not the
+	// app's tick: not every front end has one, and `live` waits on produced() in a
+	// plain loop, so a tick-driven recovery would never arrive either. It also
+	// acts on the engine's configuration-change notification.
 	void watch_loop();
 
 	bool running() const;
@@ -94,21 +91,16 @@ public:
 	void *realtime_workgroup();
 
 	// The recovery the watchdog and the session watchers perform: re-resolve the
-	// device, re-pin it, stop and start, then re-read what the window shows of it -
-	// the name, the rate, and through on_device_change the capabilities, since a
-	// recovery can leave us on a different device. False when the engine would not
-	// start again, which is not always fixable from here - the device may have gone
-	// to another application - so a streak of those waits half a second and doubles
-	// to eight, here, and says so once.
+	// device, re-pin it, stop and start, then re-read the name and the rate. False
+	// when the engine would not start again - the device may have gone to another
+	// application - so a streak of those backs off and is said once.
 	bool recover(const std::string &why);
-	// Called by recover() after a successful one, on the watchdog's thread, with
-	// the device it ended up on: whatever is cached about the device that is no
-	// longer right. The wrapper refreshes its capabilities from it.
+	// After a successful one, on the watchdog's thread, with the device we ended up
+	// on. Cached capabilities are that device's too.
 	void set_device_change_hook(std::function<void(const apple::device_ref &)> hook);
 
-	// What we hand the connection, written as a WAV: the machine's own signal in
-	// the automatic case, and what a custom format converted it to otherwise -
-	// the stream's rate and channel count, which is what the header then says.
+	// What went into the connection, written as a WAV at the stream's own rate and
+	// channel count.
 	void set_capture(const std::string &path);
 	u64 capture_frames() const;
 	bool write_capture(std::string &err);
@@ -236,6 +228,13 @@ bool session_open(int latency_ms, std::string &err);
 // is the only choice the system offers.
 std::vector<std::string> output_list();
 
+// The system default output device's name, which is not the first entry of that
+// list: the list is in HAL order. app.h compares this name against the opened
+// device's to notice the default moving, and looks up a remembered route for it,
+// so it has to be the real default - answered as one name or none. Empty when
+// there is no default, which is not a name to match anything against.
+std::string default_output_name();
+
 // A custom output format - a rate or a channel pair of the user's choosing -
 // answered per platform. macOS converts it in the render block and can say yes,
 // as long as the device offers the rate and the channels. iOS has one route and
@@ -243,16 +242,14 @@ std::vector<std::string> output_list();
 bool custom_output_format(const device_ref &dev, const audio_stream_options &want,
                           std::string &err, bool exclusive = false);
 
-// How many channels a custom request is spread over: the device's own, so that
-// any pair of its outputs can be routed to. Two in the automatic case and on
-// iOS, where the machine's stereo pair is all there is.
+// How many channels a custom request is spread over: the device's own, so any
+// pair of its outputs can be routed to. Two automatically, and on iOS.
 u32 output_channels(const device_ref &dev);
 
-// The channel layout, needed to describe a connection wider than two channels.
-// False when there is none to give, which is iOS and a device that says nothing
-// - and then a request past the first two outputs is refused by
-// custom_output_format() rather than played through a connection too narrow to
-// hold it.
+// The channel layout, which a connection wider than two channels has to be
+// described from. False when there is none: iOS, or a device that says nothing,
+// and then custom_output_format() refuses a route past the first two outputs
+// rather than play it through a connection too narrow to hold it.
 bool output_channel_layout(const device_ref &dev, AudioChannelLayout &out);
 
 // Which device a name means. macOS: the HAL lookup this file has always done -
@@ -261,12 +258,10 @@ bool output_channel_layout(const device_ref &dev, AudioChannelLayout &out);
 device_ref resolve_output(const std::string &name, bool exact);
 
 // Ask for a buffer of about latency_ms, or of exactly requested frames, and
-// report what was granted. Neither means "leave the device's own alone", which
-// is also what it answers. macOS writes the device's buffer frame size, the same
-// call this file made on a unit of its own, and reads back what the driver
-// accepted; the milliseconds are worked out at the device's own rate. iOS asked
-// the session already and answers 0, which the core reads as "the platform
-// decides".
+// report what was granted. Neither means "leave the device's own alone", which is
+// also what it answers. macOS writes the device's buffer frame size, worked out
+// at the device's own rate, and reads back what the driver took. iOS asked the
+// session already and answers 0, which the core reads as "the platform decides".
 u32 request_buffer_frames(const device_ref &dev, int latency_ms, u32 requested = 0);
 
 // Point the output at that device, on the unit the engine handed us. macOS sets

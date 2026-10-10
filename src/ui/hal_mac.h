@@ -136,10 +136,9 @@ inline std::vector<int> available_rates(AudioDeviceID dev)
 	return out;
 }
 
-// The device's own channel layout, which is the only way to describe more than
-// two channels: AudioStreamBasicDescription carries no layout on this SDK, and
-// both AVAudioFormat initialisers that take a bare channel count answer nil above
-// two. Fills the caller's AudioChannelLayout.
+// The device's own channel layout. The only way to describe more than two
+// channels: AudioStreamBasicDescription carries none on this SDK, and both
+// AVAudioFormat initialisers that take a bare channel count answer nil above two.
 inline bool preferred_channel_layout(AudioDeviceID dev, AudioChannelLayout &out)
 {
 	AudioObjectPropertyAddress addr = {
@@ -275,17 +274,16 @@ inline u32 set_buffer_frames(AudioDeviceID dev, int latency_ms, u32 requested = 
 		kAudioObjectPropertyScopeGlobal,
 		kAudioObjectPropertyElementMain
 	};
-	// Neither a frame count nor a latency means "leave the device's own alone",
-	// and say what it is. main read the current size back here; writing the
-	// 32-frame minimum instead is how a "0" quietly became a change.
+	// Neither means "leave the device's own alone", and report what it is. main
+	// wrote the 32-frame minimum here instead, which is how a "0" quietly became a
+	// change.
 	if (!requested && latency_ms <= 0) {
 		UInt32 have = 0, have_size = sizeof(have);
 		return AudioObjectGetPropertyData(dev, &buffer, 0, nullptr, &have_size, &have) == noErr
 		           ? have : 0;
 	}
-	// A latency target is a number of milliseconds, so it is worked out at the
-	// rate the device runs at. AUDIO_RATE here would ask a 96 kHz device for
-	// 9.2 ms of buffer and call it 20 ms.
+	// Milliseconds, so worked out at the device's own rate: AUDIO_RATE here asks a
+	// 96 kHz device for 9.2 ms of buffer and calls it 20 ms.
 	AudioObjectPropertyAddress rate_addr = {
 		kAudioDevicePropertyNominalSampleRate,
 		kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain

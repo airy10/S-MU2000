@@ -49,6 +49,13 @@ std::vector<std::string> output_list()
 	return hal::names(hal::direction::output);
 }
 
+// The system default, not output_list().front(): the list is in HAL order and has
+// nothing to do with which device is default.
+std::string default_output_name()
+{
+	return hal::name_of(hal::default_device(hal::direction::output));
+}
+
 // Which device a name means, and what to call it. Empty means the system
 // default. A device that has gone leaves found false, so the caller can say so
 // instead of opening whatever is left.
@@ -147,11 +154,10 @@ bool custom_output_format(const device_ref &dev, const audio_stream_options &wan
 		            "選んだ出力チャンネルは使えない");
 		return false;
 	}
-	// A route past the first pair needs a connection as wide as the device, and
-	// that has to be described from a channel layout - see output_channel_layout.
-	// Without one the connection would be the stereo pair while the block wrote
-	// the device's own count into it, which is silence rather than an error, so
-	// the request is refused instead.
+	// A route past the first pair needs a connection as wide as the device, which
+	// a channel layout describes and a channel count does not. Without one the
+	// connection is the stereo pair while the block writes the device's count into
+	// it: silence rather than an error, so it is refused instead.
 	if (channels > 2 && (u32(want.left) >= 2 || u32(want.right) >= 2)) {
 		AudioChannelLayout layout = {};
 		if (!output_channel_layout(dev, layout)) {
